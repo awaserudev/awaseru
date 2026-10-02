@@ -24,6 +24,18 @@ pub enum Undetermined {
     /// A capability the comparison needed is not one this backend declares
     /// (§7.3).
     CapabilityAbsent { capability: String },
+    /// §2.2's `moved` could not be computed, because the state both sides
+    /// began from does not carry this region. Agreement might be real and
+    /// might be over bytes nothing touched, and there is no way to tell which
+    /// — so it is not reported as agreement.
+    MovementUnknown { region: String },
+    /// The two sides captured different bytes of the region, so their contents
+    /// are not comparable however equal they happen to be.
+    SpansDiffer { region: String },
+    /// The states are not states of the same thing — a different version of
+    /// the reference (§16.5), or different software (§6.6). Reported this way
+    /// only when the caller insisted; refused otherwise.
+    StatesIncomparable { why: String },
 }
 
 impl std::fmt::Display for Undetermined {
@@ -50,6 +62,18 @@ impl std::fmt::Display for Undetermined {
                 "this backend does not declare the capability `{capability}`, which the \
                  comparison needed"
             ),
+            Undetermined::MovementUnknown { region } => write!(
+                f,
+                "the state both sides began from does not carry `{region}`, so there is no \
+                 telling how much of it the reference moved — and agreement over bytes nothing \
+                 touched is not evidence (§2.2)"
+            ),
+            Undetermined::SpansDiffer { region } => write!(
+                f,
+                "the two sides captured different bytes of `{region}`, so their contents are not \
+                 comparable however equal they happen to be"
+            ),
+            Undetermined::StatesIncomparable { why } => write!(f, "{why}"),
         }
     }
 }
