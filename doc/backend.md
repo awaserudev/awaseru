@@ -157,6 +157,35 @@ each other and not with anything else, which makes them a cheap way to ask
 *when* a byte was last written and no way at all to ask *where* from. For where,
 see the breakpoint above.
 
+### What this backend declares, and on what evidence
+
+§7.3 says a backend states what it can do and the host asks before relying on
+anything beyond §7.2's mandatory verbs. This is that statement for this backend,
+with the evidence next to each entry so that the claim can be checked rather
+than taken.
+
+| capability | declared | evidence |
+|---|---|---|
+| `stop-on-execution` | yes | the measurement above, and `Bound::Address` is built on it — exercised on every run of the routine tests |
+| `stop-on-write` | yes | the measurement above: the break lands during the write, before it commits |
+| `writing-position` | yes | the measurement above: the instruction's own program counter at that break is the store |
+| `write-recency` | yes | the measurement above: a per-address write stamp, in the backend's clock |
+| `input-replay` | **no** | measured absent — no control device at any of the eight indices (§13's Q14) |
+| `stop-on-read` | **no** | a route, not taken: the breakpoint record has a read flag and nothing here has used it |
+| `execution-coverage` | **no** | a route, not taken: the access record has an execute counter and a stamp, measured only for writes |
+| `call-and-return-events` | **no** | a route, not taken: `GetCallstack` is exported, and its `StackFrameInfo` is flat enough to transcribe — two address words, three address records of two fields each, and a flag word. Nothing here has read one |
+| `register-writes` | **no** | needs the event viewer, which needs the nested configuration record this project has refused twice |
+
+The distinction between the last four and `input-replay` is the one worth
+keeping: `input-replay` is absent **in the machine**, and the other four are
+absent **in this crate**. A route that exists and has not been taken is not a
+declaration, because a host relying on one would be relying on this crate's
+reading of a header rather than on anything that has run.
+
+Only `stop-on-execution` has a verb behind it today. The three declared without
+one are what §5.4's localisation is built from, and declaring them is what lets
+that be written at all — a host cannot ask for a capability nobody declares.
+
 ## Pointing awaseru at it
 
 The path goes in the machine-local half of the configuration, keyed by the

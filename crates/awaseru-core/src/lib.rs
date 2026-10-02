@@ -15,6 +15,7 @@
 
 pub mod anchor;
 pub mod blob;
+pub mod capability;
 pub mod capture;
 pub mod compare;
 pub mod platform;
@@ -25,6 +26,7 @@ pub mod verdict;
 
 pub use anchor::{Anchor, AnchorError, Anchors, CheapCheck, Coverage, Definition, Key, Start};
 pub use blob::{Blob, StateError};
+pub use capability::{Capabilities, Capability, needing};
 pub use capture::{
     CaptureError, SeedError, capture, capture_spans, seed, seed_from_any_position,
 };

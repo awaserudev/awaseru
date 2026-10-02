@@ -6,6 +6,7 @@
 //! rather than a rewrite.
 
 use crate::blob::{Blob, StateError};
+use crate::capability::Capabilities;
 use crate::region::{Region, Regions, SpanError};
 use crate::run::{Bound, Stop};
 use crate::snapshot::Processor;
@@ -211,6 +212,21 @@ pub trait Platform {
 
     /// How this reference came up — §4.12. A report says it next to the result.
     fn beginning(&self) -> Beginning;
+
+    /// What this backend can do beyond §7.2's mandatory verbs — §7.3.
+    ///
+    /// Required rather than defaulted, and the choice is deliberate. A default
+    /// of "nothing" would be safe in the sense that nothing is relied on, and
+    /// unsafe in the sense that matters: a backend that gained a capability and
+    /// forgot to declare it would go on answering *not determined* to
+    /// comparisons it could in fact settle, and nothing would say why. Making
+    /// every backend write the list means the list is a statement rather than
+    /// an oversight.
+    ///
+    /// What belongs in it is what this crate has **exercised**, not what the
+    /// emulator behind it exports. A route that exists and has not been taken
+    /// is recorded in the backend's documentation, never declared here.
+    fn capabilities(&self) -> Capabilities;
 
     /// Everything this backend exposes. The host asks; it does not assume.
     fn regions(&self) -> Regions;

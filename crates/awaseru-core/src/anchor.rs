@@ -28,6 +28,7 @@ use std::collections::BTreeSet;
 
 use sha2::{Digest, Sha256};
 
+use crate::capability::{Capabilities, Capability};
 use crate::platform::{Platform, ReadError};
 use crate::run::{Bound, Position};
 use crate::snapshot::Provenance;
@@ -59,7 +60,9 @@ impl std::fmt::Display for Start {
 /// decided here is the encoding of `recorded`: that is settled by whatever can
 /// actually drive the backend's inputs, and §2.4 says not to guess a shape.
 ///
-/// An anchor carrying one of these is currently **refused**, not ignored.
+/// An anchor carrying one of these needs `Capability::InputReplay` to be
+/// reached, and is **refused** rather than reached without it — see
+/// `Anchors::chain_for`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputLog {
     pub name: String,
@@ -75,6 +78,22 @@ pub struct Definition {
     pub bound: Bound,
     /// Where the software needs input first.
     pub input: Option<InputLog>,
+}
+
+impl Definition {
+    /// What a backend must declare before this definition can be replayed —
+    /// §7.3.
+    ///
+    /// Here rather than at the call site because the question is about the
+    /// definition: an anchor that needs input needs something to press the
+    /// buttons, whoever is asking.
+    pub fn requires(&self) -> Vec<Capability> {
+        let mut needed = Vec::new();
+        if self.input.is_some() {
+            needed.push(Capability::InputReplay);
+        }
+        needed
+    }
 }
 
 /// A named position worth returning to.
@@ -134,10 +153,19 @@ pub enum AnchorError {
     /// A chain that comes back to itself. Refused rather than followed, which
     /// would be a replay that never finishes.
     Cycle { through: Vec<String> },
-    /// §4.7's input log is declared and not implemented. Refused rather than
-    /// ignored: an anchor reached without the input it says it needs is not
-    /// that anchor (§2.4).
-    InputNotSupported { anchor: String, log: String },
+    /// The definition needs a capability this reference does not declare
+    /// (§7.3). Refused rather than attempted without it: an anchor reached
+    /// without the input it says it needs is not that anchor (§2.4).
+    ///
+    /// Which capabilities are absent is the *backend's* answer and not this
+    /// module's. An earlier version of this file asserted that no backend
+    /// could replay an input log, which was true of the only backend there was
+    /// and is not something the platform-independent half can know.
+    NeedsCapability {
+        anchor: String,
+        capability: Capability,
+        needed_for: String,
+    },
     /// Two anchors share a name, so naming one is ambiguous.
     Duplicate { name: String },
 }
@@ -160,13 +188,18 @@ impl std::fmt::Display for AnchorError {
                  never finishes",
                 through.join(" -> ")
             ),
-            AnchorError::InputNotSupported { anchor, log } => write!(
+            AnchorError::NeedsCapability {
+                anchor,
+                capability,
+                needed_for,
+            } => write!(
                 f,
-                "the anchor `{anchor}` needs the input log `{log}` to be reached, and no backend \
-                 here can replay one. Reaching it without the input would arrive somewhere else \
-                 and call it this anchor, so it is refused instead (§2.4). On the first backend \
-                 this is measured rather than pending: it exposes no control device for an input \
-                 to arrive at, and §13's Q14 has the three routes that might change that"
+                "the anchor `{anchor}` needs {needed_for} to be reached, which takes the \
+                 capability `{}` — {} — and this reference does not declare it (§7.3). Reaching \
+                 the anchor without it would arrive somewhere else and call it this anchor, so \
+                 it is refused instead (§2.4)",
+                capability.name(),
+                capability.means()
             ),
             AnchorError::Duplicate { name } => write!(
                 f,
@@ -220,9 +253,14 @@ impl Anchors {
 
     /// The chain from the origin to `name`, origin first.
     ///
-    /// Refuses a cycle, a name nobody declares, and an input log — all before
-    /// anything is run, because each of them is a reason the anchor cannot be
-    /// reached at all.
+    /// Refuses a cycle and a name nobody declares — both before anything is
+    /// run, because each is a reason the anchor cannot be reached at all, and
+    /// both are decidable from the configuration alone.
+    ///
+    /// What this does **not** check is whether a backend can replay the
+    /// definitions it finds: that is `chain_for`, and it needs a backend's
+    /// declaration (§7.3). Configuration loading uses this one, so that a
+    /// configuration is not refused over a reference it has not opened.
     pub fn chain(&self, name: &str) -> Result<Vec<&Anchor>, AnchorError> {
         let mut chain = Vec::new();
         let mut seen = BTreeSet::new();
@@ -239,12 +277,6 @@ impl Anchors {
                 name: at.clone(),
                 declared: self.names().map(str::to_string).collect(),
             })?;
-            if let Some(log) = &anchor.definition.input {
-                return Err(AnchorError::InputNotSupported {
-                    anchor: anchor.name.clone(),
-                    log: log.name.clone(),
-                });
-            }
             chain.push(anchor);
             match &anchor.definition.start {
                 Start::PowerOn => break,
@@ -253,6 +285,39 @@ impl Anchors {
         }
 
         chain.reverse();
+        Ok(chain)
+    }
+
+    /// The same chain, against what a reference declares it can do — §7.3.
+    ///
+    /// Every anchor in the chain is checked, not only the one asked for: a
+    /// definition built on top of one that needs input cannot be replayed
+    /// either, and a refusal naming the anchor that actually needs the
+    /// capability is the one a reader can act on.
+    pub fn chain_for(
+        &self,
+        name: &str,
+        declared: &Capabilities,
+    ) -> Result<Vec<&Anchor>, AnchorError> {
+        let chain = self.chain(name)?;
+        for anchor in &chain {
+            let needed = anchor.definition.requires();
+            // `require_all` answers whether anything is missing; which one it
+            // was is what the refusal has to name, so it is found here rather
+            // than parsed back out of a sentence.
+            if let Some(capability) = needed.into_iter().find(|c| !declared.has(*c)) {
+                return Err(AnchorError::NeedsCapability {
+                    anchor: anchor.name.clone(),
+                    capability,
+                    needed_for: match (capability, &anchor.definition.input) {
+                        (Capability::InputReplay, Some(log)) => {
+                            format!("the input log `{}`", log.name)
+                        }
+                        _ => "its definition".to_string(),
+                    },
+                });
+            }
+        }
         Ok(chain)
     }
 
@@ -525,27 +590,93 @@ mod tests {
         assert!(matches!(err, AnchorError::Duplicate { .. }), "got {err}");
     }
 
-    /// §4.7's input log is declared and refused. Ignored, an anchor would be
-    /// reached without the input it says it needs and the result would be
-    /// called that anchor.
+    /// §4.7's input log, against §7.3's declaration. The refusal is now the
+    /// reference's answer rather than this module's assumption — but it is
+    /// still a refusal: ignored, an anchor would be reached without the input
+    /// it says it needs and the result would be called that anchor.
     #[test]
-    fn an_anchor_needing_input_is_refused_rather_than_reached_without_it() {
+    fn an_anchor_needing_input_is_refused_by_a_reference_that_cannot_replay_one() {
         let mut needs = anchor("needs-input", Start::PowerOn, &[]);
         needs.definition.input = Some(InputLog {
             name: "press-start".into(),
             recorded: vec![1, 2, 3],
         });
+        assert_eq!(
+            needs.definition.requires(),
+            vec![Capability::InputReplay],
+            "the definition is what needs it, whoever is asking"
+        );
         let anchors = Anchors::new(vec![needs]).unwrap();
-        let err = anchors.chain("needs-input").expect_err("not supported");
+
+        // Structurally it is fine, and that is the point of the split: the
+        // configuration declaring it is not wrong.
         assert!(
-            matches!(err, AnchorError::InputNotSupported { .. }),
+            anchors.chain("needs-input").is_ok(),
+            "nothing is wrong with the chain itself"
+        );
+
+        let err = anchors
+            .chain_for("needs-input", &Capabilities::none())
+            .expect_err("not declared");
+        assert!(
+            matches!(
+                err,
+                AnchorError::NeedsCapability {
+                    capability: Capability::InputReplay,
+                    ..
+                }
+            ),
             "got {err}"
         );
         assert!(err.to_string().contains("press-start"), "said: {err}");
+        assert!(err.to_string().contains("input-replay"), "said: {err}");
         assert!(
             err.to_string().contains("arrive somewhere else"),
             "the refusal must say why ignoring it would be worse, said: {err}"
         );
+
+        // And a reference that declares it gets the chain. This half is what
+        // keeps the refusal from being a hard-coded `false`.
+        assert!(
+            anchors
+                .chain_for("needs-input", &Capabilities::of([Capability::InputReplay]))
+                .is_ok(),
+            "a reference that can replay one must not be refused"
+        );
+    }
+
+    /// The refusal names the anchor that needs the capability, not the one
+    /// asked for. A chain is only as replayable as its weakest link, and a
+    /// message naming the wrong link sends a reader to the wrong definition.
+    #[test]
+    fn a_definition_built_on_one_needing_input_is_refused_naming_the_one_that_needs_it() {
+        let mut first = anchor("first", Start::PowerOn, &[]);
+        first.definition.input = Some(InputLog {
+            name: "press-start".into(),
+            recorded: vec![1],
+        });
+        let second = anchor("second", Start::Anchor("first".into()), &[]);
+        let anchors = Anchors::new(vec![first, second]).unwrap();
+
+        let err = anchors
+            .chain_for("second", &Capabilities::none())
+            .expect_err("its prefix cannot be replayed");
+        match err {
+            AnchorError::NeedsCapability { ref anchor, .. } => {
+                assert_eq!(anchor, "first", "said: {err}");
+            }
+            other => panic!("got {other}"),
+        }
+    }
+
+    /// A definition with no input needs nothing, so a backend declaring
+    /// nothing can still replay it. Without this, the gate would refuse every
+    /// anchor the project actually uses.
+    #[test]
+    fn a_definition_needing_nothing_is_replayable_by_a_backend_declaring_nothing() {
+        let anchors = Anchors::new(vec![anchor("plain", Start::PowerOn, &[])]).unwrap();
+        assert!(anchors.get("plain").unwrap().definition.requires().is_empty());
+        assert!(anchors.chain_for("plain", &Capabilities::none()).is_ok());
     }
 
     // ---- the key, §4.11 --------------------------------------------------

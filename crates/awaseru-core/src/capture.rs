@@ -276,6 +276,12 @@ mod tests {
                 settled: vec!["work".into()],
             }
         }
+        /// Nothing beyond §7.2's verbs, which is what a fake can honestly
+        /// claim — and it makes this the platform §7.3's refusals are tested
+        /// against.
+        fn capabilities(&self) -> crate::capability::Capabilities {
+            crate::capability::Capabilities::none()
+        }
         fn regions(&self) -> Regions {
             self.regions.clone()
         }

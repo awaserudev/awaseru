@@ -48,8 +48,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use awaseru_core::{
-    Blob, Bound, Platform, Position, ReadError, Reason, Region, Regions, RunError, StateError,
-    Stop, WriteError, platform::BackendVersion, check_read, check_write,
+    Blob, Bound, Capabilities, Capability, Platform, Position, ReadError, Reason, Region, Regions,
+    RunError, StateError, Stop, WriteError, platform::BackendVersion, check_read, check_write,
 };
 use awaseru_core::snapshot::Processor;
 
@@ -704,6 +704,54 @@ impl Platform for Reference {
             reproducible: self.origin.at_power_on,
             settled: self.origin.memory_zeroed.iter().map(|n| (*n).to_string()).collect(),
         }
+    }
+
+    /// §7.3, for this backend.
+    ///
+    /// What is declared is what has been **measured on this backend**, with
+    /// the numbers in `doc/backend.md` — a shorter list than what the library
+    /// exports, and a longer one than what this crate has a verb for today:
+    ///
+    /// - `stop-on-execution` — an execution breakpoint stops exactly at the
+    ///   target. Asked for one address it stopped there; asked for another, at
+    ///   that one. `Bound::Address` is built on it.
+    /// - `stop-on-write` — a write breakpoint stops *during* the write, before
+    ///   it commits: the byte still holds its old value and one further step
+    ///   lands the new one.
+    /// - `writing-position` — at that break, asked for the *instruction's*
+    ///   program counter rather than the processor's, the backend returns the
+    ///   store itself. §5.4's third item, exact rather than approximate.
+    /// - `write-recency` — the access counters give a per-address write stamp
+    ///   in a clock of the backend's own, which is comparable with other
+    ///   stamps and with nothing else.
+    ///
+    /// Of those four, only `stop-on-execution` is reachable through a verb of
+    /// this crate today (`Bound::Address`). The other three are declared on
+    /// the strength of the measurement, and §5.4's localisation is what will
+    /// use two of them — which is the right order: a host cannot be written
+    /// against a capability nobody has declared.
+    ///
+    /// What is deliberately **not** declared, and why each is a different kind
+    /// of absence:
+    ///
+    /// - `input-replay` — measured absent. The library exposes no control
+    ///   device for an input to arrive at (§13's Q14). This is the one that is
+    ///   absent in the machine rather than in this crate.
+    /// - `stop-on-read`, `execution-coverage`, `call-and-return-events` — a
+    ///   route exists for each and nothing here has taken it: a read flag in
+    ///   the breakpoint record, an execute counter in the access record, and an
+    ///   exported call-stack reader. `doc/backend.md` lists them under what was
+    ///   *not* exercised. A route is not a declaration (§7.3), because a host
+    ///   relying on one would be relying on this crate's reading of a header.
+    /// - `register-writes` — needs the event viewer, which needs the nested
+    ///   configuration record this project has twice refused to transcribe.
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::of([
+            Capability::StopOnExecution,
+            Capability::StopOnWrite,
+            Capability::WritingPosition,
+            Capability::WriteRecency,
+        ])
     }
 
     fn regions(&self) -> Regions {

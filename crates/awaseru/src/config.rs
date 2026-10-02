@@ -642,15 +642,14 @@ fn anchors_from(declarations: &[AnchorDeclaration], beside: &Path) -> Result<Anc
     }
 
     let anchors = Anchors::new(anchors)?;
+    // Only what the two documents can decide: a cycle, a parent nobody
+    // declares, a duplicate name. Whether a *reference* can replay what it
+    // finds there is §7.3's question, asked of the backend when the anchor is
+    // used (`Anchors::chain_for`) — an anchor needing an input log loads here,
+    // because the configuration saying so is right and the refusal belongs
+    // where the declaration is known.
     for name in anchors.names().map(str::to_string).collect::<Vec<_>>() {
-        match anchors.chain(&name) {
-            Ok(_) => {}
-            // An anchor needing input is declared-and-refused rather than
-            // malformed: the configuration is right and the tool cannot do it
-            // yet, so loading succeeds and asking for *that* anchor refuses.
-            Err(AnchorError::InputNotSupported { .. }) => {}
-            Err(e) => return Err(Error::Anchors(e)),
-        }
+        anchors.chain(&name).map_err(Error::Anchors)?;
     }
     Ok(anchors)
 }
@@ -745,6 +744,7 @@ fn merge(base: Value, over: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use awaseru_core::capability::Capabilities;
     use super::*;
 
     fn table(text: &str) -> toml::Table {
@@ -1248,12 +1248,14 @@ mod tests {
         assert!(!configuration.reference.zero_memory);
     }
 
-    /// An anchor needing input **loads** — the configuration is right and the
-    /// tool cannot do it yet — and asking for that anchor is what refuses
-    /// (§4.7). Refusing the whole configuration would stop the other anchors
-    /// working for a reason that is not about them.
+    /// An anchor needing input **loads** — the configuration is right, and
+    /// whether a reference can replay the log is §7.3's question, asked of the
+    /// backend when the anchor is used. Refusing the whole configuration would
+    /// stop the other anchors working for a reason that is not about them, and
+    /// refusing it *here* would be this file deciding what every backend can
+    /// do.
     #[test]
-    fn an_anchor_needing_input_loads_and_refuses_only_when_asked_for() {
+    fn an_anchor_needing_input_loads_and_is_refused_by_the_reference_instead() {
         let dir = std::env::temp_dir().join("awaseru-config-input-log");
         std::fs::create_dir_all(&dir).expect("a directory");
         std::fs::write(dir.join("press-start.input"), b"whatever").expect("write");
@@ -1270,9 +1272,15 @@ mod tests {
         let anchors = anchors_from(&configuration.anchor_declarations, &dir).expect("it loads");
 
         assert!(anchors.chain("plain").is_ok(), "the other anchor still works");
-        let err = anchors.chain("needs").expect_err("not supported");
         assert!(
-            matches!(err, AnchorError::InputNotSupported { .. }),
+            anchors.chain("needs").is_ok(),
+            "structurally there is nothing wrong with it"
+        );
+        let err = anchors
+            .chain_for("needs", &Capabilities::none())
+            .expect_err("a reference that cannot replay one");
+        assert!(
+            matches!(err, AnchorError::NeedsCapability { .. }),
             "got {err}"
         );
         assert_eq!(

@@ -415,6 +415,12 @@ impl<'a> Arriver<'a> {
     /// the tool is what carries it rather than the user remembering to ask.
     pub fn arrive(&mut self, name: &str) -> Result<Arrived, ArriveError> {
         let began = Instant::now();
+        // §7.3, before the cache and not after it. An anchor this reference
+        // cannot replay cannot be demonstrated either (§4.8), so a cached blob
+        // for one is a blob nothing can ever establish — and resuming from it
+        // would be the exact silent weakening §7.3 forbids. A blob is a cache,
+        // never an input (§4.11).
+        self.anchors.chain_for(name, &self.platform.capabilities())?;
         let key = self.anchors.key(name, &self.provenance)?;
         let anchor = self
             .anchors
@@ -459,7 +465,12 @@ impl<'a> Arriver<'a> {
             }
         }
 
-        let chain = self.anchors.chain(name)?.into_iter().cloned().collect::<Vec<_>>();
+        let chain = self
+            .anchors
+            .chain_for(name, &self.platform.capabilities())?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let chain_refs: Vec<&Anchor> = chain.iter().collect();
         let anchors_run = self.replay(&chain_refs)?;
         self.store(&key, &anchor)?;
@@ -530,7 +541,12 @@ impl<'a> Arriver<'a> {
                 declared: self.anchors.names().map(str::to_string).collect(),
             })?
             .clone();
-        let chain = self.anchors.chain(name)?.into_iter().cloned().collect::<Vec<_>>();
+        let chain = self
+            .anchors
+            .chain_for(name, &self.platform.capabilities())?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         let chain_refs: Vec<&Anchor> = chain.iter().collect();
         let key = self.anchors.key(name, &self.provenance)?;
 
