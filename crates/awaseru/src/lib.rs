@@ -9,6 +9,7 @@ pub mod arrive;
 pub mod cache;
 pub mod config;
 pub mod digest;
+pub mod localise;
 pub mod platform;
 pub mod routine;
 pub mod session;

@@ -140,16 +140,16 @@ pub fn region(c: Comparison<'_>, name: &str) -> Verdict {
 
     match first_difference(reference.bytes(), candidate.bytes()) {
         None => Verdict::Agrees { compared, moved },
-        Some(at) => Verdict::Differs(Difference {
+        Some(at) => Verdict::Differs(Difference::new(
             // The region's offset, not the span's: a developer reads this
             // against the region, and a number relative to wherever the
             // capture happened to start would send them to the wrong place.
-            first: reference.offset + at,
-            expected: reference.bytes()[at],
-            found: candidate.bytes()[at],
-            differing: differing(reference.bytes(), candidate.bytes()),
+            reference.offset + at,
+            reference.bytes()[at],
+            candidate.bytes()[at],
+            differing(reference.bytes(), candidate.bytes()),
             compared,
-        }),
+        )),
     }
 }
 
@@ -195,13 +195,13 @@ pub fn compare_processor(c: Comparison<'_>) -> Verdict {
     }
     match first_difference(reference.bytes(), candidate.bytes()) {
         None => Verdict::Agrees { compared, moved },
-        Some(at) => Verdict::Differs(Difference {
-            first: at,
-            expected: reference.bytes()[at],
-            found: candidate.bytes()[at],
-            differing: differing(reference.bytes(), candidate.bytes()),
+        Some(at) => Verdict::Differs(Difference::new(
+            at,
+            reference.bytes()[at],
+            candidate.bytes()[at],
+            differing(reference.bytes(), candidate.bytes()),
             compared,
-        }),
+        )),
     }
 }
 

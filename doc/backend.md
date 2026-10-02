@@ -157,6 +157,30 @@ each other and not with anything else, which makes them a cheap way to ask
 *when* a byte was last written and no way at all to ask *where* from. For where,
 see the breakpoint above.
 
+### What the write breakpoint and the counters gave when built on
+
+M3's seventh unit built §5.4's localisation on the three measurements above, and
+two more things came out of doing it rather than measuring it.
+
+**Two breakpoints can be armed at once**, with distinct ids: a write breakpoint
+on one memory and an execution breakpoint on the processor bus, in one
+`SetBreakpoints` call. Which of them broke is told apart by the instruction's
+own program counter — at the execution breakpoint it is the address asked for,
+at the write it is the store. That is what lets §4.5 be part of the bound: a
+localisation waits for a write *or* for the end of its subject, and whichever
+comes first is what it reports. Measured on the fixture's routine, whose output
+is written once inside the routine and once again by the instruction after the
+return: bounded to the return, the answer is the routine's store; bounded six
+bytes later, the answer is the clobber and the count is two.
+
+**A debugger write leaves no write record.** Seeding a span through
+`SetMemoryValues` does not move the access counters: a byte seeded that way and
+never written by the software reads back `NeverWritten`. So the counters record
+what the *software* did, which is what makes them a usable filter — a byte with
+no record cannot have been written by the routine, and that answer costs no
+replay. It also means the counters cannot be used to check that a seed landed;
+reading the bytes back is what does that.
+
 ### What this backend declares, and on what evidence
 
 §7.3 says a backend states what it can do and the host asks before relying on
@@ -169,7 +193,7 @@ than taken.
 | `stop-on-execution` | yes | the measurement above, and `Bound::Address` is built on it — exercised on every run of the routine tests |
 | `stop-on-write` | yes | the measurement above: the break lands during the write, before it commits |
 | `writing-position` | yes | the measurement above: the instruction's own program counter at that break is the store |
-| `write-recency` | yes | the measurement above: a per-address write stamp, in the backend's clock |
+| `write-recency` | yes | the measurement above: a per-address write stamp, in the backend's clock — and a debugger write leaves no record, so it reports the software's writes |
 | `input-replay` | **no** | measured absent — no control device at any of the eight indices (§13's Q14) |
 | `stop-on-read` | **no** | a route, not taken: the breakpoint record has a read flag and nothing here has used it |
 | `execution-coverage` | **no** | a route, not taken: the access record has an execute counter and a stamp, measured only for writes |
@@ -182,7 +206,11 @@ absent **in this crate**. A route that exists and has not been taken is not a
 declaration, because a host relying on one would be relying on this crate's
 reading of a header rather than on anything that has run.
 
-Only `stop-on-execution` has a verb behind it today. The three declared without
+Three of the four now have a verb behind them: `Bound::Address` for
+`stop-on-execution`, `Bound::Write` and `Platform::write_recency` for the three
+§5.4's localisation is built from. The sentence below is what it replaced, and
+is kept because the order it describes is the point: the declaration came first
+and the verbs were written against it. The three declared without
 one are what §5.4's localisation is built from, and declaring them is what lets
 that be written at all — a host cannot ask for a capability nobody declares.
 

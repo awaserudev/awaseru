@@ -65,6 +65,30 @@ pub enum Bound {
     Address { address: u64, within: u64 },
     /// For this many instructions.
     Instructions(u64),
+    /// Until the byte at `offset` of `region` is written, or the program
+    /// counter reaches `until`, or `within` instructions have run — whichever
+    /// comes first. §5.4's localisation is built on it.
+    ///
+    /// # Why `until` is not optional
+    ///
+    /// §4.5: a measurement must not run past its subject. Localising a
+    /// difference in what a routine wrote means finding the write *inside that
+    /// routine*, and a bound that waited only for a write would keep running
+    /// when the write does not come again — through the return, into whatever
+    /// the software does next, and the position it eventually reported would
+    /// name an instruction that has nothing to do with the question. So the end
+    /// of the subject is part of the bound, and a run that reaches it first
+    /// says so (`Reason::AddressHit`).
+    ///
+    /// A byte is addressed by region and offset rather than by an address
+    /// (§3.1): the same byte of memory is reachable through more than one
+    /// address on some machines, and a comparison is about the byte.
+    Write {
+        region: String,
+        offset: usize,
+        until: u64,
+        within: u64,
+    },
 }
 
 impl std::fmt::Display for Bound {
@@ -75,6 +99,16 @@ impl std::fmt::Display for Bound {
                 write!(f, "until {address:#X}, within {within} instruction(s)")
             }
             Bound::Instructions(n) => write!(f, "{n} instruction(s)"),
+            Bound::Write {
+                region,
+                offset,
+                until,
+                within,
+            } => write!(
+                f,
+                "until `{region}`+{offset} is written or {until:#X} is reached, within {within} \
+                 instruction(s)"
+            ),
         }
     }
 }
@@ -98,6 +132,13 @@ pub enum Reason {
     AddressHit { address: u64 },
     /// The step budget ran out first.
     BudgetExhausted,
+    /// A byte stopped it: something wrote the byte the bound named, and the
+    /// stop's position is **the instruction doing the writing** where the
+    /// backend declares `writing-position` (§5.4, §7.3).
+    ///
+    /// Expect a mid-instruction position: the write is caught before it
+    /// commits, which is the only moment at which the writer can be named.
+    WriteHit { region: String, offset: usize },
     /// The backend declines this bound. Not a failure of the run — a statement
     /// about the backend, which §7.3 says must be declared rather than guessed.
     Refused { why: String },
@@ -113,6 +154,11 @@ impl std::fmt::Display for Stop {
                 write!(f, "stopped at {address:#X}, which is {}", self.position)
             }
             Reason::BudgetExhausted => write!(f, "the budget ran out at {}", self.position),
+            Reason::WriteHit { region, offset } => write!(
+                f,
+                "`{region}`+{offset} was written {}",
+                self.position
+            ),
             Reason::Refused { why } => write!(f, "the backend refused: {why}"),
             Reason::CannotContinue { why } => {
                 write!(f, "the backend cannot continue from {}: {why}", self.position)
@@ -130,7 +176,7 @@ impl Stop {
     pub fn arrived(&self) -> bool {
         matches!(
             self.reason,
-            Reason::BoundReached | Reason::AddressHit { .. }
+            Reason::BoundReached | Reason::AddressHit { .. } | Reason::WriteHit { .. }
         )
     }
 }

@@ -342,6 +342,43 @@ impl<'a> Arriver<'a> {
         awaseru_core::capture_spans(self.platform, provenance, self.at.clone(), spans)
     }
 
+    /// Puts the reference back at the beginning it came up at — §2.5.
+    ///
+    /// For a replay that has no anchor in front of it: §5.4's localisation is a
+    /// replay, and a replay needs a beginning. Without this, localising a
+    /// routine reached without an anchor would try to run to that routine's
+    /// entry from wherever the previous run left the machine — which is past
+    /// the routine, so it never arrives and the budget is what reports it.
+    ///
+    /// The position is re-read afterwards through a run of no instructions,
+    /// which is how a caller asks "where are you" with the verbs §7.2 has.
+    /// Left stale, the next capture would be labelled with the position of the
+    /// run before the rewind.
+    pub fn return_to_origin(&mut self) -> Result<(), RunError> {
+        self.platform.return_to_origin()?;
+        let stop = self.platform.run(awaseru_core::Bound::Instructions(0))?;
+        self.at = stop.position;
+        Ok(())
+    }
+
+    /// What the reference declares it can do — §7.3.
+    ///
+    /// Here for the same reason as the rest: whoever holds an `Arriver` cannot
+    /// reach the platform to ask, and a caller that cannot ask would have to
+    /// assume.
+    pub fn capabilities(&self) -> awaseru_core::Capabilities {
+        self.platform.capabilities()
+    }
+
+    /// When a byte was last written — §5.4's cheap filter.
+    pub fn write_recency(
+        &self,
+        region: &str,
+        offset: usize,
+    ) -> Result<awaseru_core::Recency, ReadError> {
+        self.platform.write_recency(region, offset)
+    }
+
     /// A region, through the reference this is driving.
     ///
     /// Here because an `Arriver` borrows the platform for as long as it lives,

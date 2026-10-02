@@ -32,11 +32,12 @@ pub use capture::{
 };
 pub use compare::{Comparison, compare, compare_processor, compare_regions};
 pub use platform::{
-    BackendVersion, Beginning, Platform, ReadError, RunError, WriteError, check_read, check_write,
+    BackendVersion, Beginning, Platform, ReadError, Recency, RunError, WriteError, check_read,
+    check_write,
 };
 pub use region::{Access, Region, Regions, SpanError};
 pub use run::{Bound, Position, Reason, Stop};
 pub use snapshot::{
     BuildError, Captured, NotComparable, Processor, Provenance, Snapshot,
 };
-pub use verdict::{Difference, Undetermined, Verdict, fold};
+pub use verdict::{Difference, Undetermined, Verdict, Wrote, fold};

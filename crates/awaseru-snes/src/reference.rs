@@ -49,7 +49,8 @@ use std::time::{Duration, Instant};
 
 use awaseru_core::{
     Blob, Bound, Capabilities, Capability, Platform, Position, ReadError, Reason, Region, Regions,
-    RunError, StateError, Stop, WriteError, platform::BackendVersion, check_read, check_write,
+    Recency, RunError, StateError, Stop, WriteError, platform::BackendVersion, check_read,
+    check_write,
 };
 use awaseru_core::snapshot::Processor;
 
@@ -725,11 +726,12 @@ impl Platform for Reference {
     ///   in a clock of the backend's own, which is comparable with other
     ///   stamps and with nothing else.
     ///
-    /// Of those four, only `stop-on-execution` is reachable through a verb of
-    /// this crate today (`Bound::Address`). The other three are declared on
-    /// the strength of the measurement, and §5.4's localisation is what will
-    /// use two of them — which is the right order: a host cannot be written
-    /// against a capability nobody has declared.
+    /// All four are reachable through a verb of this crate: `Bound::Address`
+    /// for the first, `Bound::Write` for the second and third — one bound
+    /// carrying both a byte and the end of its subject, §4.5 — and
+    /// `write_recency` for the fourth. The declaration came before the verbs,
+    /// which is the right order: a host cannot be written against a capability
+    /// nobody has declared.
     ///
     /// What is deliberately **not** declared, and why each is a different kind
     /// of absence:
@@ -777,6 +779,39 @@ impl Platform for Reference {
         check_read(&self.regions, region, Some((offset, len)))?;
         let whole = self.read(region)?;
         Ok(whole[offset..offset + len].to_vec())
+    }
+
+    /// §5.4's cheap filter, from the access counters.
+    ///
+    /// The stamp is the backend's own clock and not the processor's: at
+    /// processor cycle 32 the stamp read 426 (`doc/backend.md`). So it is
+    /// comparable with other stamps from this backend and with nothing else,
+    /// which is what `Recency` says of it.
+    ///
+    /// A write counter of zero is `NeverWritten` rather than a stamp of zero:
+    /// a stamp of zero is a real reading at the very beginning of the clock,
+    /// and conflating the two would make the first write of a run look like no
+    /// write at all.
+    fn write_recency(&self, region: &str, offset: usize) -> Result<Recency, ReadError> {
+        self.require_stopped()?;
+        check_read(&self.regions, region, Some((offset, 1)))?;
+        let memory_type = self.memory_type(region).ok_or_else(|| ReadError::Absent {
+            region: region.to_string(),
+        })?;
+        let at = u32::try_from(offset).map_err(|_| ReadError::Backend {
+            why: format!("this backend counts addresses in 32 bits, and {offset} does not fit"),
+        })?;
+        let counts = self.backend.access_counts(memory_type, at, 1);
+        let Some(count) = counts.first() else {
+            return Err(ReadError::Backend {
+                why: "the backend returned no access record for one address".to_string(),
+            });
+        };
+        Ok(if count.writes == 0 {
+            Recency::NeverWritten
+        } else {
+            Recency::Stamp(count.write_stamp)
+        })
     }
 
     fn write(&mut self, region: &str, bytes: &[u8]) -> Result<(), WriteError> {
@@ -1065,6 +1100,109 @@ impl Platform for Reference {
                         // look and got one.
                         Reason::BudgetExhausted
                     },
+                    position: at,
+                })
+            }
+
+            // §5.4's exact answer, and §4.5 built into the bound: two
+            // breakpoints armed at once, one on the byte and one on the end of
+            // the subject, and whichever happens first is what is reported.
+            Bound::Write {
+                region,
+                offset,
+                until,
+                within,
+            } => {
+                let Ok(budget) = u32::try_from(within) else {
+                    return Ok(Stop {
+                        reason: Reason::Refused {
+                            why: format!(
+                                "this backend counts instructions in a 32-bit number, and a                                  budget of {within} does not fit"
+                            ),
+                        },
+                        position: self.last_position.clone(),
+                    });
+                };
+                if budget == 0 {
+                    return Ok(Stop {
+                        reason: Reason::Refused {
+                            why: "a budget of no instructions cannot reach a write".to_string(),
+                        },
+                        position: self.last_position.clone(),
+                    });
+                }
+
+                // The byte is named by region and offset (§3.1), so the region
+                // has to exist and the offset has to be inside it. A bound
+                // naming a byte that is not there is refused rather than
+                // widened to the nearest one.
+                let within_region = check_read(&self.regions, &region, Some((offset, 1)));
+                let memory_type = match within_region.and_then(|_| {
+                    self.memory_type(&region).ok_or_else(|| ReadError::Absent {
+                        region: region.clone(),
+                    })
+                }) {
+                    Ok(memory_type) => memory_type,
+                    Err(e) => {
+                        return Ok(Stop {
+                            reason: Reason::Refused { why: e.to_string() },
+                            position: self.last_position.clone(),
+                        });
+                    }
+                };
+                let Ok(byte) = u32::try_from(offset) else {
+                    return Ok(Stop {
+                        reason: Reason::Refused {
+                            why: format!("{offset} is wider than this backend's addresses"),
+                        },
+                        position: self.last_position.clone(),
+                    });
+                };
+                let target = u32::try_from(until).map_err(|_| RunError::Backend {
+                    why: format!("this backend addresses in 24 bits, and {until:#X} is wider"),
+                })?;
+
+                self.backend
+                    .set_breakpoints(&[
+                        Breakpoint::write_within(memory_type, byte, byte).with_id(1),
+                        Breakpoint::execute_at(target).with_id(2),
+                    ])
+                    .map_err(|e| RunError::Backend { why: e.to_string() })?;
+                let stepped = self.step_and_wait(budget, StepKind::Instruction);
+                self.backend.clear_breakpoints();
+
+                if let Err(stop) = stepped {
+                    return Ok(stop);
+                }
+
+                // Which of the two broke is told apart by the instruction's own
+                // program counter, the same call §5.4's measurement used: at a
+                // write it names the store, and at the end of the subject it
+                // names the instruction asked for.
+                let reached = self.backend.instruction_pc();
+                if reached == target {
+                    let at = self.instruction_position();
+                    self.last_position = at.clone();
+                    return Ok(Stop {
+                        reason: Reason::AddressHit {
+                            address: u64::from(reached),
+                        },
+                        position: at,
+                    });
+                }
+
+                // A write, caught **during** the instruction that performs it:
+                // the byte still holds its old value and the write lands on the
+                // next step (`doc/backend.md`). So the position is
+                // mid-instruction, which is both the exact answer §5.4 wants
+                // and a place §3.4 forbids seeding from — and the machine
+                // really is there, so nothing is committed here to tidy it up.
+                let at = Position::MidInstruction {
+                    pc: u64::from(reached),
+                };
+                self.last_position = at.clone();
+                Ok(Stop {
+                    reason: Reason::WriteHit { region, offset },
                     position: at,
                 })
             }

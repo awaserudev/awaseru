@@ -360,13 +360,7 @@ mod tests {
     /// *not* such a case, and that distinction is the caller's to make.
     #[test]
     fn a_difference_resting_on_an_absent_capability_is_also_not_determined() {
-        let differs = Verdict::Differs(Difference {
-            first: 3,
-            expected: 1,
-            found: 2,
-            differing: 1,
-            compared: 8,
-        });
+        let differs = Verdict::Differs(Difference::new(3, 1, 2, 1, 8));
         let verdict = needing(
             &Capabilities::none(),
             &[Capability::RegisterWrites],

@@ -206,6 +206,56 @@ impl From<CaptureError> for Error {
     }
 }
 
+/// Arrive, reach the entry, seed — the first three of §5.6's steps.
+///
+/// Shared because §5.4's localisation is the same three steps followed by a
+/// different run, and two copies of them would be two chances for the seeding
+/// to drift apart. A localisation seeded differently from the measurement it
+/// explains would name the writer of a byte in some other run.
+pub(crate) fn enter_and_seed(
+    arriver: &mut Arriver<'_>,
+    routine: &Routine,
+    given: &[Given],
+) -> Result<Option<Arrived>, Error> {
+    for g in given {
+        if g.bytes.len() != g.span.length {
+            return Err(Error::GivenDoesNotFit {
+                span: g.span.clone(),
+                bytes: g.bytes.len(),
+            });
+        }
+    }
+
+    let arrival = match &routine.from {
+        None => None,
+        Some(anchor) => Some(arriver.arrive(anchor)?),
+    };
+
+    let stop = arriver.run(Bound::Address {
+        address: routine.entry,
+        within: routine.within,
+    })?;
+    if stop.reason
+        != (Reason::AddressHit {
+            address: routine.entry,
+        })
+    {
+        return Err(Error::NeverEntered {
+            routine: routine.name.clone(),
+            stop,
+        });
+    }
+
+    // After the entry is reached, so that the routine has not read them yet,
+    // and before anything is captured, so that a seed is the state the routine
+    // actually began from.
+    for g in given {
+        arriver.write_span(&g.span.region, g.span.offset, &g.bytes)?;
+    }
+
+    Ok(arrival)
+}
+
 /// Runs one routine and brings back what it did — §5.6's five steps.
 ///
 /// Arrive, reach the entry, seed, capture, run to the return, capture again.
@@ -219,42 +269,8 @@ pub fn measure(
 ) -> Result<Measured, Error> {
     let began = Instant::now();
 
-    for g in given {
-        if g.bytes.len() != g.span.length {
-            return Err(Error::GivenDoesNotFit {
-                span: g.span.clone(),
-                bytes: g.bytes.len(),
-            });
-        }
-    }
-
-    // ---- 1. where it starts from ------------------------------------------
-    let arrival = match &routine.from {
-        None => None,
-        Some(anchor) => Some(arriver.arrive(anchor)?),
-    };
-
-    // ---- 2. to the routine's first instruction ---------------------------
-    let stop = arriver.run(Bound::Address {
-        address: routine.entry,
-        within: routine.within,
-    })?;
-    if stop.reason != (Reason::AddressHit {
-        address: routine.entry,
-    }) {
-        return Err(Error::NeverEntered {
-            routine: routine.name.clone(),
-            stop,
-        });
-    }
-
-    // ---- 3. its inputs ----------------------------------------------------
-    // After the entry is reached, so that the routine has not read them yet,
-    // and before the seed is captured, so the seed is the state the routine
-    // actually began from.
-    for g in given {
-        arriver.write_span(&g.span.region, g.span.offset, &g.bytes)?;
-    }
+    // ---- 1 to 3: where it starts from, its entry, its inputs -------------
+    let arrival = enter_and_seed(arriver, routine, given)?;
 
     // ---- 4. the state it begins from -------------------------------------
     let spans: Vec<(&str, usize, usize)> = routine

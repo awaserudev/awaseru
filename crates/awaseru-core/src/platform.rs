@@ -190,6 +190,39 @@ impl Beginning {
     }
 }
 
+/// When a byte was last written — §5.4's cheap filter.
+///
+/// Three answers rather than an `Option<u64>`, because the two kinds of
+/// nothing are different: a backend that keeps no such record and a byte that
+/// has never been written would otherwise read the same, and the first means
+/// *ask something else* while the second is an answer.
+///
+/// The stamp is in whatever clock the backend keeps. It is comparable with
+/// other stamps from the same backend and with nothing else — not with a cycle
+/// count, not between processes. So it answers "was this written, and was it
+/// written after that one", and never "when" in any absolute sense.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recency {
+    /// The byte's last write, in the backend's clock.
+    Stamp(u64),
+    /// The backend keeps the record and the byte has never been written.
+    NeverWritten,
+    /// This backend does not keep one (§7.3's `write-recency`).
+    NotSupplied,
+}
+
+impl std::fmt::Display for Recency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Recency::Stamp(at) => write!(f, "last written at stamp {at} of the backend's clock"),
+            Recency::NeverWritten => write!(f, "never written"),
+            Recency::NotSupplied => {
+                write!(f, "this backend keeps no record of when a byte was written")
+            }
+        }
+    }
+}
+
 /// What a backend must do.
 ///
 /// # What is not here yet, and why
@@ -290,6 +323,23 @@ pub trait Platform {
     /// rather than return somewhere near it. §2.5 is the whole reason this
     /// verb exists, and a near miss would defeat it silently.
     fn return_to_origin(&mut self) -> Result<(), RunError>;
+
+    /// When the byte at `offset` of `region` was last written — §5.4's cheap
+    /// filter, and the only part of localisation that costs nothing.
+    ///
+    /// Defaulted, which is the opposite choice from `capabilities` and
+    /// deliberately so: the default is the conservative answer — `NotSupplied`
+    /// — so a backend that has not implemented this makes every caller ask
+    /// something else rather than believe a wrong stamp. `capabilities` has no
+    /// default because its conservative answer is the one that *silently
+    /// removes* function.
+    ///
+    /// A backend declaring `write-recency` must not answer `NotSupplied`, and
+    /// one that does not declare it must not answer anything else.
+    fn write_recency(&self, region: &str, offset: usize) -> Result<Recency, ReadError> {
+        let _ = (region, offset);
+        Ok(Recency::NotSupplied)
+    }
 
     /// Puts one back, and checks that it arrived.
     ///

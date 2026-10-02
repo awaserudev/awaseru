@@ -116,6 +116,12 @@ pub mod expected {
     /// byte, so that running past the subject is visible rather than
     /// theoretical (§4.5).
     pub const ROUTINE_CLOBBER: u8 = 0xFF;
+    /// The routine's only store, and so §5.4's answer for any difference in its
+    /// output: the instruction a localisation must name.
+    pub const ROUTINE_STORE: u64 = 0x802C;
+    /// The store *after* the return — §4.5's trap, and what a localisation
+    /// bounded one instruction too generously would name instead.
+    pub const ROUTINE_CLOBBER_STORE: u64 = 0x8011;
 
     /// What the routine does, in Rust.
     ///
@@ -480,6 +486,35 @@ fn write_word(rom: &mut [u8], at: usize, value: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §5.4's answer is a constant written by hand, so it is checked against
+    /// the bytes rather than trusted. Both stores are the only ones in their
+    /// part of the program, which is what makes "the instruction that wrote
+    /// it" a single address at all.
+    #[test]
+    fn the_two_stores_are_where_the_constants_say_and_are_the_only_ones() {
+        let code = routine_program();
+        let store = (expected::ROUTINE_STORE - u64::from(ORIGIN)) as usize;
+        let clobber = (expected::ROUTINE_CLOBBER_STORE - u64::from(ORIGIN)) as usize;
+
+        assert_eq!(code[store], 0x9F, "the routine's store, absolute indexed");
+        assert_eq!(code[clobber], 0x8F, "the clobber's store, absolute");
+
+        // Within the routine, that opcode appears once: a second store would
+        // make "the instruction that wrote this byte" ambiguous and every
+        // assertion about it weaker than it reads.
+        let routine = &code[ROUTINE_ENTRY..];
+        assert_eq!(
+            routine.iter().filter(|b| **b == 0x9F).count(),
+            1,
+            "the routine must have exactly one indexed store"
+        );
+        assert_eq!(
+            code[..ROUTINE_ENTRY].iter().filter(|b| **b == 0x8F).count(),
+            1,
+            "and the setup exactly one absolute store, the clobber"
+        );
+    }
 
     /// **The test this module needs most.** Three branch offsets were worked
     /// out by hand; this recomputes every one from the bytes that were

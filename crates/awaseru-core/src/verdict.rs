@@ -5,6 +5,8 @@
 //! write the same way, and anything that folds several verdicts into one has to
 //! say what it does with the third.
 
+use crate::run::Position;
+
 /// Why a comparison did not happen, or happened without meaning.
 ///
 /// The causes are §2.3's, and each is a different thing to do about it, which
@@ -98,6 +100,69 @@ impl std::fmt::Display for Undetermined {
     }
 }
 
+/// §5.4's third item: what is known about the write that produced the
+/// reference's value at the first differing offset.
+///
+/// Four states, and the first two are the ones that keep this honest. "Nobody
+/// asked" and "nothing wrote it" are different answers, and neither of them is
+/// "the backend cannot say" — a report that printed one blank for all three
+/// would let a reader draw whichever conclusion they already believed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Wrote {
+    /// Nobody asked. Every comparison produces this, because localising costs
+    /// a replay and §4.2 has no hidden runs: it is a second request.
+    #[default]
+    NotLooked,
+    /// Asked, and this backend does not declare what it would take (§7.3).
+    /// The capability is named, because which one is missing is what a reader
+    /// would go and change.
+    NotAvailable { capability: String },
+    /// Asked, and nothing wrote that byte between the seed and the stop. The
+    /// reference's value there is the seed's, which usually means the
+    /// difference is in the reimplementation's extra write rather than in the
+    /// reference's missing one.
+    NothingWrote,
+    /// The position that last wrote it (§5.4).
+    ///
+    /// Expect a `MidInstruction` position: a write is caught *during* the
+    /// instruction that performs it, which is both where the answer is and a
+    /// place §3.4 says nothing may be seeded from.
+    At {
+        position: Position,
+        /// How many times it was written between the seed and the stop, so
+        /// that "the last write" is not read as "the only write". A byte
+        /// written twice has a first writer this does not name.
+        writes: u64,
+    },
+}
+
+impl std::fmt::Display for Wrote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Wrote::NotLooked => write!(f, "nobody asked what wrote it"),
+            Wrote::NotAvailable { capability } => write!(
+                f,
+                "nothing here can name what wrote it: this backend does not declare `{capability}`"
+            ),
+            Wrote::NothingWrote => write!(
+                f,
+                "nothing wrote it — the reference's value there is the one it was seeded with"
+            ),
+            Wrote::At { position, writes } => {
+                if *writes > 1 {
+                    write!(
+                        f,
+                        "last written {position}, and written {writes} times in all — so this is \
+                         the last writer and not the only one"
+                    )
+                } else {
+                    write!(f, "written {position}")
+                }
+            }
+        }
+    }
+}
+
 /// Where two sides parted, and by how much.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Difference {
@@ -110,6 +175,31 @@ pub struct Difference {
     pub differing: usize,
     /// How many were compared, so that the count above has a denominator.
     pub compared: usize,
+    /// §5.4's third item, which a comparison cannot fill on its own: naming
+    /// the writer takes a replay, and a replay takes a reference. `NotLooked`
+    /// until something asks.
+    pub wrote: Wrote,
+}
+
+impl Difference {
+    /// The four things a comparison knows by itself. §5.4's third item is
+    /// `NotLooked` until something goes and looks.
+    pub fn new(first: usize, expected: u8, found: u8, differing: usize, compared: usize) -> Self {
+        Difference {
+            first,
+            expected,
+            found,
+            differing,
+            compared,
+            wrote: Wrote::NotLooked,
+        }
+    }
+
+    /// The same difference, with §5.4's third item filled in.
+    pub fn localised(mut self, wrote: Wrote) -> Self {
+        self.wrote = wrote;
+        self
+    }
 }
 
 impl std::fmt::Display for Difference {
@@ -118,7 +208,14 @@ impl std::fmt::Display for Difference {
             f,
             "{} of {} bytes differ, first at {}: expected {:#04X}, found {:#04X}",
             self.differing, self.compared, self.first, self.expected, self.found
-        )
+        )?;
+        match &self.wrote {
+            // The ordinary case says nothing extra: a report that ended every
+            // difference with "nobody asked what wrote it" would train its
+            // reader to stop reading the end of the line.
+            Wrote::NotLooked => Ok(()),
+            wrote => write!(f, " ({wrote})"),
+        }
     }
 }
 
@@ -214,13 +311,7 @@ mod tests {
     }
 
     fn differs() -> Verdict {
-        Verdict::Differs(Difference {
-            first: 3,
-            expected: 0x4F,
-            found: 0x00,
-            differing: 1,
-            compared: 10,
-        })
+        Verdict::Differs(Difference::new(3, 0x4F, 0x00, 1, 10))
     }
 
     /// **The test this module exists for.** A set containing one undetermined

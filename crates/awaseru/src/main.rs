@@ -174,7 +174,10 @@ fn report(outcome: &session::Outcome, list_only: bool) {
 enum Command {
     Help,
     Run {
-        plan: Plan,
+        /// Boxed because a `Plan` carries a `Bound`, and a bound can name a
+        /// byte by region (§5.4's localisation) — which makes it large enough
+        /// that `Help` would be paying for it.
+        plan: Box<Plan>,
         list_only: bool,
         digest_only: bool,
     },
@@ -249,7 +252,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     };
 
     Ok(Command::Run {
-        plan: Plan {
+        plan: Box::new(Plan {
             shared,
             local,
             home,
@@ -259,7 +262,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             region,
             offset,
             length,
-        },
+        }),
         list_only,
         digest_only,
     })
@@ -284,7 +287,7 @@ mod tests {
 
     fn plan_of(words: &[&str]) -> Plan {
         match parse_args(words).expect("it parses") {
-            Command::Run { plan, .. } => plan,
+            Command::Run { plan, .. } => *plan,
             Command::Help => panic!("expected a run"),
         }
     }

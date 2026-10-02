@@ -805,6 +805,16 @@ impl Breakpoint {
         Self::new(StopOn::Write, memory_type, first, last)
     }
 
+    /// A distinct identifier, for arming more than one at a time.
+    ///
+    /// The backend keeps them in a vector and reports which one broke by id;
+    /// two sharing an id would be two the report cannot tell apart, which is
+    /// exactly the question §5.4's localisation asks of a pair.
+    pub fn with_id(mut self, id: i32) -> Self {
+        self.id = id;
+        self
+    }
+
     fn new(stop_on: StopOn, memory_type: u32, first: u32, last: u32) -> Self {
         Breakpoint {
             id: 1,
