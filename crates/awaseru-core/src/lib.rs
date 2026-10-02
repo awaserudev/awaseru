@@ -13,13 +13,17 @@
 //!
 //! See `spec.md`, which is normative.
 
+pub mod blob;
 pub mod platform;
 pub mod region;
 pub mod run;
 pub mod snapshot;
 pub mod verdict;
 
-pub use platform::{BackendVersion, Platform, ReadError, RunError, check_read};
+pub use blob::{Blob, StateError};
+pub use platform::{
+    BackendVersion, Platform, ReadError, RunError, WriteError, check_read, check_write,
+};
 pub use region::{Access, Region, Regions, SpanError};
 pub use run::{Bound, Position, Reason, Stop};
 pub use snapshot::{

@@ -55,6 +55,59 @@ impl From<SpanError> for ReadError {
     }
 }
 
+/// Why a write did not happen.
+///
+/// Separate from `ReadError` rather than shared with it, because the cases do
+/// not line up: a region can be readable and not writable, and the thing a
+/// caller does about "this region is read-only" is nothing like what it does
+/// about "this region does not exist".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    /// No region of that name (§3.5).
+    Absent { region: String },
+    /// The region exists and may not be written (§3.1). A cartridge's program
+    /// data is the ordinary case: the console cannot write it, and a comparison
+    /// that wrote to it would be changing its subject rather than measuring it.
+    NotWritable { region: String },
+    /// The span is not a span of that region.
+    Span(SpanError),
+    /// The reference is running, so a write would land in memory its own thread
+    /// is also writing.
+    ///
+    /// Measured rather than assumed: the first backend's reads are torn the
+    /// same way, and a blob loaded into a running machine is overtaken by
+    /// execution before anything can be read back (`doc/backend.md`).
+    NotStopped,
+    Backend { why: String },
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::Absent { region } => {
+                write!(f, "this backend exposes no region named `{region}`")
+            }
+            WriteError::NotWritable { region } => {
+                write!(f, "the region `{region}` cannot be written")
+            }
+            WriteError::Span(e) => write!(f, "{e}"),
+            WriteError::NotStopped => write!(
+                f,
+                "the reference is running, so a write would land in memory it is writing too"
+            ),
+            WriteError::Backend { why } => write!(f, "the backend could not write it: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for WriteError {}
+
+impl From<SpanError> for WriteError {
+    fn from(e: SpanError) -> Self {
+        WriteError::Span(e)
+    }
+}
+
 /// Why a run could not be started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunError {
@@ -133,6 +186,30 @@ pub fn check_read<'a>(
     Ok(region)
 }
 
+/// Checks a write against the region set, the mirror of `check_read` — and
+/// separate from it, because `Access` answers two questions and a function that
+/// answered one of them for both would have to pick which.
+///
+/// Returns the region when the write is allowed.
+pub fn check_write<'a>(
+    regions: &'a Regions,
+    name: &str,
+    span: Option<(usize, usize)>,
+) -> Result<&'a Region, WriteError> {
+    let region = regions.get(name).ok_or_else(|| WriteError::Absent {
+        region: name.to_string(),
+    })?;
+    if !region.access.writable() {
+        return Err(WriteError::NotWritable {
+            region: name.to_string(),
+        });
+    }
+    if let Some((offset, len)) = span {
+        region.span(offset, len)?;
+    }
+    Ok(region)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +261,59 @@ mod tests {
         let err = check_read(&set(), "readable", Some((8, 16))).expect_err("past the end");
         assert!(matches!(err, ReadError::Span(_)), "got {err:?}");
         assert!(err.to_string().contains("readable"), "and names the region");
+    }
+
+    /// Readable and writable are different questions, and the two checks give
+    /// different answers to them. A single check reused for both would have to
+    /// decide which of `Access`'s two halves it meant, and would then be wrong
+    /// about every region that is one and not the other.
+    #[test]
+    fn a_read_only_region_can_be_read_and_not_written() {
+        let set = Regions::new(vec![
+            Region::bytes("rom", 16, Access::ReadOnly),
+            Region::bytes("ram", 16, Access::ReadWrite),
+        ]);
+
+        assert!(check_read(&set, "rom", None).is_ok());
+        let err = check_write(&set, "rom", None).expect_err("read-only");
+        assert_eq!(
+            err,
+            WriteError::NotWritable {
+                region: "rom".into()
+            }
+        );
+        assert_ne!(
+            err,
+            WriteError::Absent {
+                region: "rom".into()
+            },
+            "a read-only region exists; saying it is absent would be a different claim"
+        );
+
+        assert!(check_write(&set, "ram", None).is_ok());
+        assert!(check_write(&set, "ram", Some((8, 8))).is_ok());
+    }
+
+    #[test]
+    fn a_write_is_refused_through_the_same_three_doors_as_a_read() {
+        let set = Regions::new(vec![Region::bytes("ram", 16, Access::ReadWrite)]);
+        assert!(matches!(
+            check_write(&set, "nowhere", None).expect_err("absent"),
+            WriteError::Absent { .. }
+        ));
+        let err = check_write(&set, "ram", Some((8, 16))).expect_err("past the end");
+        assert!(matches!(err, WriteError::Span(_)), "got {err:?}");
+        assert!(err.to_string().contains("ram"), "and names the region");
+    }
+
+    /// A write-only region is writable. §3.1 has the variant because hardware
+    /// registers that latch a value and read back as something else are
+    /// ordinary, and the write check must not refuse them for being unreadable.
+    #[test]
+    fn a_write_only_region_can_be_written_and_not_read() {
+        let set = Regions::new(vec![Region::bytes("latch", 16, Access::WriteOnly)]);
+        assert!(check_write(&set, "latch", None).is_ok());
+        assert!(check_read(&set, "latch", None).is_err());
     }
 
     #[test]
