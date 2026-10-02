@@ -130,6 +130,35 @@ pub fn capture(
     Ok(builder.processor(processor).build())
 }
 
+/// Reads spans rather than whole regions — §5.1's "a span within one".
+///
+/// What a routine touches is a few spans, not a console's worth of memory, and
+/// §5.6 makes routine-level the primary unit. Capturing whole regions for it
+/// would make the common case cost the uncommon one's bytes.
+///
+/// The processor state is captured too, for the same reason `capture` does it:
+/// a snapshot without it cannot be seeded back (§3.3).
+pub fn capture_spans(
+    platform: &dyn Platform,
+    provenance: Provenance,
+    position: Position,
+    spans: &[(&str, usize, usize)],
+) -> Result<Snapshot, CaptureError> {
+    let regions = platform.regions();
+    let mut builder = Snapshot::builder(provenance, position);
+
+    for (name, offset, length) in spans {
+        let declared = regions.get(name).ok_or_else(|| ReadError::Absent {
+            region: (*name).to_string(),
+        })?;
+        let bytes = platform.read_span(name, *offset, *length)?;
+        builder = builder.span(declared.clone(), *offset, bytes)?;
+    }
+
+    let processor = platform.read_processor()?;
+    Ok(builder.processor(processor).build())
+}
+
 /// Writes a snapshot's regions and processor state back into a machine.
 ///
 /// Refuses, in this order: a position no state can be written at (§3.4), and a
@@ -502,6 +531,41 @@ mod tests {
             seed_from_any_position(&mut fake, &snapshot).expect("it seeds"),
             None
         );
+    }
+
+    /// A span capture holds the span and says where it starts, which is what
+    /// lets a comparison refuse two captures of different bytes (§5.1).
+    #[test]
+    fn a_span_capture_holds_the_span_and_remembers_its_offset() {
+        let mut fake = Fake::new();
+        fake.work = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let snapshot = capture_spans(
+            &fake,
+            provenance(),
+            at_instruction(),
+            &[("work", 2, 4)],
+        )
+        .expect("it captures");
+
+        let captured = snapshot.get("work").expect("captured");
+        assert_eq!(captured.bytes(), &[3, 4, 5, 6]);
+        assert_eq!(captured.offset, 2);
+        assert!(
+            !captured.is_whole_region(),
+            "a span is not the region, and a comparison has to be able to tell"
+        );
+        assert!(
+            snapshot.processor().is_some(),
+            "§3.3 again: a snapshot that cannot be seeded back is not much of one"
+        );
+    }
+
+    #[test]
+    fn a_span_past_the_end_of_its_region_is_refused_at_capture() {
+        let fake = Fake::new();
+        let err = capture_spans(&fake, provenance(), at_instruction(), &[("work", 6, 4)])
+            .expect_err("past the end");
+        assert!(err.to_string().contains("work"), "said: {err}");
     }
 
     /// A read-only region in a snapshot cannot be seeded, and the refusal is

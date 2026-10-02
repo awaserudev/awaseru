@@ -112,6 +112,10 @@ pub mod expected {
     /// Where it returns to — where §4.5's bound ends, so that a measurement
     /// does not run past its subject.
     pub const ROUTINE_RETURN: u64 = 0x800F;
+    /// What the instruction *after* the return writes over the output's first
+    /// byte, so that running past the subject is visible rather than
+    /// theoretical (§4.5).
+    pub const ROUTINE_CLOBBER: u8 = 0xFF;
 
     /// What the routine does, in Rust.
     ///
@@ -364,8 +368,9 @@ fn gated_program() -> Vec<u8> {
 ///         LDA #$00 : PHA : PLB     ; data bank zero
 ///         LDX #$FF : TXS           ; a stack, because the routine pushes
 ///         JSR routine
-/// after:  INC $0010                ; something moves once it has returned
-///         BRA after
+/// after:  LDA #$FF : STA $7E0400   ; and then ruins the output, on purpose
+/// spin:   INC $0010                ; something moves once it has returned
+///         BRA spin
 ///
 /// routine:
 ///         LDX #$00
@@ -392,6 +397,16 @@ fn gated_program() -> Vec<u8> {
 ///
 /// Two wrong implementations, two different first offsets, and a right one that
 /// matches throughout. That is what makes a test of the localisation a test.
+///
+/// # Why it ruins its own output afterwards
+///
+/// §4.5 says a measurement must not run past its subject, because the next
+/// thing to run writes over the data being compared and the comparison
+/// silently becomes a reading of something else. A fixture whose routine is
+/// followed by something harmless would let that rule be *respected* and never
+/// *tested*. So the instruction after the call writes `0xFF` over the output's
+/// first byte: bounded to the return, a measurement sees the routine's answer;
+/// one instruction further and it does not.
 pub fn image_with_a_routine() -> Vec<u8> {
     let mut rom = vec![0u8; ROM_BYTES];
     let code = routine_program();
@@ -399,13 +414,14 @@ pub fn image_with_a_routine() -> Vec<u8> {
     finish(
         &mut rom,
         b"AWASERU ROUTINE      ",
-        ORIGIN + ROUTINE_AFTER as u16,
+        ORIGIN + ROUTINE_SPIN as u16,
     );
     rom
 }
 
 /// Offsets within the routine program, from the listing above.
 const ROUTINE_AFTER: usize = 0x0F;
+const ROUTINE_SPIN: usize = 0x15;
 const ROUTINE_ENTRY: usize = 0x20;
 const ROUTINE_LOOP: usize = 0x24;
 
@@ -424,9 +440,13 @@ fn routine_program() -> Vec<u8> {
         ((ORIGIN + ROUTINE_ENTRY as u16) >> 8) as u8,
     ]); // JSR routine
     debug_assert_eq!(code.len(), ROUTINE_AFTER);
-    // after:
+    // after: the instruction a measurement bounded to the return stops before.
+    code.extend([0xA9, 0xFF]); // LDA #$FF
+    code.extend([0x8F, 0x00, 0x04, 0x7E]); // STA $7E0400  -> ruins the output
+    debug_assert_eq!(code.len(), ROUTINE_SPIN);
+    // spin:
     code.extend([0xEE, 0x10, 0x00]); // INC $0010
-    code.extend([0x80, branch_to(code.len() + 2, ROUTINE_AFTER)]); // BRA after
+    code.extend([0x80, branch_to(code.len() + 2, ROUTINE_SPIN)]); // BRA spin
 
     // Padding to the routine's own address, so that the entry is a number this
     // project chose rather than one that moved when the setup changed.
@@ -500,7 +520,7 @@ mod tests {
     #[test]
     fn the_routines_branches_land_where_the_labels_are() {
         let code = routine_program();
-        for (opcode_at, label) in [(0x12, ROUTINE_AFTER), (0x34, ROUTINE_LOOP)] {
+        for (opcode_at, label) in [(0x18, ROUTINE_SPIN), (0x34, ROUTINE_LOOP)] {
             let operand = code[opcode_at + 1] as i8 as isize;
             let after = opcode_at as isize + 2;
             assert_eq!(
@@ -519,6 +539,12 @@ mod tests {
             "and it calls the routine's own address"
         );
         assert_eq!(code[0x36], 0x60, "the routine ends by returning");
+        assert_eq!(
+            (code[ROUTINE_AFTER], code[ROUTINE_AFTER + 1]),
+            (0xA9, expected::ROUTINE_CLOBBER),
+            "and the instruction after the return loads what it will ruin the output with — \
+             §4.5 is testable because of it"
+        );
         assert_eq!(
             expected::ROUTINE_ENTRY,
             u64::from(ORIGIN + ROUTINE_ENTRY as u16),

@@ -10,5 +10,6 @@ pub mod cache;
 pub mod config;
 pub mod digest;
 pub mod platform;
+pub mod routine;
 pub mod session;
 pub mod version;

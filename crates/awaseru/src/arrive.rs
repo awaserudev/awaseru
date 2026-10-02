@@ -312,6 +312,36 @@ impl<'a> Arriver<'a> {
         &self.at
     }
 
+    /// Advances the reference, keeping the position this holds up to date.
+    ///
+    /// Here because an `Arriver` borrows the platform for as long as it lives,
+    /// and because the position it keeps is the one every witness and snapshot
+    /// is labelled with — a run that went around it would leave that stale.
+    pub fn run(&mut self, bound: awaseru_core::Bound) -> Result<awaseru_core::Stop, RunError> {
+        let stop = self.platform.run(bound)?;
+        self.at = stop.position.clone();
+        Ok(stop)
+    }
+
+    /// Writes a span, through the reference this is driving.
+    pub fn write_span(
+        &mut self,
+        region: &str,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), awaseru_core::WriteError> {
+        self.platform.write_span(region, offset, bytes)
+    }
+
+    /// Captures the named spans at the position this holds.
+    pub fn capture(
+        &self,
+        provenance: awaseru_core::snapshot::Provenance,
+        spans: &[(&str, usize, usize)],
+    ) -> Result<awaseru_core::Snapshot, awaseru_core::CaptureError> {
+        awaseru_core::capture_spans(self.platform, provenance, self.at.clone(), spans)
+    }
+
     /// A region, through the reference this is driving.
     ///
     /// Here because an `Arriver` borrows the platform for as long as it lives,
