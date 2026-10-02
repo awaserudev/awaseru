@@ -194,7 +194,10 @@ impl std::fmt::Display for Report {
             write!(f, ". {located}")?;
         }
         write!(f, ". {}", self.control)?;
-        if !self.complete() {
+        // Only when a control ran and went unnoticed: the record of one that
+        // was never run already says it is incomplete, and a report that said
+        // so twice in one line would read as two findings.
+        if matches!(self.control, Control::Ran { .. }) && !self.complete() {
             write!(f, " — so this measurement is incomplete (§5.3)")?;
         }
         write!(f, ". The reference {}", self.beginning)
