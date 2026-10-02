@@ -14,6 +14,7 @@
 //! See `spec.md`, which is normative.
 
 pub mod blob;
+pub mod capture;
 pub mod compare;
 pub mod platform;
 pub mod region;
@@ -22,6 +23,7 @@ pub mod snapshot;
 pub mod verdict;
 
 pub use blob::{Blob, StateError};
+pub use capture::{CaptureError, SeedError, capture, seed};
 pub use compare::{Comparison, compare, compare_processor, compare_regions};
 pub use platform::{
     BackendVersion, Platform, ReadError, RunError, WriteError, check_read, check_write,

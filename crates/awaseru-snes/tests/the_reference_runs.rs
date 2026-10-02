@@ -27,7 +27,11 @@
 //! what it depends on is that a console with memory in it has something in its
 //! memory.
 
-use awaseru_core::{Blob, Bound, Platform, Position, ReadError, Reason, StateError, WriteError};
+use awaseru_core::snapshot::{Processor, Provenance};
+use awaseru_core::{
+    Blob, Bound, Comparison, Platform, Position, ReadError, Reason, StateError, Undetermined,
+    Verdict, WriteError,
+};
 use awaseru_snes::{OpenError, Reference};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -394,6 +398,105 @@ fn the_reference_maps_regions_and_runs_bounded() {
         reference.cycles().expect("stopped"),
         first_cycles,
         "and arrive at the same cycle"
+    );
+
+    // ---- M1's done-condition, on supplied software ------------------------
+    // The same round trip as `the_round_trip`, which runs it against the
+    // generated fixture and asserts content. Here the assertions are about
+    // the plumbing only, because the software is the runner's and is not in
+    // this repository (§11.2): that what was read comes back, that the
+    // disturbance in between was really there and is really gone, and that a
+    // region this backend does not expose is not determined.
+    let provenance = Provenance {
+        reference: "supplied".into(),
+        backend: "mesence".into(),
+        version: reference.version().reported,
+        // A fixed string rather than a hash: hashing is the host's job and
+        // this test is below it. What §16.5's check needs is that the two
+        // sides agree, and they do.
+        software: "supplied by the runner".into(),
+    };
+    const ROUND_TRIP: [&str; 2] = ["work-ram", "palette-ram"];
+
+    reference.load_state(&blob).expect("back to the blob");
+    let stop = reference
+        .run(Bound::Instructions(1))
+        .expect("one instruction, for a position a state can be seeded at (§3.4)");
+    let position = stop.position.clone();
+    assert!(position.is_instruction_boundary(), "at {position}");
+
+    let before = awaseru_core::capture(&reference, provenance.clone(), position.clone(), &ROUND_TRIP)
+        .expect("it captures");
+    let original = before.processor().expect("captured").clone();
+
+    // Every region it carries is disturbed, or the comparison over the ones
+    // left alone is vacuous and the fold comes back not determined (§2.2).
+    for name in ROUND_TRIP {
+        let held = before.get(name).expect("captured").bytes();
+        let noise: Vec<u8> = (0..held.len()).map(|i| ((i * 29 + 11) as u8) & 0x7F).collect();
+        assert_ne!(noise, held, "the noise must differ from what `{name}` holds");
+        reference.write(name, &noise).expect("disturb it");
+    }
+    let mut flipped = original.bytes().to_vec();
+    for byte in &mut flipped {
+        *byte ^= 0xFF;
+    }
+    reference
+        .write_processor(&Processor::opaque(flipped))
+        .expect("disturb the registers");
+
+    let disturbed =
+        awaseru_core::capture(&reference, provenance.clone(), position.clone(), &ROUND_TRIP)
+            .expect("it captures");
+    for name in ROUND_TRIP {
+        assert_ne!(
+            disturbed.get(name).expect("captured").bytes(),
+            before.get(name).expect("captured").bytes(),
+            "the disturbance to `{name}` is really there"
+        );
+    }
+
+    awaseru_core::seed(&mut reference, &before).expect("it seeds");
+    let after = awaseru_core::capture(&reference, provenance.clone(), position.clone(), &ROUND_TRIP)
+        .expect("it captures");
+
+    for name in ROUND_TRIP {
+        assert_eq!(
+            after.get(name).expect("captured").bytes(),
+            before.get(name).expect("captured").bytes(),
+            "`{name}` did not come back the same"
+        );
+        assert_ne!(
+            after.get(name).expect("captured").bytes(),
+            disturbed.get(name).expect("captured").bytes(),
+            "and `{name}` is not still disturbed, which is what says the seed did something"
+        );
+    }
+    assert_eq!(
+        after.processor().expect("captured").bytes(),
+        original.bytes(),
+        "the registers did not come back"
+    );
+
+    let comparison = Comparison {
+        seed: &disturbed,
+        reference: &before,
+        candidate: &after,
+    };
+    match awaseru_core::compare_regions(comparison, &ROUND_TRIP).expect("comparable") {
+        Verdict::Agrees { compared, moved } => {
+            assert!(moved > 0, "a comparison over nothing moved is vacuous (§2.2)");
+            eprintln!("round trip agrees over {compared} bytes, of which {moved} moved");
+        }
+        other => panic!("the round trip should agree, got {other}"),
+    }
+
+    assert_eq!(
+        awaseru_core::compare_regions(comparison, &["nowhere"]).expect("comparable"),
+        Verdict::NotDetermined(Undetermined::RegionAbsent {
+            region: "nowhere".into()
+        }),
+        "a region this backend does not expose must be not determined, never agreement"
     );
 
     // ---- one reference per process ----------------------------------------
