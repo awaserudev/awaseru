@@ -179,6 +179,73 @@ once that one is. Until it is taken, the risk is the one §16.7 describes: an
 emulator that stops being maintained stops *improving*, not working, and the
 console it reproduces is not going to change.
 
+## What was measured of its behaviour
+
+Taken against the pinned build above, with a cartridge loaded, the emulator
+stopped in its debugger. These are the facts the M1 implementation is built on;
+anything here that stops being true should break a test rather than a comparison.
+
+### Writing
+
+| | |
+|---|---|
+| a whole region written and read back | identical; 128 KiB in 0.1 ms |
+| a span written | the span arrives and the bytes either side of it are untouched |
+| the processor state written and read back | identical, byte for byte, through an opaque buffer |
+
+The processor state round-trip is the one that decided a design: handing back the
+buffer the read filled reproduces the state exactly, so M1 carries it **opaquely**
+and this project transcribes no register layout. Changing one byte of the buffer
+and reading it back returns the change, so the round-trip is not a no-op. Of the
+8 KiB buffer, 13 bytes were non-zero at the position measured — the record is
+small and mostly zero, which is why over-allocating costs nothing.
+
+### Saving and loading the opaque blob
+
+| | |
+|---|---|
+| save | 21 ms, a file of 210–280 KB |
+| load | 25–60 ms |
+| 600 frames replayed instead | **12.16 s** — the blob is about **200× faster** |
+
+Four rules came out of it, and three of them are the kind that would otherwise be
+found much later as a comparison nobody can explain.
+
+**1. Saving advances the machine, and so does loading.** Both run on to the next
+point the debugger can break at, which completes whatever instruction was in
+progress. At a frame boundary there usually is one (§3.4). So:
+
+- the position of a blob is the reading taken **after** the save, never before;
+- read that way, a load reproduces it **exactly** — the same cycle count, the
+  same program counter, three times over and in a different process;
+- and a blob of a position is therefore one break-point *ahead* of the position
+  itself. Replaying five frames landed on cycle 372 847; the blob saved there
+  reads 372 848, with identical memory. Comparing "the state at the anchor"
+  against "the state the replay reached" has to account for that, or compare
+  memory only.
+
+**2. The machine must be stopped before a blob is loaded.** Loaded while it is
+running, the load happens and execution immediately overtakes it, so every
+reading afterwards is of somewhere else. This is not a subtle failure in the
+output — it looks like the blob did not work — but nothing says so.
+
+**3. A load that fails is silent.** `LoadStateFile` returns `void`. Given a file
+of nonsense, or a path with no file at it, the machine is left exactly as it was
+and the call reports nothing. Success and failure are indistinguishable from the
+call site, which is why §4.8's cheap check — position and a digest of the
+declared regions — is not only an audit of the cache but the **only** way to know
+a load did anything. Recorded as §13's Q12.
+
+**4. Runs rooted in a blob are deterministic across processes.** A blob loaded in
+a fresh process gave the same state as in the process that made it, and the same
+bound run onward gave the same state again. `resume + 4 frames` and
+`origin + 9 frames` arrived at the same cycle with the same memory. That is §2.5
+satisfied for anything downstream of a blob — and it is what makes §4.7's anchors
+sound.
+
+**What this does not cover**: a blob belonging to *different software*. Testing
+that needs a second ROM, which is what §11.3's generated fixture will provide.
+
 ## Reproducing the measurements
 
 With a built library and software of your own:
