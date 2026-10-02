@@ -1,0 +1,10 @@
+//! awaseru — the host.
+//!
+//! It reads the configuration (§6), selects a platform backend by name (§7.1),
+//! drives a reference and reports. Nothing here names a console.
+//!
+//! See `spec.md`, which is normative.
+
+pub mod config;
+pub mod digest;
+pub mod version;

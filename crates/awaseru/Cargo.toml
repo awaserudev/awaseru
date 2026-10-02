@@ -12,6 +12,8 @@ repository.workspace = true
 [dependencies]
 awaseru-core = { path = "../awaseru-core", version = "0.0.0" }
 awaseru-snes = { path = "../awaseru-snes", version = "0.0.0" }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
 
 [lints]
 workspace = true

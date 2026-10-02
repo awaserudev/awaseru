@@ -111,3 +111,35 @@ fn the_backend_reports_a_version_and_a_build_date() {
         "the build date is a C string from the library and should be plain ASCII, got {built:?}"
     );
 }
+
+/// The version the library reports is one this crate declares support for
+/// (§16.3).
+///
+/// This is the check that makes `SUPPORTED_VERSIONS` mean something. Every
+/// measurement in this crate — the memory positions, the step kinds, the
+/// stopping places — was taken against a particular build, and the list is the
+/// record of which. A library outside the list fails here, which is the whole
+/// point: it says "nobody has run this against that build" rather than running
+/// against it and hoping.
+///
+/// **What this does not cover**: that a library *inside* the list behaves as
+/// measured. A version string is a label, not a behaviour (§16.2), and the
+/// conformance fixtures of §16.5 are what would answer that.
+#[test]
+fn the_library_is_a_version_this_crate_has_been_run_against() {
+    let path = or_skip!(backend_path(), "set AWASERU_TEST_BACKEND to a built backend library");
+    let backend = Backend::open(&path).expect("the backend opens");
+    let reported = backend.version().to_string();
+
+    assert!(
+        awaseru_snes::SUPPORTED_VERSIONS.contains(&reported.as_str()),
+        "the library reports {reported}, and this crate declares support for {:?}. Either it is \
+         the wrong build, or somebody has run awaseru against {reported} and should add it to \
+         SUPPORTED_VERSIONS — additively (§16.4)",
+        awaseru_snes::SUPPORTED_VERSIONS
+    );
+    assert!(
+        !awaseru_snes::SUPPORTED_VERSIONS.is_empty(),
+        "an empty list would make the assertion above vacuous"
+    );
+}

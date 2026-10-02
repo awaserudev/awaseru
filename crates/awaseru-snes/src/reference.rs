@@ -176,6 +176,25 @@ impl Reference {
     /// rather than chosen here, because where a tool puts files on somebody's
     /// machine is the machine-local configuration's business (§6.1).
     pub fn open(library: &Path, home: &Path, software: &Path) -> Result<Self, OpenError> {
+        Self::claim(|| Ok(Backend::open(library)?), home, software)
+    }
+
+    /// The same, from a library somebody has already opened — and, usually,
+    /// already asked what version it is (§16.1).
+    ///
+    /// This exists because the version check belongs to whoever reads the
+    /// configuration, and it must happen **before** software is loaded: a
+    /// refusal that costs a ROM load and a debugger is a refusal that arrives
+    /// late. So the host opens the library, checks it, and hands it here.
+    pub fn adopt(backend: Backend, home: &Path, software: &Path) -> Result<Self, OpenError> {
+        Self::claim(|| Ok(backend), home, software)
+    }
+
+    fn claim(
+        backend: impl FnOnce() -> Result<Backend, OpenError>,
+        home: &Path,
+        software: &Path,
+    ) -> Result<Self, OpenError> {
         if IN_USE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -183,7 +202,7 @@ impl Reference {
             return Err(OpenError::AlreadyInUse);
         }
 
-        match Self::bring_up(library, home, software) {
+        match backend().and_then(|backend| Self::bring_up(backend, home, software)) {
             Ok(reference) => Ok(reference),
             Err(e) => {
                 // The slot is only held by a reference that exists. Leaving it
@@ -195,8 +214,7 @@ impl Reference {
         }
     }
 
-    fn bring_up(library: &Path, home: &Path, software: &Path) -> Result<Self, OpenError> {
-        let backend = Backend::open(library)?;
+    fn bring_up(backend: Backend, home: &Path, software: &Path) -> Result<Self, OpenError> {
         backend.init();
         backend.initialize_headless(home)?;
         // Before the software is loaded, so that nothing it does is missed.

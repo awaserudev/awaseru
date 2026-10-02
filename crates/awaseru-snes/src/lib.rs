@@ -14,6 +14,18 @@ pub mod ffi;
 pub mod memory;
 pub mod reference;
 
+/// The versions of the backend this crate has been run against — §16.3.
+///
+/// A list, never a range. An open range is a promise about builds that do not
+/// exist yet: the next release may move something this binding transcribed by
+/// hand, and the version refusing to match is how that is caught instead of a
+/// corrupted read (see `ffi`'s header).
+///
+/// It is additive (§16.4). A version that works keeps working when another is
+/// added, because a reimplementation verified against one reference was
+/// verified against *that* reference.
+pub const SUPPORTED_VERSIONS: &[&str] = &["2.2.1"];
+
 pub use ffi::{Backend, LoadError, Version};
 pub use memory::{MAPPINGS, Mapping};
 pub use reference::{OpenError, Reference};
