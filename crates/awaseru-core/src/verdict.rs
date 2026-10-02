@@ -40,6 +40,10 @@ pub enum Undetermined {
     /// written at (§3.4), because the caller asked for that and undertook to
     /// carry this.
     SeededFromNoBoundary { position: String },
+    /// The run began from an anchor nobody has shown to be equivalent to
+    /// replaying its definition (§4.8). The blob may well be right; nothing
+    /// has established that it is.
+    AnchorNotDemonstrated { anchor: String },
 }
 
 impl std::fmt::Display for Undetermined {
@@ -78,6 +82,12 @@ impl std::fmt::Display for Undetermined {
                  comparable however equal they happen to be"
             ),
             Undetermined::StatesIncomparable { why } => write!(f, "{why}"),
+            Undetermined::AnchorNotDemonstrated { anchor } => write!(
+                f,
+                "this run began from the anchor `{anchor}`, which has never been shown to be \
+                 equivalent to replaying its definition (§4.8). Its blob may well be right, and \
+                 nothing has established that — so a comparison from it is not evidence"
+            ),
             Undetermined::SeededFromNoBoundary { position } => write!(
                 f,
                 "this run began from a state written in at {position}, which is not an \

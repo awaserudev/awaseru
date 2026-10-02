@@ -288,6 +288,11 @@ mod tests {
             self.processor = Some(processor.clone());
             Ok(())
         }
+        fn return_to_origin(&mut self) -> Result<(), RunError> {
+            self.work = vec![0; 8];
+            self.writes.push("origin".into());
+            Ok(())
+        }
         fn save_state(&mut self) -> Result<Blob, StateError> {
             Err(StateError::Backend {
                 why: "not what this fake is for".into(),

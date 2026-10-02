@@ -199,6 +199,19 @@ pub trait Platform {
     /// (`doc/backend.md`).
     fn save_state(&mut self) -> Result<Blob, StateError>;
 
+    /// Returns the reference to the reproducible position it came up at, so
+    /// that a definition can be replayed from the beginning.
+    ///
+    /// This is what makes §4.8's demonstration possible: replaying a definition
+    /// three times and comparing the results needs a beginning to replay from,
+    /// and it must be the *same* beginning every time or the comparison is of
+    /// three different things.
+    ///
+    /// A backend whose starting position is not reproducible must refuse
+    /// rather than return somewhere near it. §2.5 is the whole reason this
+    /// verb exists, and a near miss would defeat it silently.
+    fn return_to_origin(&mut self) -> Result<(), RunError>;
+
     /// Puts one back, and checks that it arrived.
     ///
     /// The check is not optional politeness. A backend may report nothing at

@@ -247,6 +247,9 @@ struct Mapped {
 /// An emulator this crate drives, as the host sees it.
 pub struct Reference {
     backend: Backend,
+    /// The software, kept so that the reference can be returned to its origin —
+    /// which on this backend means loading it again (`doc/backend.md`).
+    software: PathBuf,
     /// Where the backend may keep its own files. The opaque blob goes through
     /// one, because that is the only way this backend offers it.
     home: PathBuf,
@@ -470,6 +473,7 @@ impl Reference {
 
         Ok(Reference {
             backend,
+            software: software.to_path_buf(),
             home: home.to_path_buf(),
             mapped,
             regions,
@@ -779,6 +783,62 @@ impl Platform for Reference {
         self.backend
             .write_processor_state(processor.bytes())
             .map_err(|e| WriteError::Backend { why: e.to_string() })
+    }
+
+    fn return_to_origin(&mut self) -> Result<(), RunError> {
+        if !self.origin.at_power_on {
+            // There is no origin to return to: this reference came up wherever
+            // the backend had got to, and that place is not reachable again.
+            // §2.5 is why this refuses instead of returning somewhere near it.
+            return Err(RunError::Backend {
+                why: "this reference did not come up at the reproducible power-on, so there is \
+                      no position to return to. Open it with the default startup if a definition \
+                      has to be replayed"
+                    .to_string(),
+            });
+        }
+
+        // The same two-step as coming up: the debugger is already in a break,
+        // so loading the software again stops at cycle zero before one
+        // instruction has run.
+        let before = self.backend.breaks();
+        let accepted = self
+            .backend
+            .load_rom(&self.software)
+            .map_err(|e| RunError::Backend { why: e.to_string() })?;
+        if !accepted {
+            return Err(RunError::Backend {
+                why: "the backend would not load the software again".to_string(),
+            });
+        }
+        if !wait_for_break(&self.backend, before, self.watchdog) {
+            self.stopped = false;
+            return Err(RunError::Backend {
+                why: format!(
+                    "loading the software again did not stop at power-on within {:?}",
+                    self.watchdog
+                ),
+            });
+        }
+        self.stopped = true;
+
+        // And the same memories, so the origin is the origin and not merely
+        // the same position with different contents.
+        for name in &self.origin.memory_zeroed {
+            let Some((memory_type, _)) = ZEROED_AT_POWER_ON.iter().find(|(_, n)| n == name) else {
+                continue;
+            };
+            let size = self.backend.memory_size(*memory_type) as usize;
+            if size == 0 {
+                continue;
+            }
+            self.backend
+                .write_memory(*memory_type, &vec![0u8; size])
+                .map_err(|e| RunError::Backend { why: e.to_string() })?;
+        }
+
+        self.last_position = self.position_now();
+        Ok(())
     }
 
     fn save_state(&mut self) -> Result<Blob, StateError> {
