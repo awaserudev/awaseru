@@ -751,6 +751,11 @@ rather than by address.
 | Q6 | Whether a backend driven as a child process and one driven as a library can share one trait without the trait leaking the difference | implementing one of each |
 | Q7 | The first backend's upstream is a community fork of a project whose original author archived it (§15.4). How much of the risk the narrow C ABI absorbs is untested | a second backend, and one upstream version bump survived |
 | Q8 | Whether a pre-built binary should be able to load a backend at runtime, rather than backends being compiled in (§7.5) | someone with an emulator worth having who cannot rebuild the host |
+| Q9 | **A starting position that is reproducible.** The first backend begins executing the moment software is loaded, and the earliest stop the transcribed API can ask for lands wherever it had got to by the time the request arrived — so the position a session starts from differs from run to run. §2.5 wants the same run to stop the same way every time, and this is upstream of every comparison. | breaking before the first instruction. The backend does this when a setting of its own says to, and that setting lives in a large configuration record not yet transcribed (§16.1); alternatively, loading a saved state on arrival makes the start a known one and is §4.6's job anyway |
+| Q10 | **Cross-checking two references of the same backend.** §5.5 compares two references against each other to decide which is wrong. The first backend's emulator is a single object the library owns, reached through functions that take no handle, so two of them in one process are two front ends to one emulator — and the tool refuses the second rather than pretend. | either two *different* backends, which is what §5.5 is really for, or driving each as a child process (Q6), or loading the same library twice into separate link-map namespaces — which is possible and untested |
+
+No Q5 was ever issued; the gap is left alone so that the ids already written
+down elsewhere keep meaning what they meant.
 
 ---
 

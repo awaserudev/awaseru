@@ -11,4 +11,9 @@
 #[allow(unsafe_code)]
 pub mod ffi;
 
+pub mod memory;
+pub mod reference;
+
 pub use ffi::{Backend, LoadError, Version};
+pub use memory::{MAPPINGS, Mapping};
+pub use reference::{OpenError, Reference};

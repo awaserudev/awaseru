@@ -1,0 +1,240 @@
+//! Does this crate actually drive a reference and read it?
+//!
+//! # Why this is one test
+//!
+//! The backend's emulator is a single global object (see `reference`'s header),
+//! so only one reference can exist in a process. `cargo test` runs the tests in
+//! one binary on several threads, so a second test that opened a reference
+//! would either collide with this one or spend its time refusing. Everything
+//! that needs a running reference is therefore one test, run in order, and the
+//! checks that need no reference live in the unit tests beside the code.
+//!
+//! # What it asserts, and what it refuses to assert
+//!
+//! The software this runs is supplied by whoever runs it and is **not** part of
+//! this repository (§11.2). So nothing here says what is at any address, or what
+//! the software does. The assertions are about the plumbing:
+//!
+//! - a region exists, and holds the number of bytes the backend declares;
+//! - a read of it returns that many bytes, and they are not all zero;
+//! - a span is the part of the whole it claims to be;
+//! - a bound of *n* frames advances the frame counter by exactly *n*;
+//! - a run advances the processor's cycle count;
+//! - a frame boundary does not claim to be an instruction boundary;
+//! - the refusals refuse.
+//!
+//! Only the second of those could be said to depend on the software at all, and
+//! what it depends on is that a console with memory in it has something in its
+//! memory.
+
+use awaseru_core::{Bound, Platform, Position, Reason, ReadError};
+use awaseru_snes::{OpenError, Reference};
+use std::path::PathBuf;
+use std::time::Duration;
+
+fn from_env(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
+}
+
+#[test]
+fn the_reference_maps_regions_and_runs_bounded() {
+    // Both paths are the runner's, not the repository's: the library is built,
+    // not shipped (§1.5), and the software is the runner's own (§11.2).
+    let Some(library) = from_env("AWASERU_TEST_BACKEND") else {
+        eprintln!("SKIPPED: set AWASERU_TEST_BACKEND to a built backend library");
+        return;
+    };
+    let Some(software) = from_env("AWASERU_TEST_SOFTWARE") else {
+        eprintln!("SKIPPED: set AWASERU_TEST_SOFTWARE to something this backend can load");
+        return;
+    };
+
+    let home = std::env::temp_dir().join("awaseru-test-home");
+    std::fs::create_dir_all(&home).expect("a directory for the backend's own files");
+
+    let mut reference = match Reference::open(&library, &home, &software) {
+        Ok(r) => r,
+        Err(e) => panic!("the reference did not open: {e}"),
+    };
+    reference.set_watchdog(Duration::from_secs(30));
+
+    // ---- the backend says what it is -------------------------------------
+    let version = reference.version();
+    eprintln!("backend {} built {:?}", version.reported, version.built);
+    assert!(
+        !version.reported.is_empty(),
+        "a backend that will not say what version it is cannot be pinned (§16.1)"
+    );
+    assert!(
+        version.built.as_deref().is_some_and(|b| !b.is_empty()),
+        "and it should say when it was built"
+    );
+
+    // ---- regions are named, enumerated, and non-empty --------------------
+    let regions = reference.regions();
+    assert!(!regions.is_empty(), "a reference with no regions reads nothing");
+    eprintln!(
+        "regions: {}",
+        regions
+            .iter()
+            .map(|r| format!("{} ({} bytes)", r.name, r.size))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for region in regions.iter() {
+        assert!(
+            region.size > 0,
+            "`{}` is present with no bytes; an empty memory is absent (§3.5), not a region",
+            region.name
+        );
+        assert_eq!(region.unit, 1, "this backend hands out bytes");
+        assert!(
+            region.access.readable(),
+            "`{}` cannot be read, so nothing could be compared over it",
+            region.name
+        );
+    }
+
+    // The host addresses regions by the names it is given, so a name it was not
+    // given must not resolve.
+    assert!(
+        regions.get("work-ram").is_some(),
+        "the console's own work memory should be among them"
+    );
+    assert!(regions.get("nowhere").is_none());
+    assert_eq!(
+        reference.backend_name_for("work-ram"),
+        Some("SnesWorkRam"),
+        "the report must be checkable against the backend's own source"
+    );
+    assert_eq!(reference.backend_name_for("nowhere"), None);
+
+    // ---- a read returns what the region declares -------------------------
+    let declared = regions.get("work-ram").expect("it is there").size;
+    let bytes = reference.read("work-ram").expect("it reads");
+    assert_eq!(
+        bytes.len(),
+        declared,
+        "the read must be as long as the region says it is; a short read would compare equal \
+         over bytes nobody looked at"
+    );
+    assert!(
+        bytes.iter().any(|&b| b != 0),
+        "every byte of the console's work memory came back zero, which means the read went \
+         somewhere other than the memory"
+    );
+
+    // ---- a span is part of the whole -------------------------------------
+    let span = reference.read_span("work-ram", 0x100, 64).expect("it reads");
+    assert_eq!(
+        span,
+        bytes[0x100..0x100 + 64],
+        "a span must be the part of the region it names"
+    );
+
+    // ---- the refusals refuse ---------------------------------------------
+    let err = reference.read("nowhere").expect_err("no such region");
+    assert!(
+        matches!(err, ReadError::Absent { .. }),
+        "an unknown name is absence, which §3.5 turns into a verdict rather than an error: {err:?}"
+    );
+    let err = reference
+        .read_span("work-ram", declared - 1, 2)
+        .expect_err("one byte past the end");
+    assert!(matches!(err, ReadError::Span(_)), "got {err:?}");
+
+    // ---- a bound of nothing asks the backend nothing ---------------------
+    let before = reference.position();
+    let stop = reference.run(Bound::Frames(0)).expect("a bound of no frames");
+    assert!(stop.arrived());
+    assert_eq!(stop.position, before, "no frames means no movement");
+
+    // ---- frames: the counter advances by exactly what was asked ----------
+    let cycles_before = reference.cycles().expect("it is stopped");
+    let stop = reference.run(Bound::Frames(1)).expect("one frame");
+    assert!(stop.arrived(), "{stop}");
+    let Position::FrameBoundary { frame: first } = stop.position else {
+        panic!("a run bounded by frames should end at a frame boundary, ended at {stop}")
+    };
+    assert!(
+        !stop.position.is_instruction_boundary(),
+        "§3.4: a frame boundary is not an instruction boundary, and the position must not claim \
+         to be one"
+    );
+    assert!(
+        reference.cycles().expect("still stopped") > cycles_before,
+        "a frame's worth of running must advance the processor's cycle count"
+    );
+
+    let stop = reference.run(Bound::Frames(3)).expect("three frames");
+    assert!(stop.arrived(), "{stop}");
+    assert_eq!(
+        stop.position,
+        Position::FrameBoundary { frame: first + 3 },
+        "three frames must advance the frame counter by three — not by two, and not by however \
+         many fit in the time it took"
+    );
+
+    // How much the reference moved while it ran — printed, **not asserted**.
+    //
+    // §2.2 says every comparison must report this, because agreement over bytes
+    // the reference never touched is not evidence. But what it is at a given
+    // point is a fact about the software, and asserting it here would be
+    // asserting that (§11.2).
+    //
+    // It is worth knowing what it looks like: measured on one cartridge, four
+    // frames from power-on moved **nothing** — the software was in a loop
+    // waiting for something — and by sixty-four frames it had moved tens of
+    // thousands of bytes. A comparison made at frame four would have agreed
+    // perfectly and meant nothing, which is the whole of §2.2 in one number.
+    let after = reference.read("work-ram").expect("it reads");
+    assert_eq!(after.len(), bytes.len(), "the second read is the same length");
+    let moved = bytes.iter().zip(&after).filter(|(a, b)| a != b).count();
+    eprintln!("the reference moved {moved} of {} bytes over four frames", bytes.len());
+
+    // ---- instructions: a different kind of position ----------------------
+    let cycles_before = reference.cycles().expect("it is stopped");
+    let stop = reference.run(Bound::Instructions(1000)).expect("a thousand");
+    assert!(stop.arrived(), "{stop}");
+    assert!(
+        matches!(stop.position, Position::InstructionBoundary { .. }),
+        "a run bounded by instructions ends between instructions, ended at {stop}"
+    );
+    assert!(
+        stop.position.is_instruction_boundary(),
+        "and says so, because that is what makes it seedable (§3.4)"
+    );
+    assert!(
+        reference.cycles().expect("still stopped") > cycles_before,
+        "a thousand instructions must advance the cycle count"
+    );
+
+    // ---- what this binding will not do, it refuses ------------------------
+    let stop = reference
+        .run(Bound::Address(0x008000))
+        .expect("a bound it cannot honour is still an answer");
+    assert!(
+        matches!(stop.reason, Reason::Refused { .. }),
+        "a bound this binding cannot honour must be refused, not approximated (§2.4): {stop}"
+    );
+    assert!(
+        !stop.arrived(),
+        "and a refusal is not an arrival, so a comparison made here is not determined (§2.3)"
+    );
+
+    let stop = reference
+        .run(Bound::Instructions(u64::MAX))
+        .expect("more than the backend can count");
+    assert!(
+        matches!(stop.reason, Reason::Refused { .. }),
+        "a count the backend cannot hold must be refused rather than truncated: {stop}"
+    );
+
+    // ---- one reference per process ----------------------------------------
+    let err = Reference::open(&library, &home, &software)
+        .expect_err("the backend's emulator is one object");
+    assert!(
+        matches!(err, OpenError::AlreadyInUse),
+        "a second reference must refuse rather than share the first one's emulator: {err:?}"
+    );
+}
