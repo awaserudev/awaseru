@@ -13,11 +13,13 @@ miniature to every one of them.
 
 | crate | for | what we would do without it |
 |---|---|---|
-| `libloading` | loading the backend's shared library at a path that comes from the configuration at run time | link it at build time — but then the path stops being configurable and §6.1's split between the shared and the machine-local file collapses |
+| `libloading` 0.9.0 | loading the backend's shared library at a path that comes from the configuration at run time | link it at build time — but then the path stops being configurable and §6.1's split between the shared and the machine-local file collapses |
 | `serde` | deserializing the configuration | hand-write the parsing, which is work with no payoff |
 | `toml` | the configuration format, decided in §6 | change the format, which §6 chose for explicit structure, comments and unambiguous types |
 
-Approved 2026-10-02, for M0.
+Approved 2026-10-02, for M0. Versions are recorded as each one is actually
+taken, at its latest stable release looked up at that moment (§17.3) — never one
+remembered or copied from elsewhere.
 
 ## Not taken, and why
 

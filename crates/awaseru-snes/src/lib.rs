@@ -3,4 +3,12 @@
 //! It implements the trait in `awaseru-core` by driving an existing emulator
 //! (§15). It does not emulate anything itself (§1.3).
 //!
-//! See `spec.md`. There is no implementation yet.
+//! See `spec.md`.
+
+// §17.1 — `ffi` is the one module that crosses the foreign-function line, and
+// the only one allowed `unsafe`. Everything else in this crate is ordinary safe
+// Rust built on top of what it exposes.
+#[allow(unsafe_code)]
+pub mod ffi;
+
+pub use ffi::{Backend, LoadError, Version};

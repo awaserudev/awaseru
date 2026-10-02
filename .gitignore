@@ -5,8 +5,15 @@
 # Cargo.lock
 
 # §6.1 — the machine-local half of the configuration: where things are on *this*
-# machine. The shared half, awaseru.toml, is committed.
+# machine.
 awaseru.local.toml
+
+# And the shared half too, for this repository only. §6.1 says the shared file is
+# committed — that is true of a *user's project*. The one here is development
+# scaffolding that points at software this project may not redistribute, so it
+# stays local as well (§11.2). The committed example configuration arrives with
+# the homebrew tutorial, pointing at software that may be shipped.
+awaseru.toml
 
 # A vendored reference backend (§16.6) is committed deliberately, never by accident.
 /vendor/**/target

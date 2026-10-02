@@ -8,6 +8,11 @@ repository.workspace = true
 
 [dependencies]
 awaseru-core = { path = "../awaseru-core", version = "0.0.0" }
+libloading = "0.9.0"
 
-[lints]
-workspace = true
+# §17.1 — this crate is the one that crosses the foreign-function line, so it
+# does not inherit the workspace's `forbid` (which cannot be lifted for a single
+# module). It denies instead, and `ffi` is the one module that allows: raw
+# declarations in, a safe API out, and nothing unsafe above it.
+[lints.rust]
+unsafe_code = "deny"
