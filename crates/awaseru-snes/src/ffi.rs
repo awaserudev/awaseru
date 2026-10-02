@@ -107,6 +107,15 @@ struct Symbols {
         unsafe extern "C" fn(memory_type: u32, address: u32, data: *const u8, length: i32),
     SaveStateFile: unsafe extern "C" fn(path: *const c_char),
     LoadStateFile: unsafe extern "C" fn(path: *const c_char),
+    SetBreakpoints: unsafe extern "C" fn(breakpoints: *const Breakpoint, length: u32),
+    GetProgramCounter: unsafe extern "C" fn(cpu_type: u8, of_the_instruction: bool) -> u32,
+    GetMemoryAccessCounts: unsafe extern "C" fn(
+        offset: u32,
+        length: u32,
+        memory_type: u32,
+        counts: *mut AccessCounts,
+    ),
+    ResetMemoryAccessCounts: unsafe extern "C" fn(),
 }
 
 /// An opened backend library.
@@ -186,6 +195,10 @@ impl Backend {
             SetMemoryValues: symbol!("SetMemoryValues"),
             SaveStateFile: symbol!("SaveStateFile"),
             LoadStateFile: symbol!("LoadStateFile"),
+            SetBreakpoints: symbol!("SetBreakpoints"),
+            GetProgramCounter: symbol!("GetProgramCounter"),
+            GetMemoryAccessCounts: symbol!("GetMemoryAccessCounts"),
+            ResetMemoryAccessCounts: symbol!("ResetMemoryAccessCounts"),
         };
 
         Ok(Backend {
@@ -500,6 +513,84 @@ impl Backend {
         Ok(())
     }
 
+    /// Arms a set of breakpoints, replacing whatever was armed before.
+    ///
+    /// An empty slice disarms everything, which is what the call wants anyway:
+    /// the backend takes the whole set each time, so there is no "remove one".
+    pub fn set_breakpoints(&self, breakpoints: &[Breakpoint]) -> Result<(), LoadError> {
+        let length = u32::try_from(breakpoints.len()).map_err(|_| LoadError::Argument {
+            why: "more breakpoints than a 32-bit count can describe",
+        })?;
+        // SAFETY: a pointer into the slice, and exactly its length. The backend
+        // copies what it needs during the call — see `Debugger::SetBreakpoints`,
+        // which assigns into its own vector — so the slice need not outlive it.
+        // An empty slice's pointer is passed as null rather than dangling.
+        let pointer = if breakpoints.is_empty() {
+            std::ptr::null()
+        } else {
+            breakpoints.as_ptr()
+        };
+        unsafe { (self.symbols.SetBreakpoints)(pointer, length) }
+        Ok(())
+    }
+
+    /// Disarms every breakpoint.
+    pub fn clear_breakpoints(&self) {
+        // SAFETY: a null pointer with a length of zero, which is what the
+        // backend's own front end sends to clear them.
+        unsafe { (self.symbols.SetBreakpoints)(std::ptr::null(), 0) }
+    }
+
+    /// Where the **instruction being executed** begins.
+    ///
+    /// Different from the processor's own program counter, and the difference is
+    /// the whole point of this call existing. At a write breakpoint the
+    /// processor's counter has already moved past the store — measured at
+    /// `$8014` for a four-byte store beginning at `$8010` — and this returns
+    /// `$8010`: the instruction doing the write (`doc/backend.md`).
+    ///
+    /// That is §5.4's third item, and it is why localisation can name an
+    /// instruction rather than a cycle.
+    pub fn instruction_pc(&self) -> u32 {
+        // SAFETY: two scalars in, a scalar out.
+        unsafe { (self.symbols.GetProgramCounter)(MAIN_CPU, true) }
+    }
+
+    /// The processor's own program counter, which after a write breakpoint is
+    /// the instruction *after* the one writing.
+    pub fn next_pc(&self) -> u32 {
+        // SAFETY: as `instruction_pc`.
+        unsafe { (self.symbols.GetProgramCounter)(MAIN_CPU, false) }
+    }
+
+    /// How often, and how recently, each byte of a span was touched.
+    ///
+    /// The buffer is sized here and the backend fills it, so a caller cannot
+    /// ask for more than it has room for.
+    pub fn access_counts(&self, memory_type: u32, offset: u32, length: u32) -> Vec<AccessCounts> {
+        let mut counts = vec![AccessCounts::default(); length as usize];
+        if length > 0 {
+            // SAFETY: the buffer is exactly `length` records long, which is
+            // what the backend is told to fill.
+            unsafe {
+                (self.symbols.GetMemoryAccessCounts)(
+                    offset,
+                    length,
+                    memory_type,
+                    counts.as_mut_ptr(),
+                )
+            }
+        }
+        counts
+    }
+
+    /// Forgets every access count, so that the next measurement is of one
+    /// interval rather than of all history.
+    pub fn reset_access_counts(&self) {
+        // SAFETY: no arguments, no return.
+        unsafe { (self.symbols.ResetMemoryAccessCounts)() }
+    }
+
     /// Where the video hardware stands.
     pub fn video_snapshot(&self) -> VideoSnapshot {
         let mut buffer = StateBuffer::new();
@@ -638,6 +729,122 @@ impl StateBuffer {
     }
 }
 
+/// What a breakpoint may stop on. The backend's own flags, which combine.
+///
+/// Transcribed from two sources that agree: the enumeration in its debugger's
+/// types, and the one its front end marshals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum StopOn {
+    Read = 1,
+    Write = 2,
+    Execute = 4,
+}
+
+/// One of the backend's breakpoints.
+///
+/// # Why this one could be transcribed when a configuration record could not
+///
+/// It is **flat** — ten fields and a fixed array, no nested records — and
+/// `SetBreakpoints` takes a **pointer and a length** rather than a struct by
+/// value, so nothing here depends on guessing how a large record is passed in
+/// registers. Two sources agree on it field for field, and a test checks that
+/// this transcription is 1028 bytes with the offsets they describe: a
+/// transcription error that moved a field would change one or the other.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Breakpoint {
+    id: i32,
+    cpu_type: u8,
+    memory_type: i32,
+    stop_on: i32,
+    first_address: i32,
+    last_address: i32,
+    enabled: bool,
+    mark_event: bool,
+    ignore_dummy_operations: bool,
+    /// An expression language this project has not looked at and does not need.
+    /// Always empty, and a test keeps it that way: a condition nobody wrote
+    /// should not be a condition nobody noticed.
+    condition: [u8; Self::CONDITION_BYTES],
+}
+
+impl std::fmt::Debug for Breakpoint {
+    /// Says what it stops on and where, and not the thousand bytes of
+    /// condition it is not using.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Breakpoint(stop_on={:#x} memory={} {:#x}..={:#x}{})",
+            self.stop_on,
+            self.memory_type,
+            self.first_address,
+            self.last_address,
+            if self.enabled { "" } else { ", disarmed" }
+        )
+    }
+}
+
+impl Breakpoint {
+    const CONDITION_BYTES: usize = 1000;
+
+    /// Stops when the processor reaches `address` on its own bus.
+    ///
+    /// The bus rather than a memory, because an address is where the program
+    /// counter will be and the program counter addresses the bus.
+    pub fn execute_at(address: u32) -> Self {
+        Self::new(StopOn::Execute, PROCESSOR_BUS, address, address)
+    }
+
+    /// Stops when anything writes within a span of one memory.
+    ///
+    /// A memory rather than the bus, because a byte of work memory can be
+    /// written through more than one address and a comparison cares about the
+    /// byte.
+    pub fn write_within(memory_type: u32, first: u32, last: u32) -> Self {
+        Self::new(StopOn::Write, memory_type, first, last)
+    }
+
+    fn new(stop_on: StopOn, memory_type: u32, first: u32, last: u32) -> Self {
+        Breakpoint {
+            id: 1,
+            cpu_type: MAIN_CPU,
+            memory_type: memory_type as i32,
+            stop_on: stop_on as i32,
+            first_address: first as i32,
+            last_address: last as i32,
+            enabled: true,
+            mark_event: false,
+            // Dummy operations are the backend's name for the reads a processor
+            // makes while deciding what to do. A comparison is about writes the
+            // software meant, so they are ignored.
+            ignore_dummy_operations: true,
+            condition: [0; Self::CONDITION_BYTES],
+        }
+    }
+}
+
+/// The backend's own address space, as a memory type. Used for execution
+/// breakpoints, because a program counter addresses the bus.
+const PROCESSOR_BUS: u32 = 0;
+
+/// How often and how recently one byte was touched.
+///
+/// The stamps are in the **backend's own clock**, which is not the processor's
+/// cycle count — at processor cycle 32 a write stamp read 426
+/// (`doc/backend.md`). So a stamp compares with another stamp and with nothing
+/// else: it answers *when, relative to other accesses*, and never *where from*.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct AccessCounts {
+    pub read_stamp: u64,
+    pub write_stamp: u64,
+    pub execute_stamp: u64,
+    pub reads: u32,
+    pub writes: u32,
+    pub executions: u32,
+}
+
 /// A read of the processor's record, with the one thing a caller cannot see for
 /// itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -737,6 +944,88 @@ mod tests {
                     assert_eq!(v.to_raw(), raw, "re-packing must give the number back");
                 }
             }
+        }
+    }
+
+    /// **The test the transcription rests on.** Two sources agree that this
+    /// record is 1028 bytes with these offsets; if this transcription is not,
+    /// then one of its fields is somewhere the backend does not look, and every
+    /// breakpoint would be armed on the wrong address or the wrong kind.
+    ///
+    /// Offsets are checked by construction rather than by `offset_of`, which
+    /// would need a nightly feature: a value is built, its bytes are read, and
+    /// each field is found where it is expected.
+    #[test]
+    fn the_breakpoint_record_is_the_shape_both_sources_describe() {
+        assert_eq!(
+            std::mem::size_of::<Breakpoint>(),
+            1028,
+            "a 1028-byte record is what both sources describe: 27 bytes of fields, a thousand \
+             of condition, and one of padding to a four-byte boundary"
+        );
+        assert_eq!(std::mem::align_of::<Breakpoint>(), 4);
+
+        let b = Breakpoint::write_within(15, 0x0100, 0x0103);
+        let bytes: [u8; 1028] = unsafe { std::mem::transmute(b) };
+
+        assert_eq!(&bytes[0..4], &1i32.to_ne_bytes(), "the id is first");
+        assert_eq!(bytes[4], MAIN_CPU, "then the processor, in one byte");
+        assert_eq!(
+            &bytes[8..12],
+            &15i32.to_ne_bytes(),
+            "then the memory, after three bytes of padding"
+        );
+        assert_eq!(
+            &bytes[12..16],
+            &(StopOn::Write as i32).to_ne_bytes(),
+            "then what it stops on"
+        );
+        assert_eq!(&bytes[16..20], &0x0100i32.to_ne_bytes(), "then the first address");
+        assert_eq!(&bytes[20..24], &0x0103i32.to_ne_bytes(), "and the last");
+        assert_eq!(bytes[24], 1, "enabled");
+        assert_eq!(bytes[25], 0, "not marking an event");
+        assert_eq!(bytes[26], 1, "and ignoring the processor's own dummy reads");
+        assert!(
+            bytes[27..1027].iter().all(|&b| b == 0),
+            "the condition is empty, and a condition nobody wrote must not be one nobody noticed"
+        );
+    }
+
+    /// The two kinds differ in what they stop on and in which memory they
+    /// watch, and both of those matter. An execution breakpoint watches the
+    /// bus, because that is what a program counter addresses; a write
+    /// breakpoint watches a memory, because a byte can be written through more
+    /// than one address.
+    #[test]
+    fn the_two_kinds_of_breakpoint_watch_different_things() {
+        let execute = Breakpoint::execute_at(0x8010);
+        let write = Breakpoint::write_within(15, 0x100, 0x100);
+
+        assert_eq!(execute.stop_on, StopOn::Execute as i32);
+        assert_eq!(execute.memory_type, PROCESSOR_BUS as i32);
+        assert_eq!(execute.first_address, 0x8010);
+        assert_eq!(execute.last_address, 0x8010, "one address, not a span");
+
+        assert_eq!(write.stop_on, StopOn::Write as i32);
+        assert_eq!(write.memory_type, 15);
+        assert_ne!(
+            write.memory_type, execute.memory_type,
+            "a write watches a memory and an execution watches the bus; the same memory for \
+             both would arm one of them on the wrong thing"
+        );
+
+        // And the flags are the backend's, which combine — so they must be
+        // distinct powers of two or two kinds would be one.
+        for (a, b) in [
+            (StopOn::Read, StopOn::Write),
+            (StopOn::Write, StopOn::Execute),
+            (StopOn::Read, StopOn::Execute),
+        ] {
+            assert_eq!(
+                (a as i32) & (b as i32),
+                0,
+                "{a:?} and {b:?} overlap, so arming one would arm the other"
+            );
         }
     }
 
