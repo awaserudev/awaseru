@@ -96,6 +96,67 @@ against the original.
 So the recipe above is not a description of how the library was probably made.
 It reproduces it.
 
+### Breakpoints, and what they make possible
+
+Transcribed from two sources that agree field for field — `Breakpoint.h` and
+the interop struct its front end marshals — and `SetBreakpoints` takes a
+**pointer and a length**, not a struct by value. That is what makes it
+tractable where the configuration record was not.
+
+| offset | field | |
+|---|---|---|
+| 0 | id | 32-bit |
+| 4 | processor | one byte, then three of padding |
+| 8 | memory | 32-bit |
+| 12 | kind | 32-bit flags: read 1, write 2, execute 4, forbid 8 |
+| 16, 20 | first and last address | 32-bit each |
+| 24, 25, 26 | enabled, mark, ignore-dummy | one byte each |
+| 27 | condition | a thousand bytes of text |
+| | **total** | **1028 bytes**, aligned to four |
+
+Three things were measured with it, and all three are what M3 was planned
+around.
+
+**An execution breakpoint stops exactly at the target.** Asked for `$8010` it
+stopped at `$8010`; asked for `$8023`, at `$8023`. So a bound by address is
+available, and M0's refusal of one can go.
+
+**§4.4's budget needs no new mechanism.** Stepping *n* instructions with a
+breakpoint active stops at whichever comes first: a budget of five with a
+target twenty instructions away stopped five instructions in, and a budget of a
+million reached the target. So an address bound is a step request plus a
+breakpoint, and telling "arrived" from "ran out" is comparing the program
+counter against the address asked for. It is a count and not a clock, which is
+what §2.5 wants of it.
+
+**A write breakpoint names the instruction that is writing.** This is §5.4's
+third item, the one the specification says changes the developer's day, and it
+is exact rather than approximate:
+
+- the break happens **during** the write, before it commits: the byte still
+  holds its old value, and one further instruction step is what lands the new
+  one;
+- the processor's own program counter has already moved past the instruction —
+  `$8014`, where the store is a four-byte instruction at `$8010`;
+- and `GetProgramCounter` asked for the *instruction's* counter returns
+  **`$8010`**: the store itself.
+
+So localisation is a write breakpoint and a replay, and the replay is what
+anchors were built for.
+
+### What the access counters give, and what they do not
+
+`GetMemoryAccessCounts` fills a flat 40-byte record per address: read, write and
+execute stamps, and a counter for each. For a byte the fixture had just written
+once, the write counter was one and the stamp non-zero while its neighbours —
+not yet written — were zero.
+
+The stamp is in the backend's own clock, which is **not** the processor's cycle
+count: at processor cycle 32 the stamp read 426. So stamps are comparable with
+each other and not with anything else, which makes them a cheap way to ask
+*when* a byte was last written and no way at all to ask *where* from. For where,
+see the breakpoint above.
+
 ## Pointing awaseru at it
 
 The path goes in the machine-local half of the configuration, keyed by the
