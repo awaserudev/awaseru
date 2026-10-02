@@ -220,6 +220,30 @@ at run time rather than by a truncated read nobody notices. §16.1's version
 check would catch a version bump; that check catches a rebuild that kept the
 version and moved the struct.
 
+### What it puts in memory before the software does
+
+**Work memory at power-on is filled pseudo-randomly, and not the same way
+twice.** Two processes loading one image see different bytes everywhere the
+program has not written.
+
+This went unnoticed through all of M0 because software that initialises its own
+memory hides it — the readings agreed across processes because the software had
+overwritten everything by the time anything looked. It surfaced the moment there
+was a fixture that does *not* initialise memory, which is one reason §11.3 wants
+a fixture of our own.
+
+Two things follow:
+
+- **Nothing may be asserted about memory the software has not written.** The
+  fixture writes sentinels around its own patterns for exactly this reason, so
+  a test can check where a write landed without reading a byte the program left
+  alone.
+- **Determinism from power-on is not available here; determinism from a blob
+  is.** That is not a small distinction. §4.7's anchors stop being only a way to
+  make a run fast and become the way a run is made reproducible at all.
+
+Recorded as §13's Q13, with what it would cost to turn off.
+
 ### Saving and loading the opaque blob
 
 | | |

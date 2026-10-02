@@ -11,6 +11,7 @@
 #[allow(unsafe_code)]
 pub mod ffi;
 
+pub mod fixture;
 pub mod memory;
 pub mod reference;
 
