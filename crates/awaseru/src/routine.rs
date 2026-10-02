@@ -112,6 +112,42 @@ pub struct Measured {
 }
 
 impl Measured {
+    /// A candidate shaped exactly like this result — the same regions, the
+    /// same spans, the same provenance and position — with bytes a
+    /// reimplementation produced.
+    ///
+    /// Here rather than at each call site because §5.1's comparison refuses
+    /// two states that do not cover the same bytes (`SpansDiffer`), and a
+    /// candidate assembled by hand is the easiest way to produce that refusal
+    /// and read it as a result. The bytes are given in the order the routine's
+    /// `writes` named them, which is the order the result carries them in.
+    pub fn candidate(&self, produced: &[Vec<u8>]) -> Result<Snapshot, CandidateError> {
+        let captured: Vec<_> = self.result.captures().collect();
+        if captured.len() != produced.len() {
+            return Err(CandidateError::CountDiffers {
+                captured: captured.len(),
+                given: produced.len(),
+            });
+        }
+
+        let mut builder =
+            Snapshot::builder(self.result.provenance().clone(), self.result.position().clone());
+        for (capture, bytes) in captured.iter().zip(produced) {
+            if capture.len() != bytes.len() {
+                return Err(CandidateError::LengthDiffers {
+                    region: capture.region.name.clone(),
+                    offset: capture.offset,
+                    captured: capture.len(),
+                    given: bytes.len(),
+                });
+            }
+            builder = builder
+                .span(capture.region.clone(), capture.offset, bytes.clone())
+                .expect("a span the reference itself captured is a span of its region");
+        }
+        Ok(builder.build())
+    }
+
     /// What makes a verdict from this measurement not evidence, if anything.
     ///
     /// Only the arrival's caveat for now: a routine measured from an anchor
@@ -121,6 +157,46 @@ impl Measured {
         self.arrival.as_ref().and_then(|a| a.caveat.as_ref())
     }
 }
+
+/// Why a candidate could not be shaped like a measurement's result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateError {
+    /// A different number of spans than the measurement captured.
+    CountDiffers { captured: usize, given: usize },
+    /// One span's bytes are not as many as the reference produced there.
+    LengthDiffers {
+        region: String,
+        offset: usize,
+        captured: usize,
+        given: usize,
+    },
+}
+
+impl std::fmt::Display for CandidateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CandidateError::CountDiffers { captured, given } => write!(
+                f,
+                "the measurement captured {captured} span(s) and {given} were given for the \
+                 candidate. A candidate shaped differently from the result would be compared \
+                 span by span against the wrong spans"
+            ),
+            CandidateError::LengthDiffers {
+                region,
+                offset,
+                captured,
+                given,
+            } => write!(
+                f,
+                "the reference produced {captured} bytes at `{region}`+{offset} and {given} were \
+                 given for the candidate. Padded or truncated, the comparison would be over bytes \
+                 nobody produced"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CandidateError {}
 
 /// Why a routine could not be measured.
 #[derive(Debug)]
@@ -204,6 +280,29 @@ impl From<CaptureError> for Error {
     fn from(e: CaptureError) -> Self {
         Error::Capture(e)
     }
+}
+
+/// Puts the reference back where a replay of this routine must start from.
+///
+/// An anchor gets itself there (`Arriver::arrive` resumes or replays), so this
+/// is about the other case: a routine named without one is reached from the
+/// reference's own origin, and after one measurement the machine is standing at
+/// that routine's **return** — past the entry. Running to the entry from there
+/// arrives nowhere and spends the whole budget proving it, which is what the
+/// first localisation did before this existed.
+///
+/// Here rather than in `measure`, which is documented to run from wherever the
+/// reference already is: §5.4's localisation and §5.3's control are the two
+/// things that measure the *same* routine more than once, and they are the ones
+/// that must rewind.
+pub(crate) fn rewind_if_unanchored(
+    arriver: &mut Arriver<'_>,
+    routine: &Routine,
+) -> Result<(), Error> {
+    if routine.from.is_none() {
+        arriver.return_to_origin()?;
+    }
+    Ok(())
 }
 
 /// Arrive, reach the entry, seed — the first three of §5.6's steps.

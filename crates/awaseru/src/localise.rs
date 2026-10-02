@@ -177,9 +177,7 @@ pub fn localise(
     // not optional — the machine is standing at the routine's *return* when
     // this is called, which is past the entry, so running to the entry from
     // there arrives nowhere and spends the whole budget doing it.
-    if routine.from.is_none() {
-        arriver.return_to_origin()?;
-    }
+    routine::rewind_if_unanchored(arriver, routine)?;
     routine::enter_and_seed(arriver, routine, given)?;
 
     // Every write hit costs the routine at least one instruction, so a routine
