@@ -244,6 +244,54 @@ Two things follow:
 
 Recorded as §13's Q13, with what it would cost to turn off.
 
+### A power-on position that is reproducible
+
+There is one, and it is reached by loading the software **twice**:
+
+1. load it, bring up the debugger, and step once so the debugger is in a break;
+2. load the same file again.
+
+The second load stops by itself at **cycle 0, at the reset vector, before one
+instruction has run**. Measured on two different pieces of software and in
+three separate processes: the cycle count, the program counter, the frame, the
+line and the dot are identical every time.
+
+Why it works, from the backend's own source: on loading, it breaks for one
+instruction when the debugger both exists *and* was paused — and after the
+first load and a step, both are true. The first load exists only to create
+those conditions.
+
+This is the root every anchor hangs from (§4.7), and it is what answers §13's
+Q9.
+
+### What is still random there, and what it takes to stop being
+
+At that position the memories are filled pseudo-randomly, and the fill differs
+between processes. Seven of the memory types the backend exposes can be written
+and are not read-only, and **writing zeros to all seven at cycle 0 makes two
+processes — and three — agree on everything afterwards**:
+
+| | |
+|---|---|
+| zeroed | work memory, battery memory, video memory, the sprite table, the palette, the sound processor's memory, the sound processor's registers |
+| after sixty frames, across three processes | every memory agrees; so do the processor record, the video record, the cycle count and the position |
+
+Two details worth having:
+
+- **Without zeroing, the timing was already deterministic.** The cycle count,
+  the position, the processor record and the video record agreed across
+  processes even with a random fill; only memory *contents* differed. So the
+  non-determinism was the initial fill and nothing else — which is why zeroing
+  is enough rather than merely helpful.
+- **The sound processor's registers do zero.** Writing zeros to them leaves
+  them zero, which was checked rather than assumed: the digest afterwards is
+  the digest of 128 zero bytes.
+
+This answers §13's Q13 — at a price. A real console has rubbish in its memory
+at power-on, and software that reads it behaves differently. The divergence is
+deliberate, it is declared in the shared configuration, it can be turned off,
+and every report says which it was.
+
 ### Saving and loading the opaque blob
 
 | | |
