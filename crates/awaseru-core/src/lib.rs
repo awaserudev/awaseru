@@ -16,9 +16,13 @@
 pub mod platform;
 pub mod region;
 pub mod run;
+pub mod snapshot;
 pub mod verdict;
 
 pub use platform::{BackendVersion, Platform, ReadError, RunError, check_read};
 pub use region::{Access, Region, Regions, SpanError};
 pub use run::{Bound, Position, Reason, Stop};
+pub use snapshot::{
+    BuildError, Captured, NotComparable, Processor, Provenance, Snapshot,
+};
 pub use verdict::{Difference, Undetermined, Verdict, fold};
