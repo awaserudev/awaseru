@@ -21,7 +21,7 @@ was taken against.
 | `libloading` 0.9.0 | loading the backend's shared library at a path that comes from the configuration at run time | link it at build time — but then the path stops being configurable and §6.1's split between the shared and the machine-local file collapses |
 | `serde` 1.0.229 | deserializing the configuration | hand-write the parsing, which is work with no payoff |
 | `toml` 1.1.6 | the configuration format, decided in §6 | change the format, which §6 chose for explicit structure, comments and unambiguous types |
-| `sha2` 0.11.0 | the hash §6.6 identifies software by | write it out — which this project did, and `Not taken` below records why that was the wrong call |
+| `sha2` 0.11.0 | the hash §6.6 identifies software by, and §4.11's anchor key and §4.8's coverage digests | write it out — which this project did, and `Not taken` below records why that was the wrong call |
 
 Approved 2026-10-02, for M0. Versions are recorded as each one is actually
 taken, at its latest stable release looked up at that moment (§17.3) — never one

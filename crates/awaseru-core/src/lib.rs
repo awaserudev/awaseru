@@ -13,6 +13,7 @@
 //!
 //! See `spec.md`, which is normative.
 
+pub mod anchor;
 pub mod blob;
 pub mod capture;
 pub mod compare;
@@ -22,6 +23,7 @@ pub mod run;
 pub mod snapshot;
 pub mod verdict;
 
+pub use anchor::{Anchor, AnchorError, Anchors, CheapCheck, Coverage, Definition, Key, Start};
 pub use blob::{Blob, StateError};
 pub use capture::{CaptureError, SeedError, capture, seed, seed_from_any_position};
 pub use compare::{Comparison, compare, compare_processor, compare_regions};
