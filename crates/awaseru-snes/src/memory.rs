@@ -110,6 +110,30 @@ pub const MAPPINGS: &[Mapping] = &[
     },
 ];
 
+/// Every memory this backend exposes that can be written and is not read-only,
+/// with a name for a report to use.
+///
+/// **This set is larger than `MAPPINGS`, and that is the point.** Two of these
+/// are not modelled as regions at all — the sound processor's memory and its
+/// registers — because nothing compares them yet. But determinism does not care
+/// what this project models: leaving either of them random leaves a run that
+/// does not repeat, and the sound processor's registers were the **last** thing
+/// still differing between processes when the other six had been zeroed
+/// (`doc/backend.md`).
+///
+/// So the two lists are kept apart on purpose. One is "what a comparison can be
+/// about"; this one is "what has to be settled for a comparison to mean
+/// anything".
+pub const ZEROED_AT_POWER_ON: &[(u32, &str)] = &[
+    (15, "work-ram"),
+    (16, "save-ram"),
+    (17, "video-ram"),
+    (18, "sprite-ram"),
+    (19, "palette-ram"),
+    (21, "sound-ram"),
+    (23, "sound-registers"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +185,48 @@ mod tests {
                     "the region name `{name}` carries `{forbidden}`, which names a platform"
                 );
             }
+        }
+    }
+
+    /// Everything this crate models as a writable region is in the set that
+    /// gets zeroed. A region modelled and left random would be a region whose
+    /// comparisons do not repeat.
+    #[test]
+    fn every_writable_mapping_is_also_zeroed_at_power_on() {
+        for mapping in MAPPINGS.iter().filter(|m| m.access.writable()) {
+            assert!(
+                ZEROED_AT_POWER_ON
+                    .iter()
+                    .any(|(t, _)| *t == mapping.memory_type),
+                "`{}` is writable and not in the set zeroed at power-on, so a run over it \
+                 would not repeat",
+                mapping.region
+            );
+        }
+    }
+
+    /// And the set is larger than the mappings, which is deliberate: the two
+    /// memories nothing models yet still have to be settled. A test, because
+    /// somebody tidying the two lists into one would break determinism and
+    /// nothing else would notice.
+    #[test]
+    fn the_zeroed_set_reaches_memories_nothing_models() {
+        let unmodelled: Vec<&str> = ZEROED_AT_POWER_ON
+            .iter()
+            .filter(|(t, _)| !MAPPINGS.iter().any(|m| m.memory_type == *t))
+            .map(|(_, name)| *name)
+            .collect();
+        assert_eq!(
+            unmodelled,
+            ["sound-ram", "sound-registers"],
+            "the sound processor's memory and registers are not regions and must still be \
+             zeroed; the second was the last thing differing between processes"
+        );
+        for (_, name) in ZEROED_AT_POWER_ON {
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "`{name}` should be lower-case words joined by hyphens"
+            );
         }
     }
 

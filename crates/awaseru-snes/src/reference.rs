@@ -54,7 +54,7 @@ use awaseru_core::{
 use awaseru_core::snapshot::Processor;
 
 use crate::ffi::{Backend, LoadError, PROCESSOR_STATE_BYTES, StepKind};
-use crate::memory::MAPPINGS;
+use crate::memory::{MAPPINGS, ZEROED_AT_POWER_ON};
 
 /// Taken for as long as a reference exists, because the backend's emulator is
 /// one global object (see this module's header).
@@ -88,6 +88,9 @@ pub enum OpenError {
     /// The backend never reported a break, so there is no position to start
     /// from and no way to know what state a read would be reading.
     NeverStopped { waited: Duration },
+    /// The second load did not stop by itself, so the reproducible power-on
+    /// this depends on is not there any more.
+    NoReproduciblePowerOn { waited: Duration },
     /// The backend came up but exposes none of the memories this crate maps.
     NoRegions,
 }
@@ -114,6 +117,15 @@ impl std::fmt::Display for OpenError {
                 "the backend never reported stopping, after {waited:?} — nothing can be read from \
                  it, because there is no telling what it is in the middle of"
             ),
+            OpenError::NoReproduciblePowerOn { waited } => write!(
+                f,
+                "loading the software a second time did not stop at power-on within {waited:?}. \
+                 That stop is what makes a run reproducible, and it happens because this backend \
+                 breaks for one instruction on loading when its debugger exists and was paused. \
+                 One of those has stopped being true, so there is no reproducible position to \
+                 start from — and starting somewhere else while reporting otherwise is worse \
+                 than stopping"
+            ),
             OpenError::NoRegions => write!(
                 f,
                 "the backend reports a size of zero for every memory this crate maps, so there is \
@@ -128,6 +140,100 @@ impl std::error::Error for OpenError {}
 impl From<LoadError> for OpenError {
     fn from(e: LoadError) -> Self {
         OpenError::Load(e)
+    }
+}
+
+/// How a reference should come up.
+///
+/// The defaults are the reproducible ones, and that is a position rather than a
+/// convenience: a reference that does not start the same way twice cannot be
+/// the ground for anything (§2.5), and §4.7's anchors hang from a position that
+/// repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Startup {
+    /// Come up at the reproducible power-on — cycle zero, at the reset vector,
+    /// before one instruction (`doc/backend.md`) — rather than wherever the
+    /// backend had got to by the time it could be stopped.
+    ///
+    /// `false` is the state M0 and M1 worked in, and it is **not**
+    /// reproducible: where the first stop lands depends on how long the backend
+    /// ran before the request arrived.
+    pub at_power_on: bool,
+    /// Write zeros over every writable memory at that position
+    /// (`ZEROED_AT_POWER_ON`).
+    ///
+    /// Without this, the memories are filled pseudo-randomly and differently in
+    /// every process, so nothing downstream repeats. With it, three processes
+    /// agree on everything — measured.
+    ///
+    /// It is a **divergence from the hardware**: a real console has rubbish in
+    /// its memory at power-on, and software that reads it behaves differently.
+    /// That is why it is a declared option that reports itself rather than
+    /// something done quietly.
+    pub zero_memory: bool,
+}
+
+impl Default for Startup {
+    fn default() -> Self {
+        Startup {
+            at_power_on: true,
+            zero_memory: true,
+        }
+    }
+}
+
+impl Startup {
+    /// As M0 and M1 had it: wherever the backend was when it could first be
+    /// stopped, with whatever the power-on fill left. Kept so that the
+    /// difference can be demonstrated rather than asserted.
+    pub fn as_found() -> Self {
+        Startup {
+            at_power_on: false,
+            zero_memory: false,
+        }
+    }
+}
+
+/// What a reference actually did on the way up — §4.12.
+///
+/// Carried so that a report can say it. A run whose memory was left random, or
+/// which began somewhere unreproducible, is a run whose result means less, and
+/// the result should say so next to itself rather than in a footnote somebody
+/// has to find.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    pub at_power_on: bool,
+    /// The memories that were zeroed, by the names `ZEROED_AT_POWER_ON` gives
+    /// them. Empty when none were.
+    pub memory_zeroed: Vec<&'static str>,
+}
+
+impl std::fmt::Display for Origin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.at_power_on, self.memory_zeroed.is_empty()) {
+            (true, false) => write!(
+                f,
+                "from power-on with {} memories zeroed — reproducible, and not what the \
+                 hardware does",
+                self.memory_zeroed.len()
+            ),
+            (true, true) => write!(
+                f,
+                "from power-on with memory left as the backend filled it — NOT reproducible \
+                 between processes"
+            ),
+            (false, false) => write!(
+                f,
+                "from wherever the backend had got to, with {} memories zeroed — the position \
+                 is NOT reproducible",
+                self.memory_zeroed.len()
+            ),
+            (false, true) => write!(
+                f,
+                "from wherever the backend had got to, with memory left as it was — NOTHING \
+                 here is reproducible"
+            ),
+        }
     }
 }
 
@@ -157,17 +263,20 @@ pub struct Reference {
     /// rather than inventing one.
     last_position: Position,
     watchdog: Duration,
+    /// What it did on the way up, for a report to say (§4.12).
+    origin: Origin,
 }
 
 impl std::fmt::Debug for Reference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Reference({:?}, {} region(s), stopped: {}, at {})",
+            "Reference({:?}, {} region(s), stopped: {}, at {}, {})",
             self.backend,
             self.regions.len(),
             self.stopped,
-            self.last_position
+            self.last_position,
+            self.origin
         )
     }
 }
@@ -180,7 +289,17 @@ impl Reference {
     /// rather than chosen here, because where a tool puts files on somebody's
     /// machine is the machine-local configuration's business (§6.1).
     pub fn open(library: &Path, home: &Path, software: &Path) -> Result<Self, OpenError> {
-        Self::claim(|| Ok(Backend::open(library)?), home, software)
+        Self::open_with(library, home, software, Startup::default())
+    }
+
+    /// The same, saying how it should come up.
+    pub fn open_with(
+        library: &Path,
+        home: &Path,
+        software: &Path,
+        startup: Startup,
+    ) -> Result<Self, OpenError> {
+        Self::claim(|| Ok(Backend::open(library)?), home, software, startup)
     }
 
     /// The same, from a library somebody has already opened — and, usually,
@@ -191,13 +310,24 @@ impl Reference {
     /// refusal that costs a ROM load and a debugger is a refusal that arrives
     /// late. So the host opens the library, checks it, and hands it here.
     pub fn adopt(backend: Backend, home: &Path, software: &Path) -> Result<Self, OpenError> {
-        Self::claim(|| Ok(backend), home, software)
+        Self::adopt_with(backend, home, software, Startup::default())
+    }
+
+    /// The same, saying how it should come up.
+    pub fn adopt_with(
+        backend: Backend,
+        home: &Path,
+        software: &Path,
+        startup: Startup,
+    ) -> Result<Self, OpenError> {
+        Self::claim(|| Ok(backend), home, software, startup)
     }
 
     fn claim(
         backend: impl FnOnce() -> Result<Backend, OpenError>,
         home: &Path,
         software: &Path,
+        startup: Startup,
     ) -> Result<Self, OpenError> {
         if IN_USE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -206,7 +336,7 @@ impl Reference {
             return Err(OpenError::AlreadyInUse);
         }
 
-        match backend().and_then(|backend| Self::bring_up(backend, home, software)) {
+        match backend().and_then(|backend| Self::bring_up(backend, home, software, startup)) {
             Ok(reference) => Ok(reference),
             Err(e) => {
                 // The slot is only held by a reference that exists. Leaving it
@@ -218,7 +348,12 @@ impl Reference {
         }
     }
 
-    fn bring_up(backend: Backend, home: &Path, software: &Path) -> Result<Self, OpenError> {
+    fn bring_up(
+        backend: Backend,
+        home: &Path,
+        software: &Path,
+        startup: Startup,
+    ) -> Result<Self, OpenError> {
         backend.init();
         backend.initialize_headless(home)?;
         // Before the software is loaded, so that nothing it does is missed.
@@ -234,18 +369,38 @@ impl Reference {
         }
 
         // The backend runs freely from the moment the software loads, so the
-        // first thing to do is stop it. One instruction is the shortest
-        // request that has a defined stopping place.
+        // first thing to do is stop it. One instruction is the shortest request
+        // that has a defined stopping place.
         //
-        // **Where that stop lands is not reproducible**, and it is not pretended
-        // to be: the backend had already been running for an unmeasured time
-        // when the request arrived. §13 carries what it would take to start from
-        // a position that *is* reproducible.
+        // Where *this* stop lands is not reproducible — the backend had been
+        // running for an unmeasured time when the request arrived. It is only
+        // the first of two steps when `at_power_on` is set, and the whole of it
+        // otherwise.
         let watchdog = DEFAULT_WATCHDOG;
         let before = backend.breaks();
         backend.step(1, StepKind::Instruction);
         if !wait_for_break(&backend, before, watchdog) {
             return Err(OpenError::NeverStopped { waited: watchdog });
+        }
+
+        if startup.at_power_on {
+            // **Loading the software again** lands at cycle zero, at the reset
+            // vector, before one instruction has run — and does so identically
+            // in every process (`doc/backend.md`). It works because the backend
+            // breaks for one instruction on loading when its debugger both
+            // exists and was paused, and after the step above both are true.
+            // The first load exists only to make them true.
+            let before = backend.breaks();
+            if !backend.load_rom(software)? {
+                return Err(OpenError::SoftwareRefused);
+            }
+            if !wait_for_break(&backend, before, watchdog) {
+                // The second load did not stop by itself, which means the
+                // conditions this depends on have changed. Refusing is the
+                // honest answer: carrying on would leave the reference
+                // somewhere unreproducible while the report said otherwise.
+                return Err(OpenError::NoReproduciblePowerOn { waited: watchdog });
+            }
         }
 
         let mapped: Vec<Mapped> = MAPPINGS
@@ -279,8 +434,38 @@ impl Reference {
         }
 
         let regions = Regions::new(mapped.iter().map(|m| m.region.clone()).collect());
-        let last_position = Position::InstructionBoundary {
-            pc: u64::from(backend.cpu_snapshot().pc),
+
+        // Zeroing does not move the machine — measured: the position and both
+        // state records are identical before and after — so it happens here,
+        // after the position is settled and before anything is read.
+        let mut memory_zeroed = Vec::new();
+        if startup.zero_memory {
+            for (memory_type, name) in ZEROED_AT_POWER_ON {
+                let size = backend.memory_size(*memory_type) as usize;
+                if size == 0 {
+                    // Absent for this software — a cartridge without battery
+                    // memory is the ordinary case. Nothing to settle.
+                    continue;
+                }
+                backend
+                    .write_memory(*memory_type, &vec![0u8; size])
+                    .map_err(OpenError::Load)?;
+                memory_zeroed.push(*name);
+            }
+        }
+
+        let last_position = if startup.at_power_on {
+            // Not called an instruction boundary even though nothing has
+            // executed: the backend reports a dot part way along the first
+            // line, so this is a position it can name and not one this crate
+            // will classify (§2.4).
+            Position::Unclassified {
+                pc: u64::from(backend.cpu_snapshot().pc),
+            }
+        } else {
+            Position::InstructionBoundary {
+                pc: u64::from(backend.cpu_snapshot().pc),
+            }
         };
 
         Ok(Reference {
@@ -291,7 +476,16 @@ impl Reference {
             stopped: true,
             last_position,
             watchdog,
+            origin: Origin {
+                at_power_on: startup.at_power_on,
+                memory_zeroed,
+            },
         })
+    }
+
+    /// What this reference did on the way up — §4.12. A report says it.
+    pub fn origin(&self) -> &Origin {
+        &self.origin
     }
 
     /// How long a run waits for the backend to break before reporting that it
@@ -741,6 +935,70 @@ mod tests {
             OpenError::NoRegions.to_string(),
             "a backend without a debugger and a backend without memories are different problems"
         );
+    }
+
+    /// Each of the four ways a reference can come up says something different,
+    /// and the three that are not reproducible say so.
+    ///
+    /// §4.12 wants a run to report how it arrived. A report that read the same
+    /// whether or not the memory was settled would be worse than none, because
+    /// somebody would trust it.
+    #[test]
+    fn every_way_of_coming_up_reports_itself_and_the_weak_ones_admit_it() {
+        let origin = |at_power_on, zeroed: &[&'static str]| Origin {
+            at_power_on,
+            memory_zeroed: zeroed.to_vec(),
+        };
+        let good = origin(true, &["work-ram"]).to_string();
+        let no_zero = origin(true, &[]).to_string();
+        let no_power_on = origin(false, &["work-ram"]).to_string();
+        let neither = origin(false, &[]).to_string();
+
+        assert!(good.contains("reproducible"), "said: {good}");
+        assert!(
+            good.contains("not what the hardware does"),
+            "the good case must still admit the divergence, said: {good}"
+        );
+
+        for (what, said) in [
+            ("memory left random", &no_zero),
+            ("position not reproducible", &no_power_on),
+            ("neither", &neither),
+        ] {
+            assert!(
+                said.contains("NOT") || said.contains("NOTHING"),
+                "the `{what}` case must say plainly that it is not reproducible, said: {said}"
+            );
+        }
+
+        let all = [&good, &no_zero, &no_power_on, &neither];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "the four cases must not read alike");
+            }
+        }
+    }
+
+    /// The defaults are the reproducible ones. A default that was convenient
+    /// rather than reproducible would make every careless caller's results
+    /// quietly worth less.
+    #[test]
+    fn the_default_startup_is_the_reproducible_one() {
+        assert_eq!(
+            Startup::default(),
+            Startup {
+                at_power_on: true,
+                zero_memory: true
+            }
+        );
+        assert_eq!(
+            Startup::as_found(),
+            Startup {
+                at_power_on: false,
+                zero_memory: false
+            }
+        );
+        assert_ne!(Startup::default(), Startup::as_found());
     }
 
     /// The access the mapping declares is the access the region gets. A region

@@ -122,10 +122,22 @@ fn the_reference_maps_regions_and_runs_bounded() {
         "the read must be as long as the region says it is; a short read would compare equal \
          over bytes nobody looked at"
     );
+    // At power-on with memory zeroed — which is how a reference comes up by
+    // default now — the work memory is **exactly** zero, and that is an
+    // assertion rather than an inconvenience: it says the zeroing happened.
+    //
+    // This check used to be the reverse, "not all zero", standing in for "the
+    // read reached the memory". It failed the moment zeroing became the
+    // default, correctly. Its job is now done by the pair: zero here, and not
+    // zero once the software has run, a few lines below.
     assert!(
-        bytes.iter().any(|&b| b != 0),
-        "every byte of the console's work memory came back zero, which means the read went \
-         somewhere other than the memory"
+        !reference.origin().memory_zeroed.is_empty(),
+        "this reference should have come up with memory zeroed"
+    );
+    assert!(
+        bytes.iter().all(|&b| b == 0),
+        "work memory at a zeroed power-on must be zero; {} bytes are not",
+        bytes.iter().filter(|&&b| b != 0).count()
     );
 
     // ---- a span is part of the whole -------------------------------------
@@ -168,6 +180,18 @@ fn the_reference_maps_regions_and_runs_bounded() {
     assert!(
         reference.cycles().expect("still stopped") > cycles_before,
         "a frame's worth of running must advance the processor's cycle count"
+    );
+
+    // The other half of the pair above: the software has now run, so the
+    // memory is no longer the zeros we put there. A read that returned
+    // something stale, or went nowhere, could not produce both halves.
+    assert!(
+        reference
+            .read("work-ram")
+            .expect("it reads")
+            .iter()
+            .any(|&b| b != 0),
+        "after a frame of running, work memory should no longer be the zeros it started as"
     );
 
     let stop = reference.run(Bound::Frames(3)).expect("three frames");

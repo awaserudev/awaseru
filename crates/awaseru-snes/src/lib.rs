@@ -29,4 +29,4 @@ pub const SUPPORTED_VERSIONS: &[&str] = &["2.2.1"];
 
 pub use ffi::{Backend, LoadError, Version};
 pub use memory::{MAPPINGS, Mapping};
-pub use reference::{OpenError, Reference};
+pub use reference::{OpenError, Origin, Reference, Startup};
