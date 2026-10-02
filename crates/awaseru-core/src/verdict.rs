@@ -42,6 +42,15 @@ pub enum Undetermined {
     /// written at (§3.4), because the caller asked for that and undertook to
     /// carry this.
     SeededFromNoBoundary { position: String },
+    /// The same measurement, made twice the same way, gave two different
+    /// verdicts — §2.5.
+    ///
+    /// Not a difference between the reference and a candidate: a difference
+    /// between the reference and *itself*. Whichever of the two is right, a
+    /// report cannot say which, and the comparison is not repeatable so none
+    /// of it is evidence. The usual causes are a seed that does not cover
+    /// everything the routine reads and a beginning that does not repeat.
+    NotRepeatable { first: String, second: String },
     /// The run began from an anchor nobody has shown to be equivalent to
     /// replaying its definition (§4.8). The blob may well be right; nothing
     /// has established that it is.
@@ -84,6 +93,13 @@ impl std::fmt::Display for Undetermined {
                  comparable however equal they happen to be"
             ),
             Undetermined::StatesIncomparable { why } => write!(f, "{why}"),
+            Undetermined::NotRepeatable { first, second } => write!(
+                f,
+                "the same measurement made twice gave `{first}` and then `{second}`, so the \
+                 reference disagrees with itself here and neither reading is evidence (§2.5). \
+                 A seed that does not cover everything the routine reads, or a beginning that \
+                 does not repeat, are the two things that do this"
+            ),
             Undetermined::AnchorNotDemonstrated { anchor } => write!(
                 f,
                 "this run began from the anchor `{anchor}`, which has never been shown to be \

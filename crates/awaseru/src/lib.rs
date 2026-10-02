@@ -8,6 +8,7 @@
 pub mod arrive;
 pub mod cache;
 pub mod config;
+pub mod differ;
 pub mod digest;
 pub mod localise;
 pub mod perturb;

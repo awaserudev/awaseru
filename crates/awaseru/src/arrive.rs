@@ -361,6 +361,14 @@ impl<'a> Arriver<'a> {
         Ok(())
     }
 
+    /// How the reference came up — §4.12.
+    ///
+    /// Every report says this next to its verdict, so every report needs to be
+    /// able to ask for it.
+    pub fn beginning(&self) -> awaseru_core::Beginning {
+        self.platform.beginning()
+    }
+
     /// What the reference declares it can do — §7.3.
     ///
     /// Here for the same reason as the rest: whoever holds an `Arriver` cannot
