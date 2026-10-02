@@ -9,6 +9,11 @@ The point is not purity. It is that a dependency is a piece of the tool someone
 else maintains, and §16.7's argument about the reference emulator applies in
 miniature to every one of them.
 
+The reference emulator itself is the one dependency not listed here, because it
+is not a crate and is not shipped. [`backend.md`](backend.md) is its record:
+where it comes from, how it is built, and the commit every measurement so far
+was taken against.
+
 ## Approved
 
 | crate | for | what we would do without it |

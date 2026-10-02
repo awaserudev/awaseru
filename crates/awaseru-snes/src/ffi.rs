@@ -182,9 +182,14 @@ impl Backend {
     ///
     /// The packing — major, minor and revision in the three low bytes of a
     /// 32-bit word — was read off a built library rather than from any
-    /// document. Whether this interpretation is the right one is not settled
-    /// here; §16.1's check, where the configuration declares a version and a
-    /// mismatch refuses, is what settles it.
+    /// document, and the backend's own source was afterwards found to agree
+    /// exactly. `doc/backend.md` quotes it, along with the one fidelity note:
+    /// the major is declared wider there than it is read here, which parts
+    /// company only above major 255.
+    ///
+    /// What this number does **not** do on this backend is identify a build —
+    /// it is a constant in a source file, not derived from one — which is
+    /// §13's Q11 and the reason `doc/backend.md` leads with a commit hash.
     pub fn version(&self) -> Version {
         // SAFETY: no arguments, returns a scalar.
         let raw = unsafe { (self.symbols.GetMesenVersion)() };
