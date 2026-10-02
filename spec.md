@@ -867,6 +867,17 @@ Regions enumerated by name (§3.1). Snapshots with processor state and position
 *Done when*: a snapshot round-trips — read, seed, read again, identical bytes —
 and a comparison over an unexposed region reports *not determined*.
 
+*How it was met*: both, twice — against the generated fixture of §11.3, where
+the assertions are about content because the content is this project's, and
+against software supplied through the machine-local configuration, where they
+are about plumbing (§11.2). The round trip disturbs the machine between the two
+reads, because read-seed-read passes with a seed that does nothing.
+
+What M1 also established, and did not set out to: **determinism from power-on is
+not available on the first backend** (§13's Q13), so §4.7's anchors are not an
+optimisation but the mechanism by which a run becomes reproducible. M2 inherits
+that.
+
 ### M2 — The execution primitive
 
 Seed, bounded run, read (§4). Stop reasons. Anchors and their cache
@@ -935,7 +946,7 @@ rather than by address.
 | id | what is open | what would settle it |
 |---|---|---|
 | Q1 | Snapshots by value or by handle across the API (§3.6) | the first real client and the measured cost of a routine-level cycle |
-| Q2 | The platform trait's exact signatures (§7.6) | the second platform, with a real backend |
+| Q2 | The platform trait's exact signatures (§7.6) | the second platform, with a real backend. **Narrowed by M1**: the processor state is carried opaquely and that works — the first backend's record is exactly 32 bytes, measured, and writing back what was read reproduces the state. So the question is no longer whether an opaque record is enough to *seed* with; it is enough. What it is not enough for is §5.4's localisation, which has to name the register that differs, and that is the thing which will force a shape. Opaque also makes a processor-state comparison nearly useless on its own, since the record begins with a cycle count: `compare` deliberately leaves it out and says why |
 | Q3 | Protocol versioning and capability negotiation (§8.6) | the first client written by someone who did not write the tool |
 | Q4 | Licence for the tool and for mapping data (§11.4) | the intent to publish, with the dependency set known |
 | Q6 | Whether a backend driven as a child process and one driven as a library can share one trait without the trait leaking the difference | implementing one of each |

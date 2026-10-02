@@ -17,7 +17,8 @@
 
 use crate::platform::{Platform, ReadError, WriteError};
 use crate::run::Position;
-use crate::snapshot::{Provenance, Snapshot, BuildError};
+use crate::snapshot::{BuildError, Provenance, Snapshot};
+use crate::verdict::Undetermined;
 
 /// Why a snapshot could not be taken.
 #[derive(Debug)]
@@ -154,6 +155,47 @@ pub fn seed(platform: &mut dyn Platform, snapshot: &Snapshot) -> Result<(), Seed
     // Last, because it is what makes the machine start where the snapshot says.
     platform.write_processor(processor)?;
     Ok(())
+}
+
+/// Seeds from **any** position, and hands back what the caller has undertaken
+/// to carry — §3.4's other half.
+///
+/// §3.4 says the tool refuses to seed from a non-instruction boundary *unless
+/// the caller asks for that explicitly and accepts the result as not
+/// determined*. This is that path, and it is shaped so that accepting is not
+/// optional: what comes back on the loose path is the cause itself, and a
+/// caller that ignores it has visibly dropped a value.
+///
+/// `Ok(None)` means the position was fine and there is nothing to carry.
+/// `Ok(Some(cause))` means the state went in anyway, and every verdict from the
+/// run that follows is *not determined* — fold the cause in.
+///
+/// The processor state is still required (§3.3). That refusal is not a
+/// position's to excuse.
+pub fn seed_from_any_position(
+    platform: &mut dyn Platform,
+    snapshot: &Snapshot,
+) -> Result<Option<Undetermined>, SeedError> {
+    if snapshot.can_be_seeded() {
+        seed(platform, snapshot)?;
+        return Ok(None);
+    }
+
+    let Some(processor) = snapshot.processor() else {
+        return Err(SeedError::NoProcessorState);
+    };
+    for captured in snapshot.captures() {
+        if captured.is_whole_region() {
+            platform.write(&captured.region.name, captured.bytes())?;
+        } else {
+            platform.write_span(&captured.region.name, captured.offset, captured.bytes())?;
+        }
+    }
+    platform.write_processor(processor)?;
+
+    Ok(Some(Undetermined::SeededFromNoBoundary {
+        position: snapshot.position().to_string(),
+    }))
 }
 
 #[cfg(test)]
@@ -376,6 +418,78 @@ mod tests {
             "the processor state is written last, so that it is what the machine starts from; \
              wrote {:?}",
             fake.writes
+        );
+    }
+
+    /// §3.4's escape hatch, and the shape that makes it honest: what comes
+    /// back is the cause, so a caller who ignores it has dropped a value where
+    /// a reviewer can see it.
+    #[test]
+    fn seeding_from_no_boundary_is_possible_and_hands_back_what_it_costs() {
+        let mut fake = Fake::new();
+        fake.work = vec![3; 8];
+        let snapshot = capture(
+            &fake,
+            provenance(),
+            Position::FrameBoundary { frame: 7 },
+            &["work"],
+        )
+        .expect("it captures");
+
+        fake.work = vec![0xFF; 8];
+        let carried = seed_from_any_position(&mut fake, &snapshot)
+            .expect("the loose path does not refuse a position")
+            .expect("and it is not free");
+
+        assert_eq!(fake.work, vec![3; 8], "the state really went in");
+        assert!(
+            matches!(carried, Undetermined::SeededFromNoBoundary { .. }),
+            "got {carried:?}"
+        );
+        assert!(
+            carried.to_string().contains("part way through"),
+            "the cause must say what is wrong with the run that follows, said: {carried}"
+        );
+
+        // And it is not agreement. Folded into a run's verdicts it outranks
+        // them, which is the whole point of handing it back.
+        let folded = crate::verdict::fold(&[
+            crate::verdict::Verdict::Agrees {
+                compared: 8,
+                moved: 4,
+            },
+            crate::verdict::Verdict::NotDetermined(carried),
+        ]);
+        assert!(
+            matches!(folded, crate::verdict::Verdict::NotDetermined(_)),
+            "got {folded}"
+        );
+    }
+
+    /// The loose path is loose about the position and nothing else. §3.3's
+    /// refusal is not a position's to excuse.
+    #[test]
+    fn the_loose_path_still_requires_the_processor_state() {
+        let mut fake = Fake::new();
+        let snapshot = Snapshot::builder(provenance(), Position::FrameBoundary { frame: 1 })
+            .whole(Region::bytes("work", 8, Access::ReadWrite), vec![5; 8])
+            .unwrap()
+            .build();
+        let err = seed_from_any_position(&mut fake, &snapshot).expect_err("no registers");
+        assert!(matches!(err, SeedError::NoProcessorState), "got {err:?}");
+        assert!(fake.writes.is_empty(), "wrote {:?}", fake.writes);
+    }
+
+    /// From a good position it carries nothing, so the ordinary case is not
+    /// made to look costly.
+    #[test]
+    fn from_an_instruction_boundary_the_loose_path_carries_nothing() {
+        let mut fake = Fake::new();
+        let snapshot =
+            capture(&fake, provenance(), at_instruction(), &["work"]).expect("it captures");
+        assert_eq!(
+            seed_from_any_position(&mut fake, &snapshot).expect("it seeds"),
+            None
         );
     }
 

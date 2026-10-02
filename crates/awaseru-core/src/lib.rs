@@ -23,7 +23,7 @@ pub mod snapshot;
 pub mod verdict;
 
 pub use blob::{Blob, StateError};
-pub use capture::{CaptureError, SeedError, capture, seed};
+pub use capture::{CaptureError, SeedError, capture, seed, seed_from_any_position};
 pub use compare::{Comparison, compare, compare_processor, compare_regions};
 pub use platform::{
     BackendVersion, Platform, ReadError, RunError, WriteError, check_read, check_write,

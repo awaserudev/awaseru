@@ -36,6 +36,10 @@ pub enum Undetermined {
     /// the reference (§16.5), or different software (§6.6). Reported this way
     /// only when the caller insisted; refused otherwise.
     StatesIncomparable { why: String },
+    /// A state was written into the machine at a position no state should be
+    /// written at (§3.4), because the caller asked for that and undertook to
+    /// carry this.
+    SeededFromNoBoundary { position: String },
 }
 
 impl std::fmt::Display for Undetermined {
@@ -74,6 +78,12 @@ impl std::fmt::Display for Undetermined {
                  comparable however equal they happen to be"
             ),
             Undetermined::StatesIncomparable { why } => write!(f, "{why}"),
+            Undetermined::SeededFromNoBoundary { position } => write!(
+                f,
+                "this run began from a state written in at {position}, which is not an \
+                 instruction boundary — so the machine started part way through something and \
+                 what it did afterwards is not what the software would have done (§3.4)"
+            ),
         }
     }
 }
