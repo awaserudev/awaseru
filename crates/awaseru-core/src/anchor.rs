@@ -162,9 +162,11 @@ impl std::fmt::Display for AnchorError {
             ),
             AnchorError::InputNotSupported { anchor, log } => write!(
                 f,
-                "the anchor `{anchor}` needs the input log `{log}` to be reached, and nothing \
-                 here can replay one yet. Reaching it without the input would arrive somewhere \
-                 else and call it this anchor, so it is refused instead (§2.4)"
+                "the anchor `{anchor}` needs the input log `{log}` to be reached, and no backend \
+                 here can replay one. Reaching it without the input would arrive somewhere else \
+                 and call it this anchor, so it is refused instead (§2.4). On the first backend \
+                 this is measured rather than pending: it exposes no control device for an input \
+                 to arrive at, and §13's Q14 has the three routes that might change that"
             ),
             AnchorError::Duplicate { name } => write!(
                 f,

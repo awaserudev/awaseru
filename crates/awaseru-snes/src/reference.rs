@@ -562,10 +562,19 @@ impl Reference {
         Err(WriteError::NotStopped)
     }
 
-    /// Where the opaque blob goes. One file, reused — the blob's bytes are
-    /// carried in memory and this is only the hatch the backend insists on.
+    /// Where the opaque blob goes. The blob's bytes are carried in memory and
+    /// this is only the hatch the backend insists on.
+    ///
+    /// **Named for this process**, which it was not at first. Several processes
+    /// sharing a home directory — which is the ordinary case, since the home
+    /// has a default — would write the same file between one another's save and
+    /// read-back, and each would get the other's machine. It surfaced as an
+    /// intermittent failure the moment the test suite ran four of them at once,
+    /// and it surfaced as a *failure* rather than a wrong answer only because
+    /// §4.8's cheap check was there to catch it.
     fn state_file(&self) -> PathBuf {
-        self.home.join("awaseru-state.tmp")
+        self.home
+            .join(format!("awaseru-state-{}.tmp", std::process::id()))
     }
 
     /// Something cheap to tell a resumed machine from an untouched one.

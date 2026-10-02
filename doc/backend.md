@@ -292,6 +292,25 @@ at power-on, and software that reads it behaves differently. The divergence is
 deliberate, it is declared in the shared configuration, it can be turned off,
 and every report says which it was.
 
+### What it will not let us do: press a button
+
+**No control device exists.** The backend's own enquiry — which of its eight
+input indices has a device — answers no to all eight, so an input override is a
+state stored where nothing reads it. A fixture written to wait for a button
+stays waiting with one set, which is how this was established rather than
+inferred.
+
+The default for each port is no controller, and the only way to change it is the
+configuration record passed by value: ten controller configurations, each
+holding a key-mapping set of thirty-one members. That is the same record whose
+transcription was priced and refused for the power-on memory setting, for the
+same reason — one field wrong silently changes the accuracy of the thing whose
+job is to be the ground.
+
+Recorded as §13's Q14, with the three routes that might settle it. The most
+promising is the backend's movie playback, which replays input deterministically
+and needs an archive format written rather than a C++ struct layout guessed at.
+
 ### Saving and loading the opaque blob
 
 | | |
@@ -335,7 +354,15 @@ bound run onward gave the same state again. `resume + 4 frames` and
 satisfied for anything downstream of a blob — and it is what makes §4.7's anchors
 sound.
 
-**5. The position check cannot catch a load that did nothing when nothing has
+**5. The blob goes through a file, so the file's name has to be this process's.**
+Found by the test suite running four processes at once against the same home
+directory, which is the ordinary case because the home has a default: each was
+writing the same temporary file between another's save and read-back, and each
+got the other's machine. It appeared as an intermittent failure rather than a
+wrong answer only because §4.8's cheap check caught it, which is the clearest
+argument for that check there is.
+
+**6. The position check cannot catch a load that did nothing when nothing has
 moved.** Proven rather than suspected: deleting the call to the backend's load
 from this project's own implementation leaves the position and the fingerprint
 exactly as the blob recorded them — because the machine had not advanced since

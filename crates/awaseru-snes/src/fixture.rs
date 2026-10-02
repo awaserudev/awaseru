@@ -87,6 +87,17 @@ pub mod expected {
     pub const SENTINEL_BEFORE: u8 = 0xC3;
     pub const SENTINEL_AFTER_AT: usize = WORK_PATTERN_AT + 0x100;
     pub const SENTINEL_AFTER: u8 = 0x3C;
+
+    /// Where `image_needing_input`'s gate writes its sentinel once the button
+    /// it waits for has been held, and what it writes.
+    ///
+    /// Zero until then — which the program itself writes, so the test does not
+    /// rest on memory nobody wrote.
+    pub const GATE_SENTINEL_AT: usize = 0x0210;
+    pub const GATE_SENTINEL: u8 = 0x5A;
+    /// The gated program's counter is the same address as the first
+    /// fixture's, and it does **not** move until the gate opens.
+    pub const GATE_COUNTER_AT: usize = WORK_COUNTER_AT;
     /// The palette from here holds the pattern below.
     pub const PALETTE_PATTERN_AT: usize = 0x0000;
 
@@ -193,12 +204,14 @@ pub fn image() -> Vec<u8> {
     let mut rom = vec![0u8; ROM_BYTES];
     let code = program();
     rom[..code.len()].copy_from_slice(&code);
+    finish(&mut rom, b"AWASERU FIXTURE      ", ORIGIN + SPIN as u16);
+    rom
+}
 
+/// The header, the vectors and the checksum, which both programs share.
+fn finish(rom: &mut [u8], title: &[u8; 21], vectors_to: u16) {
     // --- the header ---------------------------------------------------
-    // 21 bytes of title, space-padded. Nothing here is anybody's name
-    // (§11.2).
-    let title = b"AWASERU FIXTURE      ";
-    debug_assert_eq!(title.len(), 21);
+    // Nothing here is anybody's name (§11.2).
     rom[HEADER_AT..HEADER_AT + 21].copy_from_slice(title);
     rom[HEADER_AT + 0x15] = 0x20; // mapping: the low-bank one, slow
     rom[HEADER_AT + 0x16] = 0x00; // no coprocessor, no battery
@@ -213,20 +226,79 @@ pub fn image() -> Vec<u8> {
     // these should be taken; a vector of zero would send the processor
     // somewhere undefined if one ever were, and "should not happen" is not a
     // reason to leave a hole.
-    let spin = ORIGIN + SPIN as u16;
     for at in [0x7FE4, 0x7FE6, 0x7FE8, 0x7FEA, 0x7FEE, 0x7FF4, 0x7FFA, 0x7FFE] {
-        write_word(&mut rom, at, spin);
+        write_word(rom, at, vectors_to);
     }
-    write_word(&mut rom, 0x7FFC, ORIGIN); // reset
+    write_word(rom, 0x7FFC, ORIGIN); // reset
 
     // --- the checksum --------------------------------------------------
     // Written last, over an image whose checksum bytes are still zero, which
     // is the convention the fields describe.
     let sum: u16 = rom.iter().fold(0u16, |acc, &b| acc.wrapping_add(u16::from(b)));
-    write_word(&mut rom, HEADER_AT + 0x1C, !sum); // complement
-    write_word(&mut rom, HEADER_AT + 0x1E, sum);
+    write_word(rom, HEADER_AT + 0x1C, !sum); // complement
+    write_word(rom, HEADER_AT + 0x1E, sum);
+}
 
+/// A second program, which **will not proceed until a button is pressed**.
+///
+/// §4.7's definitions may carry a recorded input log, for anchors behind
+/// software that waits for input. Testing that needs software that waits, and
+/// nothing this project owned did — the first fixture runs to its end on its
+/// own. So this one waits.
+///
+/// ```text
+///         SEI : CLC : XCE : SEP #$30
+///         LDA #$00 : PHA : PLB     ; data bank zero
+///         STZ $10                  ; the counter
+///         STZ $0210                ; and the gate's sentinel
+///         LDA #$01 : STA $4200     ; have the hardware read the controller
+/// wait:   LDA $4219
+///         AND #$10                 ; the button this gate is behind
+///         BEQ wait                 ; ...and go no further until it is held
+///         LDA #$5A : STA $0210     ; the gate is open, and says so
+/// spin:   INC $0010
+///         BRA spin
+/// ```
+///
+/// The difference from the first fixture is the whole point: **its counter does
+/// not move until the gate opens.** A test can therefore tell "the input
+/// arrived" from "the input did not" without reading anything but memory this
+/// program wrote.
+pub fn image_needing_input() -> Vec<u8> {
+    let mut rom = vec![0u8; ROM_BYTES];
+    let code = gated_program();
+    rom[..code.len()].copy_from_slice(&code);
+    finish(&mut rom, b"AWASERU GATED        ", ORIGIN + GATE_SPIN as u16);
     rom
+}
+
+/// Where the gated program's labels are.
+const GATE_WAIT: usize = 0x13;
+const GATE_SPIN: usize = 0x1F;
+
+fn gated_program() -> Vec<u8> {
+    let mut code: Vec<u8> = Vec::new();
+    code.extend([0x78]); // SEI
+    code.extend([0x18, 0xFB]); // CLC : XCE
+    code.extend([0xE2, 0x30]); // SEP #$30
+    code.extend([0xA9, 0x00]); // LDA #$00
+    code.extend([0x48, 0xAB]); // PHA : PLB        -> data bank 0
+    code.extend([0x64, 0x10]); // STZ $10          -> the counter
+    code.extend([0x9C, 0x10, 0x02]); // STZ $0210  -> the gate's sentinel
+    code.extend([0xA9, 0x01]); // LDA #$01
+    code.extend([0x8D, 0x00, 0x42]); // STA $4200  -> read the controller each frame
+    debug_assert_eq!(code.len(), GATE_WAIT);
+    // wait:
+    code.extend([0xAD, 0x19, 0x42]); // LDA $4219
+    code.extend([0x29, 0x10]); // AND #$10
+    code.extend([0xF0, branch_to(code.len() + 2, GATE_WAIT)]); // BEQ wait
+    code.extend([0xA9, 0x5A]); // LDA #$5A
+    code.extend([0x8D, 0x10, 0x02]); // STA $0210  -> the gate is open
+    debug_assert_eq!(code.len(), GATE_SPIN);
+    // spin:
+    code.extend([0xEE, 0x10, 0x00]); // INC $0010
+    code.extend([0x80, branch_to(code.len() + 2, GATE_SPIN)]); // BRA spin
+    code
 }
 
 fn write_word(rom: &mut [u8], at: usize, value: u16) {
