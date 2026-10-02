@@ -679,8 +679,15 @@ Each milestone has a done-condition that can be run, not judged.
 The host reads a configuration, selects a platform backend, drives a reference
 to a position, and prints one region's bytes.
 
-*Done when*: a generated test ROM (§11.3) runs and one region's contents come
-out. No differ, no API.
+*Done when*: software supplied through the machine-local configuration runs and
+one region's contents come out, with the test asserting the plumbing rather than
+anything about the software. No differ, no API.
+
+*How it was met*: by §11.3's third route — a bring-your-own-ROM test that reads
+its paths from the environment and takes its expectations from configuration,
+and skips when unset. The generated fixture of §11.3's first bullet is still
+owed, and M3's done-condition is where it becomes unavoidable: a deliberately
+wrong reimplementation has to be wrong about *something defined here*.
 
 ### M1 — The state model
 

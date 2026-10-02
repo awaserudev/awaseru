@@ -7,4 +7,6 @@
 
 pub mod config;
 pub mod digest;
+pub mod platform;
+pub mod session;
 pub mod version;
