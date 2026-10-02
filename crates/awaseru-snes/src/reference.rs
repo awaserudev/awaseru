@@ -690,6 +690,13 @@ impl Platform for Reference {
         }
     }
 
+    fn beginning(&self) -> awaseru_core::Beginning {
+        awaseru_core::Beginning {
+            reproducible: self.origin.at_power_on,
+            settled: self.origin.memory_zeroed.iter().map(|n| (*n).to_string()).collect(),
+        }
+    }
+
     fn regions(&self) -> Regions {
         self.regions.clone()
     }

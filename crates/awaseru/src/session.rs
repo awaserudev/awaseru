@@ -7,9 +7,11 @@
 
 use std::path::{Path, PathBuf};
 
+use awaseru_core::platform::{BackendVersion, Beginning};
 use awaseru_core::{Bound, Platform, Position, ReadError, Region, Regions, RunError, Stop};
-use awaseru_core::platform::BackendVersion;
 
+use crate::arrive::{ArriveError, Arrived, Arriver};
+use crate::cache::Cache;
 use crate::config::{self, Loaded};
 use crate::platform::{self, Request};
 
@@ -21,7 +23,13 @@ pub struct Plan {
     /// Where the backend may keep its own files.
     pub home: PathBuf,
     /// How far to run before reading (§4.2). There is no "run until it stops".
+    ///
+    /// Ignored when `anchor` is given: an anchor carries its own definition.
     pub bound: Bound,
+    /// An anchor to arrive at instead of running a bound (§4.7).
+    pub anchor: Option<String>,
+    /// Where the anchor cache lives. Machine-local (§6.7).
+    pub cache: PathBuf,
     /// Which region to read. `None` means the first one the backend reports —
     /// **not** a name chosen here, because §3.1 says the host must not assume
     /// which names exist.
@@ -43,6 +51,11 @@ pub struct Outcome {
     /// Where the reference started, before the run.
     pub started: Position,
     pub stop: Stop,
+    /// How the reference came up — §4.12.
+    pub beginning: Beginning,
+    /// Present when an anchor was asked for: how it was arrived at, and what
+    /// the run is worth (§4.8, §4.12).
+    pub arrived: Option<Arrived>,
     /// The region that was read, and the bytes.
     pub region: Region,
     pub offset: usize,
@@ -75,6 +88,8 @@ pub enum Error {
     },
     /// The backend came up with nothing to read.
     NoRegions,
+    /// An anchor was asked for and could not be reached.
+    Arrive(ArriveError),
 }
 
 impl std::fmt::Display for Error {
@@ -101,6 +116,7 @@ impl std::fmt::Display for Error {
                  not be what was asked for (§2.3)"
             ),
             Error::NoRegions => write!(f, "the reference exposes no regions, so there is nothing to read"),
+            Error::Arrive(e) => write!(f, "{e}"),
         }
     }
 }
@@ -125,6 +141,12 @@ impl From<RunError> for Error {
     }
 }
 
+impl From<ArriveError> for Error {
+    fn from(e: ArriveError) -> Self {
+        Error::Arrive(e)
+    }
+}
+
 /// Reads the configuration, opens the reference it names, runs, and reads.
 pub fn run(plan: &Plan) -> Result<Outcome, Error> {
     let loaded = config::load(&plan.shared, &plan.local)?;
@@ -137,8 +159,44 @@ pub fn run(plan: &Plan) -> Result<Outcome, Error> {
     // The position before the run, so that a report can say where it went from
     // as well as where it got to.
     let started = probe_position(&mut *reference)?;
+    let beginning = reference.beginning();
 
-    let stop = reference.run(plan.bound.clone())?;
+    // An anchor carries its own definition, so asking for one replaces the
+    // bound rather than adding to it.
+    let (stop, arrived) = match &plan.anchor {
+        None => {
+            let stop = reference.run(plan.bound.clone())?;
+            (stop, None)
+        }
+        Some(name) => {
+            std::fs::create_dir_all(&plan.cache).map_err(|e| Error::Configuration(
+                config::Error::Unreadable { path: plan.cache.clone(), why: e },
+            ))?;
+            let cache = Cache::at(&plan.cache);
+            let provenance = awaseru_core::snapshot::Provenance {
+                reference: emulator.name.clone(),
+                backend: emulator.backend.clone(),
+                version: reference.version().reported,
+                software: loaded.configuration.rom.sha256.clone(),
+            };
+            let mut arriver = Arriver::new(
+                &mut *reference,
+                &loaded.anchors,
+                &cache,
+                provenance,
+                loaded.configuration.anchors.clone(),
+            );
+            let arrived = arriver.arrive(name)?;
+            let at = arriver.at().clone();
+            (
+                Stop {
+                    reason: awaseru_core::Reason::BoundReached,
+                    position: at,
+                },
+                Some(arrived),
+            )
+        }
+    };
     if !stop.arrived() {
         return Err(Error::DidNotArrive { stop });
     }
@@ -157,6 +215,8 @@ pub fn run(plan: &Plan) -> Result<Outcome, Error> {
         regions,
         started,
         stop,
+        beginning,
+        arrived,
         region,
         offset: plan.offset,
         bytes,

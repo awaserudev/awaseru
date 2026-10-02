@@ -28,6 +28,9 @@ Options
     --instructions N    run for N instructions
     --address ADDR      run until the program counter reaches ADDR (hexadecimal)
 
+    --anchor NAME       arrive at this anchor instead of running a bound (§4.7)
+    --cache PATH        where the anchor cache lives (machine-local, §6.7)
+
     --region NAME       which region to read (default: the first the backend reports)
     --offset N          where in it to start             (default 0)
     --length N          how many bytes                   (default 256)
@@ -95,6 +98,17 @@ fn report(outcome: &session::Outcome, list_only: bool) {
         return;
     }
 
+    // §4.12, next to the result and not in a footnote.
+    println!("\n{}", outcome.beginning);
+    if let Some(arrived) = &outcome.arrived {
+        println!("{arrived}");
+        if !arrived.is_evidence() {
+            println!(
+                "  → a comparison from this run is NOT evidence; the line above says why"
+            );
+        }
+    }
+
     println!("\nfrom {}", outcome.started);
     println!("  to {}", outcome.stop);
     println!(
@@ -128,6 +142,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut offset = 0usize;
     let mut length = 256usize;
     let mut list_only = false;
+    let mut anchor = None;
+    let mut cache = std::env::temp_dir().join("awaseru-anchor-cache");
 
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
@@ -146,6 +162,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--region" => region = Some(value()?),
             "--offset" => offset = number(&value()?, 10)? as usize,
             "--length" => length = number(&value()?, 10)? as usize,
+            "--anchor" => anchor = Some(value()?),
+            "--cache" => cache = PathBuf::from(value()?),
             "--regions" => list_only = true,
             other if other.starts_with('-') => {
                 return Err(format!("`{other}` is not an option awaseru has"));
@@ -160,6 +178,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             local,
             home,
             bound: bound.unwrap_or(Bound::Frames(1)),
+            anchor,
+            cache,
             region,
             offset,
             length,
@@ -202,6 +222,29 @@ mod tests {
         assert_eq!(plan.bound, Bound::Frames(1));
         assert_eq!(plan.region, None, "which region is the backend's to say");
         assert_eq!((plan.offset, plan.length), (0, 256));
+        assert_eq!(plan.anchor, None, "a bound unless an anchor is asked for");
+    }
+
+    /// An anchor replaces the bound rather than adding to it, because an
+    /// anchor carries its own definition (§4.7).
+    #[test]
+    fn an_anchor_can_be_asked_for_by_name() {
+        let plan = plan_of(&["--anchor", "accepts-input"]);
+        assert_eq!(plan.anchor.as_deref(), Some("accepts-input"));
+        assert_eq!(
+            plan.bound,
+            Bound::Frames(1),
+            "the bound keeps its default and is ignored, rather than being made to mean \
+             something next to an anchor"
+        );
+        assert!(
+            plan.cache.to_string_lossy().contains("awaseru"),
+            "the cache has a default place, because §6.7 keeps it out of configuration"
+        );
+        assert_eq!(
+            plan_of(&["--cache", "/somewhere"]).cache,
+            PathBuf::from("/somewhere")
+        );
     }
 
     #[test]

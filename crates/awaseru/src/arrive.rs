@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use awaseru_core::anchor::{Anchor, AnchorError, Anchors, CheapCheck, CheckFailed, Coverage, Key};
 use awaseru_core::run::Position;
 use awaseru_core::snapshot::Provenance;
-use awaseru_core::{Platform, ReadError, RunError, StateError, Undetermined};
+use awaseru_core::{Beginning, Platform, ReadError, RunError, StateError, Undetermined};
 use sha2::{Digest, Sha256};
 
 use crate::cache::{Cache, CacheError, Stored};
@@ -114,6 +114,9 @@ pub struct Arrived {
     pub anchor: String,
     pub how: How,
     pub took: Duration,
+    /// How the reference came up — §4.12 wants this next to the result, not in
+    /// a footnote somebody has to find.
+    pub beginning: Beginning,
     /// Present when the anchor has not been shown equivalent (§4.8). **Every
     /// verdict from this run must carry it**; it is returned rather than logged
     /// so that ignoring it is a value dropped where a reviewer can see.
@@ -121,6 +124,43 @@ pub struct Arrived {
     /// Set when this arrival re-ran the demonstration because §4.9's
     /// `reverify_after` came due.
     pub reverified: bool,
+}
+
+impl std::fmt::Display for Arrived {
+    /// §4.12's line: how it arrived, how long that took, and what the run is
+    /// worth.
+    ///
+    /// The caveat and the beginning come **last and in words**, because the
+    /// thing a reader skips is the thing at the end of a line of numbers — so
+    /// what is at the end is what they need most when it is bad.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "anchor `{}`: {} in {:.3}s",
+            self.anchor,
+            self.how,
+            self.took.as_secs_f64()
+        )?;
+        if self.reverified {
+            write!(f, "; re-demonstrated first, which §4.9 had come due")?;
+        }
+        write!(f, ". It {}", self.beginning)?;
+        if let Some(caveat) = &self.caveat {
+            write!(f, ". NOT DETERMINED: {caveat}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Arrived {
+    /// Whether a comparison from this run is worth anything (§2.3, §2.5).
+    ///
+    /// Two separate reasons it may not be, and both have to be false: the
+    /// anchor was never demonstrated (§4.8), or the reference did not come up
+    /// somewhere that repeats (§2.5).
+    pub fn is_evidence(&self) -> bool {
+        self.caveat.is_none() && self.beginning.repeats()
+    }
 }
 
 /// Why an arrival or a demonstration failed.
@@ -340,6 +380,7 @@ impl<'a> Arriver<'a> {
                         anchor: name.to_string(),
                         how: How::Resumed,
                         took: began.elapsed(),
+                        beginning: self.platform.beginning(),
                         caveat: caveat_for(name, stored.demonstrated_with),
                         reverified,
                     });
@@ -371,6 +412,7 @@ impl<'a> Arriver<'a> {
             anchor: name.to_string(),
             how: How::Replayed { anchors_run },
             took: began.elapsed(),
+            beginning: self.platform.beginning(),
             caveat: caveat_for(name, demonstrated),
             reverified,
         })
@@ -518,4 +560,137 @@ fn caveat_for(anchor: &str, demonstrated_with: u32) -> Option<Undetermined> {
     (demonstrated_with == 0).then(|| Undetermined::AnchorNotDemonstrated {
         anchor: anchor.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arrived(how: How, caveat: Option<Undetermined>, repeats: bool) -> Arrived {
+        Arrived {
+            anchor: "later".into(),
+            how,
+            took: Duration::from_millis(1234),
+            beginning: Beginning {
+                reproducible: repeats,
+                settled: if repeats {
+                    vec!["work-ram".into()]
+                } else {
+                    Vec::new()
+                },
+            },
+            caveat,
+            reverified: false,
+        }
+    }
+
+    /// §4.12's line says how it arrived and how long. The number is there so
+    /// somebody can see where the time went without a stopwatch, which is the
+    /// whole reason §4.12 exists.
+    #[test]
+    fn the_line_says_how_it_arrived_and_how_long_that_took() {
+        let replayed = arrived(How::Replayed { anchors_run: 2 }, None, true).to_string();
+        assert!(replayed.contains("replayed"), "{replayed}");
+        assert!(replayed.contains("2 definition"), "{replayed}");
+        assert!(replayed.contains("1.234s"), "{replayed}");
+
+        let resumed = arrived(How::Resumed, None, true).to_string();
+        assert!(resumed.contains("resumed"), "{resumed}");
+        assert_ne!(replayed, resumed, "the two ways must not read alike");
+    }
+
+    /// **Two separate reasons a run may be worth nothing, and both have to be
+    /// absent.** An anchor nobody demonstrated, and a reference that did not
+    /// begin somewhere it can return to. A report that checked one and not the
+    /// other would pass a run that is not evidence.
+    #[test]
+    fn a_run_is_evidence_only_when_neither_reason_against_it_holds() {
+        let caveat = || {
+            Some(Undetermined::AnchorNotDemonstrated {
+                anchor: "later".into(),
+            })
+        };
+
+        assert!(arrived(How::Resumed, None, true).is_evidence());
+        assert!(
+            !arrived(How::Resumed, caveat(), true).is_evidence(),
+            "an undemonstrated anchor is not evidence however reproducibly it began"
+        );
+        assert!(
+            !arrived(How::Resumed, None, false).is_evidence(),
+            "a reference that does not repeat is not evidence however demonstrated the anchor"
+        );
+        assert!(!arrived(How::Resumed, caveat(), false).is_evidence());
+    }
+
+    /// When something is wrong, the line ends with it. A reader's eye stops at
+    /// the end of a line of numbers, so that is where the thing they need most
+    /// has to be.
+    #[test]
+    fn the_caveat_is_the_last_thing_on_the_line() {
+        let said = arrived(How::Resumed, Some(Undetermined::AnchorNotDemonstrated {
+            anchor: "later".into(),
+        }), true)
+        .to_string();
+        assert!(said.contains("NOT DETERMINED"), "{said}");
+        assert!(
+            said.rfind("NOT DETERMINED") > said.rfind("resumed"),
+            "the caveat must come after the result, not before it: {said}"
+        );
+
+        let clean = arrived(How::Resumed, None, true).to_string();
+        assert!(
+            !clean.contains("NOT DETERMINED"),
+            "and must not appear when there is nothing wrong: {clean}"
+        );
+    }
+
+    /// A re-demonstration that §4.9 brought due is said, because it is where
+    /// the time went on that particular run.
+    #[test]
+    fn a_reverification_says_it_happened() {
+        let mut a = arrived(How::Resumed, None, true);
+        a.reverified = true;
+        let said = a.to_string();
+        assert!(said.contains("re-demonstrated"), "{said}");
+        assert!(said.contains("§4.9"), "and says which rule brought it due: {said}");
+    }
+
+    /// Two witnesses that differ say what differs, by name, because "they
+    /// differ" sends somebody reading and "the region `work-ram`" does not.
+    #[test]
+    fn two_witnesses_name_what_differs_between_them() {
+        let witness = |position, processor: &str, coverage: &[(&str, &str)]| Witness {
+            position,
+            coverage: Coverage::from_digests(
+                coverage
+                    .iter()
+                    .map(|(n, d)| ((*n).to_string(), (*d).to_string()))
+                    .collect(),
+            ),
+            processor: processor.to_string(),
+        };
+
+        let a = witness(
+            Position::FrameBoundary { frame: 1 },
+            "aa",
+            &[("work-ram", "11"), ("palette-ram", "22")],
+        );
+        assert!(a.differences(&a).is_empty(), "a witness agrees with itself");
+
+        let b = witness(
+            Position::FrameBoundary { frame: 2 },
+            "bb",
+            &[("work-ram", "11"), ("palette-ram", "33")],
+        );
+        let differences = a.differences(&b);
+        assert_eq!(differences.len(), 3, "got {differences:?}");
+        assert!(differences.iter().any(|d| d.contains("position")));
+        assert!(differences.iter().any(|d| d.contains("processor record")));
+        assert!(differences.iter().any(|d| d.contains("palette-ram")));
+        assert!(
+            !differences.iter().any(|d| d.contains("work-ram")),
+            "and does not name what agrees: {differences:?}"
+        );
+    }
 }

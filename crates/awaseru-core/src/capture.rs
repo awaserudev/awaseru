@@ -241,6 +241,12 @@ mod tests {
                 built: None,
             }
         }
+        fn beginning(&self) -> crate::platform::Beginning {
+            crate::platform::Beginning {
+                reproducible: true,
+                settled: vec!["work".into()],
+            }
+        }
         fn regions(&self) -> Regions {
             self.regions.clone()
         }

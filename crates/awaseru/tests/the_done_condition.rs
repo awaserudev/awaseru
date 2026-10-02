@@ -51,6 +51,8 @@ fn plan(dir: &Path, bound: Bound) -> Plan {
         local: dir.join("awaseru.local.toml"),
         home: home(),
         bound,
+        anchor: None,
+        cache: std::env::temp_dir().join("awaseru-done-condition-cache"),
         // Not a name chosen here: `None` means the first region the backend
         // reports, because §3.1 says the host must not assume which names
         // exist.
@@ -215,6 +217,8 @@ fn a_configuration_that_is_not_there_is_refused_by_name() {
         local: PathBuf::from("/nonexistent/awaseru/awaseru.local.toml"),
         home: home(),
         bound: Bound::Frames(1),
+        anchor: None,
+        cache: std::env::temp_dir().join("awaseru-done-condition-cache"),
         region: None,
         offset: 0,
         length: 16,

@@ -129,6 +129,66 @@ impl std::fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+/// How a reference came up — §4.12.
+///
+/// Carried on the trait rather than left to each backend's own type, because
+/// §4.12 requires every run to say this and a requirement that depends on the
+/// host knowing which backend it has is a requirement that will be skipped.
+///
+/// Nothing here names a platform (§2.7): the settled memories are named by the
+/// backend and the host only passes the names along.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Beginning {
+    /// Whether it began at a position it can be returned to.
+    ///
+    /// `false` means `return_to_origin` will refuse and a definition cannot be
+    /// replayed — so an anchor cannot be demonstrated, and §2.5 is not
+    /// available.
+    pub reproducible: bool,
+    /// Memories settled on the way up, by the backend's names for them. Empty
+    /// when none were, which is what the hardware does and is **not**
+    /// reproducible between processes on at least one backend.
+    pub settled: Vec<String>,
+}
+
+impl std::fmt::Display for Beginning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.reproducible, self.settled.is_empty()) {
+            (true, false) => write!(
+                f,
+                "began at a position it can return to, with {} memories settled — reproducible, \
+                 and not what the hardware does",
+                self.settled.len()
+            ),
+            (true, true) => write!(
+                f,
+                "began at a position it can return to, with memory left as the backend filled \
+                 it — which does NOT repeat between processes"
+            ),
+            (false, false) => write!(
+                f,
+                "began where the backend happened to be, with {} memories settled — the position \
+                 does NOT repeat",
+                self.settled.len()
+            ),
+            (false, true) => write!(
+                f,
+                "began where the backend happened to be, with memory left as it was — NOTHING \
+                 about this run repeats"
+            ),
+        }
+    }
+}
+
+impl Beginning {
+    /// Whether a run from here can be compared with a run from anywhere else
+    /// (§2.5). A report that did not say this would be a report somebody
+    /// trusts.
+    pub fn repeats(&self) -> bool {
+        self.reproducible && !self.settled.is_empty()
+    }
+}
+
 /// What a backend must do.
 ///
 /// # What is not here yet, and why
@@ -148,6 +208,9 @@ impl std::error::Error for RunError {}
 pub trait Platform {
     /// The version the loaded backend reports about itself.
     fn version(&self) -> BackendVersion;
+
+    /// How this reference came up — §4.12. A report says it next to the result.
+    fn beginning(&self) -> Beginning;
 
     /// Everything this backend exposes. The host asks; it does not assume.
     fn regions(&self) -> Regions;
@@ -278,6 +341,53 @@ mod tests {
             Region::bytes("readable", 16, Access::ReadOnly),
             Region::bytes("writeonly", 16, Access::WriteOnly),
         ])
+    }
+
+    /// §4.12. The four ways a reference can begin read differently, and the
+    /// three that do not repeat say so in capitals — because the line a reader
+    /// skims is the one that has to be unskimmable when it is bad.
+    #[test]
+    fn a_beginning_says_whether_the_run_repeats_and_the_bad_ones_shout() {
+        let beginning = |reproducible, settled: &[&str]| Beginning {
+            reproducible,
+            settled: settled.iter().map(|s| (*s).to_string()).collect(),
+        };
+
+        let good = beginning(true, &["work-ram"]);
+        assert!(good.repeats());
+        assert!(good.to_string().contains("reproducible"), "{good}");
+        assert!(
+            good.to_string().contains("not what the hardware does"),
+            "even the good case admits the divergence: {good}"
+        );
+
+        for bad in [
+            beginning(true, &[]),
+            beginning(false, &["work-ram"]),
+            beginning(false, &[]),
+        ] {
+            assert!(!bad.repeats(), "{bad}");
+            let said = bad.to_string();
+            assert!(
+                said.contains("NOT") || said.contains("NOTHING"),
+                "a beginning that does not repeat must say so plainly: {said}"
+            );
+        }
+
+        let all: Vec<String> = [
+            beginning(true, &["x"]),
+            beginning(true, &[]),
+            beginning(false, &["x"]),
+            beginning(false, &[]),
+        ]
+        .iter()
+        .map(|b| b.to_string())
+        .collect();
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "the four must not read alike");
+            }
+        }
     }
 
     #[test]
