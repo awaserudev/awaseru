@@ -36,6 +36,7 @@ Options
     --length N          how many bytes                   (default 256)
 
     --regions           list what the backend exposes and stop
+    --state-digest      print one line a machine can compare, and nothing else
     -h, --help          this
 ";
 
@@ -45,9 +46,17 @@ fn main() -> ExitCode {
             print!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Ok(Command::Run { plan, list_only }) => match session::run(&plan) {
+        Ok(Command::Run {
+            plan,
+            list_only,
+            digest_only,
+        }) => match session::run(&plan) {
             Ok(outcome) => {
-                report(&outcome, list_only);
+                if digest_only {
+                    print!("{}", digest_line(&outcome));
+                } else {
+                    report(&outcome, list_only);
+                }
                 ExitCode::SUCCESS
             }
             Err(e) => {
@@ -63,6 +72,44 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// One line, for a machine to compare — §2.5's "the same state" across
+/// processes.
+///
+/// Everything in it is deterministic. The durations are deliberately **not**,
+/// because two runs that took different amounts of time are still the same run
+/// and a comparison that included the clock would never agree.
+fn digest_line(outcome: &session::Outcome) -> String {
+    format!(
+        "stop={} state={} how={} evidence={}\n",
+        outcome.stop.position,
+        outcome.state,
+        outcome
+            .arrived
+            .as_ref()
+            .map(|a| match a.how {
+                awaseru::arrive::How::Replayed { .. } => "replayed",
+                awaseru::arrive::How::Resumed => "resumed",
+            })
+            .unwrap_or("no-anchor"),
+        match &outcome.arrived {
+            Some(arrived) => {
+                if arrived.is_evidence() {
+                    "yes"
+                } else {
+                    "no"
+                }
+            }
+            None => {
+                if outcome.beginning.repeats() {
+                    "yes"
+                } else {
+                    "no"
+                }
+            }
+        }
+    )
 }
 
 fn report(outcome: &session::Outcome, list_only: bool) {
@@ -124,7 +171,11 @@ fn report(outcome: &session::Outcome, list_only: bool) {
 #[derive(Debug)]
 enum Command {
     Help,
-    Run { plan: Plan, list_only: bool },
+    Run {
+        plan: Plan,
+        list_only: bool,
+        digest_only: bool,
+    },
 }
 
 /// Hand-rolled, because an argument parser would be a dependency and this is
@@ -142,6 +193,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut offset = 0usize;
     let mut length = 256usize;
     let mut list_only = false;
+    let mut digest_only = false;
     let mut anchor = None;
     let mut cache = std::env::temp_dir().join("awaseru-anchor-cache");
 
@@ -165,6 +217,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--anchor" => anchor = Some(value()?),
             "--cache" => cache = PathBuf::from(value()?),
             "--regions" => list_only = true,
+            "--state-digest" => digest_only = true,
             other if other.starts_with('-') => {
                 return Err(format!("`{other}` is not an option awaseru has"));
             }
@@ -185,6 +238,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             length,
         },
         list_only,
+        digest_only,
     })
 }
 
@@ -212,6 +266,13 @@ mod tests {
         }
     }
 
+    fn digest_only_of(words: &[&str]) -> bool {
+        match parse_args(words).expect("it parses") {
+            Command::Run { digest_only, .. } => digest_only,
+            Command::Help => panic!("expected a run"),
+        }
+    }
+
     /// The defaults are the whole of M0's command line: no arguments at all
     /// must be a complete request.
     #[test]
@@ -223,6 +284,8 @@ mod tests {
         assert_eq!(plan.region, None, "which region is the backend's to say");
         assert_eq!((plan.offset, plan.length), (0, 256));
         assert_eq!(plan.anchor, None, "a bound unless an anchor is asked for");
+        assert!(!digest_only_of(&[]), "the ordinary output is for a person");
+        assert!(digest_only_of(&["--state-digest"]));
     }
 
     /// An anchor replaces the bound rather than adding to it, because an

@@ -320,9 +320,35 @@ impl<'a> Arriver<'a> {
         self.platform.read(region)
     }
 
-    /// A witness of where the machine is now, over the regions `covers`.
+    /// A witness of where the machine is now, over the given regions.
     fn witness(&self, covers: &[String]) -> Result<Witness, ArriveError> {
         Ok(Witness::of(self.platform, covers, self.at.clone())?)
+    }
+
+    /// Every writable region the backend exposes.
+    ///
+    /// **This, and not the anchor's declared regions, is what a demonstration
+    /// compares over** — and the difference is the whole reason the
+    /// demonstration exists separately from the cheap check.
+    ///
+    /// The cheap check (§4.8) runs on every load and is deliberately narrow:
+    /// what the anchor declares. The demonstration runs once per key and can
+    /// afford to be thorough, so it should be, or it establishes less than
+    /// anybody reading "demonstrated" will assume.
+    ///
+    /// Found the hard way. With the demonstration comparing only the declared
+    /// regions, a resume that quietly scrambled a region the anchor did not
+    /// declare passed every check this tool had — including the
+    /// across-processes one, because both paths finish by resuming and the
+    /// damage was identical on each. Comparing everything writable is what
+    /// catches it.
+    fn everything_writable(&self) -> Vec<String> {
+        self.platform
+            .regions()
+            .iter()
+            .filter(|r| r.access.writable())
+            .map(|r| r.name.clone())
+            .collect()
     }
 
     /// Replays a chain from the origin, leaving the machine at its end.
@@ -342,6 +368,15 @@ impl<'a> Arriver<'a> {
     }
 
     /// Brings the reference to `name`, the cheap way when that is allowed.
+    ///
+    /// # Where it leaves the machine, and what `how` therefore means
+    ///
+    /// Always at **the blob's position** — the one the cheap check records and
+    /// a resume reproduces — whichever way the blob was obtained. So `how`
+    /// describes how the *blob* was got, which is where the time went (§4.12),
+    /// and not a difference in where the machine ends up. §4.7 requires those
+    /// to be the same place, and the demonstration is what establishes that
+    /// they are.
     ///
     /// Resumes a cached blob when there is one whose key matches and whose
     /// cheap check passes; replays otherwise. When the anchor has never been
@@ -470,10 +505,14 @@ impl<'a> Arriver<'a> {
         let key = self.anchors.key(name, &self.provenance)?;
 
         // ---- step 1: the definition is deterministic -------------------
+        // Everything writable, not the anchor's declared regions — see
+        // `everything_writable` for what that cost before it was fixed.
+        let watched = self.everything_writable();
+
         let mut replayed: Option<Witness> = None;
         for _ in 0..replays {
             self.replay(&chain_refs)?;
-            let witness = self.witness(&anchor.covers)?;
+            let witness = self.witness(&watched)?;
             if let Some(first) = &replayed {
                 let differences = first.differences(&witness);
                 if !differences.is_empty() {
@@ -500,11 +539,11 @@ impl<'a> Arriver<'a> {
         // The blob's position is after the save, so a witness of the replay has
         // to be taken there too — otherwise step 3 compares the position before
         // the save against the position after it and always disagrees.
-        let replayed_at_blob = self.witness(&anchor.covers)?;
+        let replayed_at_blob = self.witness(&watched)?;
 
         // ---- step 3: resuming gives the same machine ------------------
         self.resume(&stored, &anchor)?;
-        let resumed = self.witness(&anchor.covers)?;
+        let resumed = self.witness(&watched)?;
         let differences = replayed_at_blob.differences(&resumed);
         if !differences.is_empty() {
             return Err(ArriveError::ResumeDisagrees {
@@ -520,12 +559,12 @@ impl<'a> Arriver<'a> {
         let onward = anchor.definition.bound.clone();
         let stop = self.platform.run(onward.clone())?;
         self.at = stop.position;
-        let from_resume = self.witness(&anchor.covers)?;
+        let from_resume = self.witness(&watched)?;
 
         self.replay(&chain_refs)?;
         let stop = self.platform.run(onward)?;
         self.at = stop.position;
-        let from_replay = self.witness(&anchor.covers)?;
+        let from_replay = self.witness(&watched)?;
 
         let differences = from_resume.differences(&from_replay);
         if !differences.is_empty() {

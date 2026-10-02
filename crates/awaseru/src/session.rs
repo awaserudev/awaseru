@@ -56,6 +56,17 @@ pub struct Outcome {
     /// Present when an anchor was asked for: how it was arrived at, and what
     /// the run is worth (§4.8, §4.12).
     pub arrived: Option<Arrived>,
+    /// A digest over everything that can have changed: every **writable**
+    /// region and the processor record.
+    ///
+    /// Not the program data, which cannot change and whose two megabytes would
+    /// be hashed on every run for nothing.
+    ///
+    /// This is what §2.5's "the same state" is compared by, across processes.
+    /// A comparison of two whole machines byte by byte is not available between
+    /// processes without shipping the bytes somewhere, and a digest of what can
+    /// change is the same statement for less.
+    pub state: String,
     /// The region that was read, and the bytes.
     pub region: Region,
     pub offset: usize,
@@ -201,6 +212,8 @@ pub fn run(plan: &Plan) -> Result<Outcome, Error> {
         return Err(Error::DidNotArrive { stop });
     }
 
+    let state = state_digest(&*reference, &regions)?;
+
     // Clamped to the region rather than refused: asking for more bytes than a
     // region holds is an ordinary thing for a person at a terminal to do, and
     // the outcome says how many came back. A *comparison* asking for a span
@@ -217,6 +230,7 @@ pub fn run(plan: &Plan) -> Result<Outcome, Error> {
         stop,
         beginning,
         arrived,
+        state,
         region,
         offset: plan.offset,
         bytes,
@@ -243,6 +257,34 @@ fn open(loaded: &Loaded, home: &Path) -> Result<Box<dyn Platform>, Error> {
         emulator: emulator.name.clone(),
         why,
     })
+}
+
+/// A digest over every writable region and the processor record.
+fn state_digest(platform: &dyn Platform, regions: &Regions) -> Result<String, Error> {
+    use sha2::{Digest, Sha256};
+
+    let writable: Vec<String> = regions
+        .iter()
+        .filter(|r| r.access.writable())
+        .map(|r| r.name.clone())
+        .collect();
+    let coverage = awaseru_core::anchor::Coverage::of(platform, &writable)?;
+    let processor = platform.read_processor()?;
+
+    // Region names go in with their digests, so two machines that differ only
+    // in *which* regions they have do not hash alike.
+    let mut hasher = Sha256::new();
+    for (name, digest) in coverage.entries() {
+        hasher.update(name.as_bytes());
+        hasher.update(digest.as_bytes());
+    }
+    hasher.update(processor.bytes());
+    let out = hasher.finalize();
+    Ok(out.iter().fold(String::with_capacity(64), |mut s, byte| {
+        use std::fmt::Write;
+        let _ = write!(s, "{byte:02x}");
+        s
+    }))
 }
 
 /// The region to read: the one named, or the first the backend reports.
