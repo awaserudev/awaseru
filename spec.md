@@ -962,3 +962,73 @@ reference; what an unmaintained one stops doing is *improving*, not *working*.
 
 The corollary, which is §15.1 again from the other side: the accuracy that a
 future version might add is accuracy this tool can measure for itself.
+
+---
+
+## 17. How the code is written
+
+### 17.1 The unsafe line
+
+This tool cannot avoid `unsafe`: loading a shared library and calling a C ABI
+require it. So the rule is not abstinence, it is **confinement**.
+
+```
+crates/awaseru-core     no unsafe — forbidden, not discouraged
+crates/awaseru          no unsafe — forbidden, not discouraged
+────────────────── the foreign-function line ──────────────────
+crates/awaseru-<platform>::ffi   unsafe permitted, and nowhere else in the crate
+```
+
+`unsafe_code = "forbid"` is set in `[workspace.lints]`, inherited by every crate.
+A backend crate opts out **for one module**, and its manifest says why.
+
+Three reasons, and none is taste:
+
+- **Undefined behaviour is the deepest non-determinism there is**, and §2.5 asks
+  for the same result in one process, across processes and across machines. UB
+  may differ by compiler version, optimisation level and target. A verification
+  tool reporting its own undefined behaviour as a divergence in the user's work
+  is the worst failure this project has available to it.
+- **§3.1 requires state to be addressable and enumerable.** `unsafe` is where
+  aliasing and hidden state would hide.
+- **The audit surface stays Rust**, which is the point of §17.2.
+
+The `ffi` module's job is to be the only place a reviewer has to read carefully:
+raw declarations in, a safe API out, and no `unsafe` anywhere above it.
+
+### 17.2 Pure Rust, and as little of it as possible
+
+A crate that builds or links C or C++ is not chosen when a pure-Rust crate of
+good reputation does the job. The reference emulator is the deliberate exception
+and the only one: it is the product's whole point, it is C++, and §16 is the
+policy that contains it.
+
+Every dependency is a decision recorded in `doc/dependencies.md` before it is
+used — what it is for, and what the project would do without it. A crate that is
+not in that file is not in a `Cargo.toml`, and reaching for one is a halt rather
+than a judgement call.
+
+### 17.3 Latest stable, looked up
+
+A crate enters at its latest stable release, checked at the moment it is added —
+never a version remembered, and never one copied from another project.
+Pre-releases are not stable. The same holds for the toolchain: latest stable
+Rust and edition, pinned in `rust-toolchain.toml`. `Cargo.lock` is committed, so
+a build is reproducible and the audit reads exactly what ships.
+
+### 17.4 Do not contort to avoid allocation
+
+`Rc`, `Arc`, `clone` and arenas are fine wherever they make the code clearer.
+This tool's work is bounded — a few thousand region reads and comparisons, not
+millions of operations a frame — so there is no performance case to answer, and
+legibility is worth more than a borrow that takes a paragraph to explain.
+
+The place to care about cost is where it is measurable and has been measured:
+state transfer across the API (§3.6, Q1), and the per-routine cycle (§5.6).
+Everywhere else, write the obvious thing.
+
+### 17.5 Before each commit
+
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo audit`,
+`cargo deny check` and `cargo test`, all green. A commit carries the measurement
+that verified its unit, and documentation for whatever it touched.

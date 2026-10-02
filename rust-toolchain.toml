@@ -1,0 +1,4 @@
+# §17.3 — pinned so that a build is the same build everywhere.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,90 @@
+# Mechanical enforcement of spec.md §18.6's dependency rules, required as a
+# check by §18.7. Every section below implements one row of that table.
+#
+# The exception lists here and in doc/dependencies.md must agree; an entry in
+# one and not the other is a failure of review (§18.7).
+
+[graph]
+# All targets, so a crate barred on Linux cannot slip in through Android or the
+# web (§15.4).
+all-features = true
+
+# ── advisories: the RustSec database, unmaintained and yanked included ────────
+[advisories]
+yanked = "deny"
+unmaintained = "all"
+# Populated only under §18.7's last resort, and mirrored in
+# doc/dependencies.md with a review date.
+ignore = []
+
+# ── licences: an explicit allow-list ─────────────────────────────────────────
+#
+# This project's own licence is not decided yet (it is private, §18 preamble).
+# The list below is the permissive set, which is compatible with any licence
+# this project could later choose, so it does not pre-empt that decision.
+# Widen it only by a recorded decision in doc/dependencies.md.
+[licenses]
+allow = [
+    # This project's own crates. §11.4 leaves the final choice open while the
+    # project is private; what is published today carries this, so the check has
+    # to accept it or it is checking something other than what ships.
+    "GPL-3.0-or-later",
+
+    # Dependencies: permissive only. §17.2 wants the audit surface small and the
+    # obligations of a dependency not to reach further than they have to.
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+# Our own crates are `publish = false` and carry no licence field, so they are
+# not checked against the list above.
+ignore = true
+
+# ── bans: no C toolchain, and one version of each crate ──────────────────────
+[bans]
+multiple-versions = "deny"
+
+# A wildcard on a registry dependency means "any version", which is what
+# §18.6's pinning rule forbids. A path dependency on one of our own crates is
+# not that: the workspace builds from one commit, so there is no version to be
+# ambiguous about, and `publish = false` means none is ever resolved. Allowing
+# wildcards on paths keeps the ban where it bites.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# Denying the *builders* is what enforces §18.6's pure-Rust rule in practice: a
+# `-sys` crate reaches its C library through one of these, so barring them bars
+# the family without enumerating every `-sys` name, which `deny` cannot glob.
+#
+# The limit of this, recorded honestly: a crate that links a system library
+# with `#[link]` alone, building no C, passes this check. Nothing mechanical
+# catches that — only the review of §18.6.
+deny = [
+    { crate = "cc", reason = "compiles C; see spec.md §18.6" },
+    { crate = "cmake", reason = "drives a C/C++ build; see spec.md §18.6" },
+    { crate = "bindgen", reason = "requires libclang; see spec.md §18.6" },
+    { crate = "pkg-config", reason = "locates system C libraries; see spec.md §18.6" },
+    { crate = "vcpkg", reason = "locates system C libraries; see spec.md §18.6" },
+]
+
+# Wrappers allowed to reach a denied crate, per §18.6's below-the-line
+# exception. Every entry is mirrored in doc/dependencies.md with its reason.
+skip = []
+skip-tree = []
+
+# ── sources: crates.io only ──────────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -9,3 +9,8 @@ version = "0.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/awaserudev/awaseru"
+
+# §17.1 — the unsafe line. A backend crate opts out for its `ffi` module only,
+# and says why in its own manifest.
+[workspace.lints.rust]
+unsafe_code = "forbid"

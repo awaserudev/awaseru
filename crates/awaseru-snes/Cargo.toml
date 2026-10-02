@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dependencies]
 awaseru-core = { path = "../awaseru-core", version = "0.0.0" }
+
+[lints]
+workspace = true
