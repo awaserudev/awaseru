@@ -98,6 +98,58 @@ pub mod expected {
     /// The gated program's counter is the same address as the first
     /// fixture's, and it does **not** move until the gate opens.
     pub const GATE_COUNTER_AT: usize = WORK_COUNTER_AT;
+
+    /// `image_with_a_routine`'s routine: where its input is, where it puts its
+    /// output, how long both are, and the two addresses that bound it.
+    ///
+    /// All five are numbers this project chose, which is what lets a test
+    /// assert against them (§11.3).
+    pub const ROUTINE_INPUT_AT: usize = 0x0300;
+    pub const ROUTINE_OUTPUT_AT: usize = 0x0400;
+    pub const ROUTINE_LENGTH: usize = 0x40;
+    /// The routine's first instruction — where §5.6's cycle seeds.
+    pub const ROUTINE_ENTRY: u64 = 0x8020;
+    /// Where it returns to — where §4.5's bound ends, so that a measurement
+    /// does not run past its subject.
+    pub const ROUTINE_RETURN: u64 = 0x800F;
+
+    /// What the routine does, in Rust.
+    ///
+    /// The **reference implementation of the fixture's own behaviour**, which
+    /// is what §M3's done-condition compares a wrong one against. It is a
+    /// running total, eight bits and wrapping, exclusive-or'd with a constant
+    /// on the way out — so every output depends on every input before it, and
+    /// two different mistakes have two different first differing offsets.
+    pub fn routine(input: &[u8]) -> Vec<u8> {
+        let mut total = 0u8;
+        input
+            .iter()
+            .map(|&byte| {
+                total = total.wrapping_add(byte);
+                total ^ 0x5A
+            })
+            .collect()
+    }
+
+    /// A wrong one: it forgets the exclusive-or. **Differs at offset 0.**
+    pub fn routine_without_the_mask(input: &[u8]) -> Vec<u8> {
+        let mut total = 0u8;
+        input
+            .iter()
+            .map(|&byte| {
+                total = total.wrapping_add(byte);
+                total
+            })
+            .collect()
+    }
+
+    /// Another wrong one: it forgets to carry the total forward, so each output
+    /// depends only on its own input. **Agrees at offset 0 and differs at
+    /// offset 1**, which is what makes "the first differing offset" worth
+    /// reporting.
+    pub fn routine_without_the_chain(input: &[u8]) -> Vec<u8> {
+        input.iter().map(|&byte| byte ^ 0x5A).collect()
+    }
     /// The palette from here holds the pattern below.
     pub const PALETTE_PATTERN_AT: usize = 0x0000;
 
@@ -301,6 +353,106 @@ fn gated_program() -> Vec<u8> {
     code
 }
 
+/// A third program: one with a **routine** in it — §5.6's unit of work.
+///
+/// §M3's done-condition is a deliberately wrong reimplementation of a routine
+/// being caught. That needs a routine whose behaviour is defined here, and the
+/// first two fixtures have none: they run straight through, or wait.
+///
+/// ```text
+///         SEI : CLC : XCE : SEP #$30
+///         LDA #$00 : PHA : PLB     ; data bank zero
+///         LDX #$FF : TXS           ; a stack, because the routine pushes
+///         JSR routine
+/// after:  INC $0010                ; something moves once it has returned
+///         BRA after
+///
+/// routine:
+///         LDX #$00
+///         LDA #$00                 ; the accumulator starts at zero
+/// loop:   CLC
+///         ADC $7E0300,X            ; running total, eight bits, wrapping
+///         PHA                      ; keep the total
+///         EOR #$5A
+///         STA $7E0400,X            ; and write the total exclusive-or'd
+///         PLA                      ; restore the total for the next round
+///         INX : CPX #$40 : BNE loop
+///         RTS
+/// ```
+///
+/// # Why a *chained* transformation
+///
+/// Because a byte-by-byte one would make every wrong reimplementation differ
+/// at offset zero, and §5.4's "first differing offset" would then say nothing.
+/// Here each output depends on every input before it, so:
+///
+/// - forgetting the exclusive-or differs at **offset 0**;
+/// - forgetting to carry the total forward differs at **offset 1** — the first
+///   place the chaining matters — and agrees at offset 0.
+///
+/// Two wrong implementations, two different first offsets, and a right one that
+/// matches throughout. That is what makes a test of the localisation a test.
+pub fn image_with_a_routine() -> Vec<u8> {
+    let mut rom = vec![0u8; ROM_BYTES];
+    let code = routine_program();
+    rom[..code.len()].copy_from_slice(&code);
+    finish(
+        &mut rom,
+        b"AWASERU ROUTINE      ",
+        ORIGIN + ROUTINE_AFTER as u16,
+    );
+    rom
+}
+
+/// Offsets within the routine program, from the listing above.
+const ROUTINE_AFTER: usize = 0x0F;
+const ROUTINE_ENTRY: usize = 0x20;
+const ROUTINE_LOOP: usize = 0x24;
+
+fn routine_program() -> Vec<u8> {
+    let mut code: Vec<u8> = Vec::new();
+    code.extend([0x78]); // SEI
+    code.extend([0x18, 0xFB]); // CLC : XCE
+    code.extend([0xE2, 0x30]); // SEP #$30
+    code.extend([0xA9, 0x00]); // LDA #$00
+    code.extend([0x48, 0xAB]); // PHA : PLB      -> data bank 0
+    code.extend([0xA2, 0xFF]); // LDX #$FF
+    code.extend([0x9A]); // TXS                  -> a stack at $00FF downward
+    code.extend([
+        0x20,
+        (ORIGIN + ROUTINE_ENTRY as u16) as u8,
+        ((ORIGIN + ROUTINE_ENTRY as u16) >> 8) as u8,
+    ]); // JSR routine
+    debug_assert_eq!(code.len(), ROUTINE_AFTER);
+    // after:
+    code.extend([0xEE, 0x10, 0x00]); // INC $0010
+    code.extend([0x80, branch_to(code.len() + 2, ROUTINE_AFTER)]); // BRA after
+
+    // Padding to the routine's own address, so that the entry is a number this
+    // project chose rather than one that moved when the setup changed.
+    while code.len() < ROUTINE_ENTRY {
+        code.push(0x00);
+    }
+    debug_assert_eq!(code.len(), ROUTINE_ENTRY);
+
+    // routine:
+    code.extend([0xA2, 0x00]); // LDX #$00
+    code.extend([0xA9, 0x00]); // LDA #$00
+    debug_assert_eq!(code.len(), ROUTINE_LOOP);
+    // loop:
+    code.extend([0x18]); // CLC
+    code.extend([0x7F, 0x00, 0x03, 0x7E]); // ADC $7E0300,X
+    code.extend([0x48]); // PHA
+    code.extend([0x49, 0x5A]); // EOR #$5A
+    code.extend([0x9F, 0x00, 0x04, 0x7E]); // STA $7E0400,X
+    code.extend([0x68]); // PLA
+    code.extend([0xE8]); // INX
+    code.extend([0xE0, 0x40]); // CPX #$40
+    code.extend([0xD0, branch_to(code.len() + 2, ROUTINE_LOOP)]); // BNE loop
+    code.extend([0x60]); // RTS
+    code
+}
+
 fn write_word(rom: &mut [u8], at: usize, value: u16) {
     rom[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
@@ -341,6 +493,92 @@ mod tests {
         assert_eq!(code[FILL], 0x8A, "fill: should begin with TXA");
         assert_eq!(code[PAL], 0x8A, "pal: should begin with TXA");
         assert_eq!(code[SPIN], 0xEE, "spin: should begin with INC absolute");
+    }
+
+    /// The routine program's three branches, recomputed from the bytes
+    /// emitted — the same check the first fixture gets, for the same reason.
+    #[test]
+    fn the_routines_branches_land_where_the_labels_are() {
+        let code = routine_program();
+        for (opcode_at, label) in [(0x12, ROUTINE_AFTER), (0x34, ROUTINE_LOOP)] {
+            let operand = code[opcode_at + 1] as i8 as isize;
+            let after = opcode_at as isize + 2;
+            assert_eq!(
+                after + operand,
+                label as isize,
+                "the branch at {opcode_at:#04X} lands at {:#04X} and should reach {label:#04X}",
+                after + operand
+            );
+        }
+        // And the call reaches the routine, which a branch check would miss
+        // because a call is absolute.
+        assert_eq!(code[0x0C], 0x20, "a call at the end of the setup");
+        assert_eq!(
+            u16::from_le_bytes([code[0x0D], code[0x0E]]),
+            ORIGIN + ROUTINE_ENTRY as u16,
+            "and it calls the routine's own address"
+        );
+        assert_eq!(code[0x36], 0x60, "the routine ends by returning");
+        assert_eq!(
+            expected::ROUTINE_ENTRY,
+            u64::from(ORIGIN + ROUTINE_ENTRY as u16),
+            "what the tests are told the entry is must be where it is"
+        );
+        assert_eq!(
+            expected::ROUTINE_RETURN,
+            u64::from(ORIGIN + ROUTINE_AFTER as u16),
+            "and the return address must be the instruction after the call"
+        );
+    }
+
+    /// **The test that makes the done-condition possible.** Two wrong
+    /// implementations, two different first differing offsets, and a right one
+    /// that matches throughout.
+    ///
+    /// Without this, a differ test could pass against a transformation whose
+    /// every wrong version differs everywhere — which would prove the differ
+    /// says "differs" and nothing about *where*.
+    #[test]
+    fn the_two_wrong_implementations_differ_in_two_different_places() {
+        // An input with no zero at the front, so that forgetting the chain is
+        // visible from the second byte rather than later by luck.
+        let input: Vec<u8> = (0..expected::ROUTINE_LENGTH)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(3))
+            .collect();
+        let right = expected::routine(&input);
+
+        let first_difference = |wrong: &[u8]| {
+            right
+                .iter()
+                .zip(wrong)
+                .position(|(a, b)| a != b)
+                .expect("a wrong implementation must differ somewhere")
+        };
+
+        assert_eq!(
+            first_difference(&expected::routine_without_the_mask(&input)),
+            0,
+            "forgetting the mask is wrong from the very first byte"
+        );
+        assert_eq!(
+            first_difference(&expected::routine_without_the_chain(&input)),
+            1,
+            "forgetting the chain agrees at offset 0 — one input makes one output there — and \
+             differs at offset 1, which is the first place the chaining matters"
+        );
+        assert_eq!(
+            expected::routine(&input),
+            right,
+            "and the right one agrees with itself"
+        );
+
+        // The transformation is neither the identity nor a constant, or a
+        // reimplementation that did nothing at all would pass.
+        assert_ne!(right, input, "not the identity");
+        assert!(
+            right.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+            "not a constant"
+        );
     }
 
     #[test]
