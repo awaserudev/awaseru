@@ -17,6 +17,14 @@ pub enum Undetermined {
     RegionAbsent { region: String },
     /// Two references were asked and they disagreed with each other (§5.5).
     /// The ground is not solid here, and that is the answer.
+    ///
+    /// **Nothing produces this yet, and the reason is recorded rather than
+    /// left to be rediscovered** (§13's Q10): the first backend's emulator is
+    /// one object its library owns, reached through functions that take no
+    /// handle, so two references in one process are two front ends to one
+    /// machine. §5.5 needs two that can disagree. The variant is here, with a
+    /// test of its own, because the shape of a report must not change when a
+    /// second backend or a child-process reference arrives.
     ReferencesDisagree { first: String, second: String },
     /// The run stopped before reaching the point being compared (§4.3).
     DidNotArrive { stopped: String },
@@ -328,6 +336,110 @@ mod tests {
 
     fn differs() -> Verdict {
         Verdict::Differs(Difference::new(3, 0x4F, 0x00, 1, 10))
+    }
+
+    /// One of every cause, so that a test can go over all of them. The match
+    /// below is the tripwire: a cause added without a sample here stops this
+    /// file compiling, which is the only way a list like this stays complete.
+    fn every_cause() -> Vec<Undetermined> {
+        let all = vec![
+            Undetermined::RegionAbsent {
+                region: "nowhere".into(),
+            },
+            Undetermined::ReferencesDisagree {
+                first: "ref-a".into(),
+                second: "ref-b".into(),
+            },
+            Undetermined::DidNotArrive {
+                stopped: "the budget ran out".into(),
+            },
+            Undetermined::Vacuous { compared: 64 },
+            Undetermined::CapabilityAbsent {
+                capability: "writing-position".into(),
+            },
+            Undetermined::MovementUnknown {
+                region: "work".into(),
+            },
+            Undetermined::SpansDiffer {
+                region: "work".into(),
+            },
+            Undetermined::StatesIncomparable {
+                why: "two versions of the reference".into(),
+            },
+            Undetermined::NotRepeatable {
+                first: "agrees".into(),
+                second: "differs".into(),
+            },
+            Undetermined::AnchorNotDemonstrated {
+                anchor: "later".into(),
+            },
+            Undetermined::SeededFromNoBoundary {
+                position: "part way through an instruction".into(),
+            },
+        ];
+        for cause in &all {
+            match cause {
+                Undetermined::RegionAbsent { .. }
+                | Undetermined::ReferencesDisagree { .. }
+                | Undetermined::DidNotArrive { .. }
+                | Undetermined::Vacuous { .. }
+                | Undetermined::CapabilityAbsent { .. }
+                | Undetermined::MovementUnknown { .. }
+                | Undetermined::SpansDiffer { .. }
+                | Undetermined::StatesIncomparable { .. }
+                | Undetermined::NotRepeatable { .. }
+                | Undetermined::AnchorNotDemonstrated { .. }
+                | Undetermined::SeededFromNoBoundary { .. } => {}
+            }
+        }
+        all
+    }
+
+    /// Every cause must read differently and say what it is about. A reader
+    /// handed two causes that print the same has been told nothing by the
+    /// distinction the type is for.
+    #[test]
+    fn every_cause_reads_differently() {
+        let said: Vec<String> = every_cause().iter().map(|c| c.to_string()).collect();
+        for (i, a) in said.iter().enumerate() {
+            assert!(a.len() > 20, "a cause must explain itself: `{a}`");
+            for b in &said[i + 1..] {
+                assert_ne!(a, b, "two causes read the same");
+            }
+        }
+    }
+
+    /// §5.5's cause, which **nothing produces** (§13's Q10): the first
+    /// backend's emulator is one object per process, so there is no second
+    /// reference to disagree with.
+    ///
+    /// Tested anyway, and deliberately: when a second backend or a
+    /// child-process reference arrives, the report's shape must not have to
+    /// change to carry it. This is the test that says the shape is already
+    /// there.
+    #[test]
+    fn two_references_disagreeing_is_a_cause_that_folds_like_any_other() {
+        let cause = Undetermined::ReferencesDisagree {
+            first: "ref-a".into(),
+            second: "ref-b".into(),
+        };
+        let said = cause.to_string();
+        assert!(said.contains("ref-a") && said.contains("ref-b"), "{said}");
+        assert!(
+            said.contains("no ground"),
+            "§5.5: the honest answer when the ground is not solid: {said}"
+        );
+
+        // It outranks agreement and is outranked by a difference, like every
+        // other cause — §2.3's ranking is about the three values and not about
+        // which cause produced one.
+        let folded = fold(&[agrees(), Verdict::NotDetermined(cause.clone()), agrees()]);
+        assert_eq!(folded, Verdict::NotDetermined(cause.clone()));
+        assert_eq!(
+            fold(&[Verdict::NotDetermined(cause), differs()]),
+            differs(),
+            "a difference still outranks it"
+        );
     }
 
     /// **The test this module exists for.** A set containing one undetermined

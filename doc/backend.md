@@ -181,6 +181,26 @@ no record cannot have been written by the routine, and that answer costs no
 replay. It also means the counters cannot be used to check that a seed landed;
 reading the bytes back is what does that.
 
+### One emulator per process, and what that costs
+
+Every entry point this project uses takes no handle: `InitializeEmu`,
+`LoadRom`, `GetMemoryState`, `SetMemoryValues`, `SetBreakpoints`, `Step`,
+`GetCpuState`, `SaveStateFile`. They address the one emulator the library owns.
+So two references in one process are two front ends to one machine, and
+`Reference` holds a process-wide flag that refuses the second opening rather
+than hand back something that looks like a second machine.
+
+Three consequences, all of them live in this repository:
+
+- **every integration test that opens a reference is one test in a file of its
+  own**, because `cargo test` runs test binaries in parallel but the tests
+  inside one binary share a process. Two such tests in one file fail with the
+  refusal, which is how this was found in M3 rather than by reading;
+- **§5.5's cross-check cannot be built on this backend** (§13's Q10). It needs
+  two references that can disagree with each other;
+- **"in a fresh process" is spelled by spawning the host**, which is what M2's
+  done-condition does and what the route to §5.5 would build on.
+
 ### What this backend declares, and on what evidence
 
 §7.3 says a backend states what it can do and the host asks before relying on

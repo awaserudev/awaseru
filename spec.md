@@ -967,6 +967,51 @@ Verdicts, movement (§5.2), perturbation (§5.3), localisation (§5.4).
 is caught with the first differing offset named; a vacuous comparison is
 reported as vacuous; and a perturbation that should be noticed is noticed.
 
+*How it was met*: against the generated fixture of §11.3, in one test, with each
+of the three claims paired against the case a vacuous differ would pass.
+
+- **The wrong reimplementation**, twice. One that is right about the output's
+  first byte and wrong about the second, so "the *first* differing offset" is a
+  claim and not a constant; and one that is wrong from the first byte. Both
+  offsets, both values and the count come from the fixture's own Rust versions
+  rather than from numbers written down. And the right implementation agrees,
+  without which a differ that always differs passes everything.
+- **The vacuous comparison**: a span the routine never writes, with a candidate
+  that matches it byte for byte. Every compared byte equal, and the verdict *not
+  determined*. The mutation that removes the check prints "agrees over 64 bytes,
+  of which the reference moved 0", which is §2.2's lie-by-passing in the tool's
+  own words.
+- **The perturbation**, both ways. Changing the first input byte moves the
+  verdict; changing the byte just past the input the routine reads leaves it
+  identical, and the tool reports that it cannot discriminate it. Neither
+  changes the verdict itself: a control speaks about the comparison's
+  sensitivity and does not withdraw a finding.
+
+What M3 established that it did not set out to:
+
+- **A write breakpoint names the writing instruction exactly** (§5.4's third
+  item). The break lands *during* the store, before it commits, and the
+  instruction's own program counter is the store. So the answer to "what wrote
+  this byte" is a position §3.4 forbids seeding from, which the report says in
+  those words.
+- **§4.5 is a property of the bound, not advice to the caller.** `Bound::Write`
+  carries the end of the subject as well as the byte, because a bound that
+  waited only for a write runs through the return when the write does not come
+  again — and the fixture, whose routine's output is written once inside it and
+  once by the instruction after its return, makes the difference between the two
+  answers visible rather than theoretical.
+- **A debugger write leaves no write record**, so the access counters report
+  what the software did. That is what makes them a usable filter for §5.4 and
+  what means they cannot be used to check that a seed landed.
+- **§2.5 can be checked at the level of a verdict, for free.** §5.3's control
+  measures the plain comparison again, so a report holds two readings of one
+  measurement; when they disagree, the reference disagrees with itself and
+  neither reading is evidence.
+- **§5.5's cross-check is blocked, and the blockage is the architecture** (Q10).
+  It is the one requirement of §5 that M3 did not build. Two references as two
+  child processes is the route M2's process-spawning points at, and it is an
+  architecture rather than a patch, so it is recorded rather than half-built.
+
 ### M4 — The external API
 
 Framing (§8.3), stdio transport (§8.2), in-process binding (§8.4).
@@ -1014,7 +1059,7 @@ rather than by address.
 | Q7 | The first backend's upstream is a community fork of a project whose original author archived it (§15.4). How much of the risk the narrow C ABI absorbs is untested | a second backend, and one upstream version bump survived |
 | Q8 | Whether a pre-built binary should be able to load a backend at runtime, rather than backends being compiled in (§7.5) | someone with an emulator worth having who cannot rebuild the host |
 | Q9 | **ANSWERED in M2.** Loading the software twice — with the debugger existing and in a break — stops at cycle 0 at the reset vector, before one instruction, identically across processes. `doc/backend.md` has the measurement. What follows is below, and the original question was: **a starting position that is reproducible.** The first backend begins executing the moment software is loaded, and the earliest stop the transcribed API can ask for lands wherever it had got to by the time the request arrived — so the position a session starts from differs from run to run. §2.5 wants the same run to stop the same way every time, and this is upstream of every comparison. | breaking before the first instruction. The backend does this when a setting of its own says to, and that setting lives in a large configuration record not yet transcribed (§16.1); alternatively, loading a saved state on arrival makes the start a known one and is §4.6's job anyway. **Measured since**: everything downstream of a blob *is* reproducible, exactly and across processes (`doc/backend.md`), so the practical answer is that an anchor's origin is itself a blob, captured once. What stays open is that the first blob's own derivation is not reproducible, so it is the one artefact in the chain whose provenance rests on nothing but having been taken |
-| Q10 | **Cross-checking two references of the same backend.** §5.5 compares two references against each other to decide which is wrong. The first backend's emulator is a single object the library owns, reached through functions that take no handle, so two of them in one process are two front ends to one emulator — and the tool refuses the second rather than pretend. | either two *different* backends, which is what §5.5 is really for, or driving each as a child process (Q6), or loading the same library twice into separate link-map namespaces — which is possible and untested |
+| Q10 | **Cross-checking two references of the same backend.** §5.5 compares two references against each other to decide which is wrong. The first backend's emulator is a single object the library owns, reached through functions that take no handle, so two of them in one process are two front ends to one emulator — and the tool refuses the second rather than pretend. **M3 confirmed the blockage is the architecture and not an oversight**: every entry point the host uses — `InitializeEmu`, `LoadRom`, `GetMemoryState`, `SetBreakpoints`, `Step` — addresses that one object, and `Reference` holds a process-wide flag that refuses a second opening, which is why every integration test in this project is one test per file. §5.5 is therefore the one requirement of §5 that M3 did not build; it is recorded here rather than half-built, and the differ's shape does not depend on it: a cross-check produces `Undetermined::ReferencesDisagree`, which exists, is tested in the core, and has no producer. | either two *different* backends, which is what §5.5 is really for, or **two references as two child processes**, which M2 showed is an architecture rather than a patch and is the most likely route: M2's done-condition already spawns the host three times and compares state digests to the byte across processes, so the pieces — a child that comes up reproducibly, a digest that travels, a parent that compares — are built and measured. What is missing is a trait that spans both ways of driving a backend (Q6) and a protocol for the parent to drive the child with, which is M4's work and should not be invented twice. Or loading the same library twice into separate link-map namespaces, which is possible and untested |
 
 | Q11 | **The first backend's version does not identify a build.** Its `GetVersion` returns a constant written into a source file, so every commit between two releases reports the same number and §16.1's check cannot tell them apart. The commit hash is the real identity, and `doc/backend.md` records it. | §16.5's conformance fixtures, which compare behaviour rather than labels — on this backend they are not a refinement of the upgrade policy but the load-bearing part of it. A backend that derived its version from its build would also settle it, and is not ours to change |
 
@@ -1023,6 +1068,9 @@ rather than by address.
 | Q13 | **ANSWERED in M2**, by writing zeros to all seven writable memory types at Q9's power-on position: three processes then agree on every memory, the processor record, the video record, the cycle count and the position. It cost a declared divergence from the hardware rather than a transcribed configuration record, and every report says which was done. Measured in `doc/backend.md`. The original question was: **the first backend fills work memory pseudo-randomly at power-on, differently in every process.** This is the case §2.5 names by example. Measured with the generated fixture, which does not clear memory: two processes loading the same image see different bytes everywhere the program did not write. It is invisible with software that initialises its own memory, which is why it was not found until there was a fixture that does not. Its consequence is larger than it looks: **determinism from power-on is not attainable on this backend, and determinism from a blob is** — U1 measured that everything downstream of a blob agrees exactly across processes. So §4.7's anchors are not only how a run becomes fast, they are how it becomes reproducible, and M2's done-condition is reachable only through one. | making it deterministic, which this backend can do — it has a power-on memory setting — but only through a configuration record far larger than anything transcribed so far (§16.1), so it is a cost rather than an unknown. Until then, §2.5's other half applies: memory the software has not written is *not determined*, and a comparison must say so rather than compare it |
 
 | Q14 | **§4.7's input logs cannot be replayed on the first backend.** Measured, not assumed: the backend reports **no control device at any of its eight indices**, so setting an input override stores a state nothing reads, and a fixture written to wait for a button stays waiting with one set. The only way to attach a controller is the configuration record passed by value — ten controller configurations, each holding a key-mapping set of its own — which is the record §13's Q13 priced and refused for the same reason: one field wrong silently changes the accuracy of the thing whose job is to be the ground. So an anchor behind software that waits for input is not reachable, and the tool refuses such an anchor rather than arriving somewhere else and calling it that one. **Where that refusal lives changed in M3**: it was a constant in the platform-independent half, which was a fact about the only backend there was rather than about every backend, and it is now §7.3's declaration — the definition says it needs `input-replay`, the reference says whether it has it, and the refusal names both. | a narrow way to attach a controller, which this backend does not export; or transcribing the configuration record, which is a decision about risk rather than an unknown; or driving the backend's movie playback, which replays input deterministically and needs its archive format written — the most promising of the three, because the format is a documented container rather than a C++ struct layout. The gated fixture of §11.3 exists and waits, so whichever route is taken has something to prove itself against |
+
+| Q15 | **§7.2's other three capabilities are routes nobody has taken.** The first backend exports a read flag in its breakpoint record, an execute counter and stamp in its access record, and a flat `GetCallstack` whose record nests only two-field address pairs. Each is enough to implement `stop-on-read`, `execution-coverage` and `call-and-return-events`, and none of them is declared (§7.3), because this crate has not exercised one and a route is not a declaration. Measured in M3 and recorded in `doc/backend.md`. | a comparison that needs one. Each would be transcribed in an afternoon; what is absent is a question the tool is being asked that it cannot answer today, and building against a guess is what §2.4 refuses. Execution coverage is the likeliest first, because "which instructions did this routine run" is the natural companion to §5.4's "which instruction wrote this byte" |
+| Q16 | **A `Difference` does not name the region it is in.** §5.4's first item is an offset, read against the region — and the region's name is not in the value. It is recoverable while the comparison is in hand, and the differ does recover it, by comparing region by region rather than through the folding `compare` and keeping the name of the region whose verdict won. That is enough inside one process and is not enough on a wire: a report crossing §8's boundary carries a difference with an offset and no name, and whoever receives it cannot tell which region `1025` is an offset into. | M4's framing, where the question becomes concrete: either the difference carries the name, or the report carries one difference per named region, and the wire form is what decides which. Not changed now, because both shapes are defensible and the one that is right is the one the protocol needs |
 
 No Q5 was ever issued; the gap is left alone so that the ids already written
 down elsewhere keep meaning what they meant.
