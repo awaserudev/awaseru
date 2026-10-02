@@ -32,7 +32,6 @@
 //! that did not carry its position would make that check impossible to write.
 
 use crate::run::Position;
-use crate::snapshot::{NotComparable, Provenance};
 
 /// Opaque state, as the backend produced it.
 ///
@@ -44,7 +43,7 @@ use crate::snapshot::{NotComparable, Provenance};
 pub struct Blob {
     bytes: Vec<u8>,
     position: Position,
-    provenance: Provenance,
+    fingerprint: Vec<u8>,
 }
 
 impl std::fmt::Debug for Blob {
@@ -53,10 +52,10 @@ impl std::fmt::Debug for Blob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Blob({} bytes, at {}, from {})",
+            "Blob({} bytes, at {}, fingerprint of {})",
             self.bytes.len(),
             self.position,
-            self.provenance
+            self.fingerprint.len()
         )
     }
 }
@@ -64,11 +63,11 @@ impl std::fmt::Debug for Blob {
 impl Blob {
     /// `position` must be the position **after** the save — see this module's
     /// header for why that is not a detail.
-    pub fn new(bytes: Vec<u8>, position: Position, provenance: Provenance) -> Self {
+    pub fn new(bytes: Vec<u8>, position: Position, fingerprint: Vec<u8>) -> Self {
         Blob {
             bytes,
             position,
-            provenance,
+            fingerprint,
         }
     }
 
@@ -82,8 +81,21 @@ impl Blob {
         &self.position
     }
 
-    pub fn provenance(&self) -> &Provenance {
-        &self.provenance
+    /// Something cheap the backend can read back after a load to see whether
+    /// the load did anything. Opaque to everything above the backend, which is
+    /// the only layer that knows what it put here.
+    ///
+    /// It exists because the position alone is not enough: this backend leaves
+    /// the machine untouched when a load fails, so a load attempted while the
+    /// machine is still *at* the blob's position would pass a position check
+    /// without having done anything. A fingerprint over something monotonic —
+    /// a cycle count — tells those apart as soon as the machine has moved at
+    /// all.
+    ///
+    /// It is **not** §4.11's cheap check, which digests the regions an anchor
+    /// declares. This is the narrower thing available without an anchor.
+    pub fn fingerprint(&self) -> &[u8] {
+        &self.fingerprint
     }
 
     pub fn len(&self) -> usize {
@@ -112,9 +124,9 @@ pub enum StateError {
         expected: Position,
         found: Position,
     },
-    /// The blob belongs to another reference, or to other software (§16.5,
-    /// §6.6).
-    NotComparable(NotComparable),
+    /// The load arrived at the right position and the machine is not the
+    /// machine the blob was taken from.
+    FingerprintDiffers,
     Backend { why: String },
 }
 
@@ -132,7 +144,12 @@ impl std::fmt::Display for StateError {
                  reports nothing about a load that fails, so this is what a failed load looks \
                  like — the machine is most likely untouched"
             ),
-            StateError::NotComparable(e) => write!(f, "{e}"),
+            StateError::FingerprintDiffers => write!(
+                f,
+                "the load arrived where the blob was taken and the machine is not the one the \
+                 blob holds — most likely the blob is for other software, which this backend \
+                 does not refuse for itself"
+            ),
             StateError::Backend { why } => write!(f, "the backend could not do it: {why}"),
         }
     }
@@ -140,30 +157,15 @@ impl std::fmt::Display for StateError {
 
 impl std::error::Error for StateError {}
 
-impl From<NotComparable> for StateError {
-    fn from(e: NotComparable) -> Self {
-        StateError::NotComparable(e)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn provenance() -> Provenance {
-        Provenance {
-            reference: "ref-a".into(),
-            backend: "a-backend".into(),
-            version: "1.0.0".into(),
-            software: "abcdef0123456789".into(),
-        }
-    }
 
     fn blob() -> Blob {
         Blob::new(
             vec![0xAB; 1024],
             Position::FrameBoundary { frame: 7 },
-            provenance(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
         )
     }
 
@@ -174,7 +176,7 @@ mod tests {
         let b = blob();
         assert_eq!(b.position(), &Position::FrameBoundary { frame: 7 });
         assert_eq!(b.len(), 1024);
-        assert_eq!(b.provenance().reference, "ref-a");
+        assert_eq!(b.fingerprint().len(), 8);
     }
 
     /// **The variant that exists because of a measurement.** The first
@@ -207,7 +209,7 @@ mod tests {
             Position::MidInstruction { pc: 0x8000 },
             Position::Unclassified { pc: 0x8000 },
         ] {
-            let b = Blob::new(vec![1, 2, 3], position.clone(), provenance());
+            let b = Blob::new(vec![1, 2, 3], position.clone(), vec![]);
             assert_eq!(b.position(), &position, "no position is refused here");
         }
     }
@@ -227,19 +229,30 @@ mod tests {
 
     /// The errors are distinguishable, because what to do about them differs:
     /// one is a mistake in the call, one is a stale cache, one is the wrong file.
+    /// The three failures are different things to be told, and a caller may
+    /// well act differently on each: one is a mistake in the call, one is a
+    /// load that did not take, one is a blob that is not of this machine.
     #[test]
     fn the_state_errors_read_differently_from_each_other() {
-        let not_stopped = StateError::NotStopped.to_string();
-        let wrong_software = StateError::NotComparable(NotComparable::DifferentSoftware {
-            first: "aaaaaaaaaaaaaaaa".into(),
-            second: "bbbbbbbbbbbbbbbb".into(),
-        })
-        .to_string();
-        assert!(not_stopped.contains("stop it first"), "said: {not_stopped}");
-        assert!(
-            wrong_software.contains("two programs"),
-            "said: {wrong_software}"
-        );
-        assert_ne!(not_stopped, wrong_software);
+        let said: Vec<String> = [
+            StateError::NotStopped,
+            StateError::LandedElsewhere {
+                expected: Position::FrameBoundary { frame: 1 },
+                found: Position::FrameBoundary { frame: 2 },
+            },
+            StateError::FingerprintDiffers,
+        ]
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+
+        assert!(said[0].contains("stop it first"), "said: {}", said[0]);
+        assert!(said[1].contains("failed load"), "said: {}", said[1]);
+        assert!(said[2].contains("other software"), "said: {}", said[2]);
+        for (i, a) in said.iter().enumerate() {
+            for b in &said[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
     }
 }

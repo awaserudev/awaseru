@@ -200,6 +200,26 @@ and reading it back returns the change, so the round-trip is not a no-op. Of the
 8 KiB buffer, 13 bytes were non-zero at the position measured — the record is
 small and mostly zero, which is why over-allocating costs nothing.
 
+### How big its state records are
+
+Not documented anywhere, and not guessed. Measured by filling the buffer with
+`0xFF`, reading the record, and noting the last changed byte; then again with
+`0x00`. Bytes past the end held the filler in **both** cases — had the backend
+written them they would have come back equal under both fillers, and they did
+not. So these are exact, not lower bounds:
+
+| record | bytes |
+|---|---|
+| the processor | **32** |
+| the video hardware | 202 |
+
+Only the processor's is used: it is what `read_processor` returns, opaquely. The
+binding still hands the backend a buffer far larger than that and checks whether
+anything past byte 31 was touched, so a backend whose record has grown is caught
+at run time rather than by a truncated read nobody notices. §16.1's version
+check would catch a version bump; that check catches a rebuild that kept the
+version and moved the struct.
+
 ### Saving and loading the opaque blob
 
 | | |
@@ -242,6 +262,16 @@ bound run onward gave the same state again. `resume + 4 frames` and
 `origin + 9 frames` arrived at the same cycle with the same memory. That is §2.5
 satisfied for anything downstream of a blob — and it is what makes §4.7's anchors
 sound.
+
+**5. The position check cannot catch a load that did nothing when nothing has
+moved.** Proven rather than suspected: deleting the call to the backend's load
+from this project's own implementation leaves the position and the fingerprint
+exactly as the blob recorded them — because the machine had not advanced since
+the save — and both checks pass. What caught it was a test that disturbs the
+machine first and then shows the disturbance gone. So the checks detect a load
+that landed *elsewhere*, and a test of a load has to put the machine somewhere
+it demonstrably is not before loading. §4.11's digest over an anchor's declared
+regions is the general form of that.
 
 **What this does not cover**: a blob belonging to *different software*. Testing
 that needs a second ROM, which is what §11.3's generated fixture will provide.

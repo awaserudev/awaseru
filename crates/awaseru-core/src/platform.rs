@@ -5,8 +5,10 @@
 //! names it is given (§2.7), which is what makes a second platform an addition
 //! rather than a rewrite.
 
+use crate::blob::{Blob, StateError};
 use crate::region::{Region, Regions, SpanError};
 use crate::run::{Bound, Stop};
+use crate::snapshot::Processor;
 
 /// A backend's own version, as the library reports it — §16.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +163,49 @@ pub trait Platform {
     /// A bound this backend cannot honour is `Reason::Refused`, never an
     /// approximation of it.
     fn run(&mut self, bound: Bound) -> Result<Stop, RunError>;
+
+    /// A whole region, written.
+    ///
+    /// **This does not seed the machine**, and callers reaching for it to do so
+    /// are the reason the warning is here rather than in a guide. A console is
+    /// not its memories: its video and audio hardware, its transfer units, its
+    /// timers and its master clock are not in any region, so a machine with
+    /// memory written into it is a machine in a state it could not have reached
+    /// by running. §4.7 is why arriving somewhere uses a blob instead, and
+    /// §5.3's perturbation is what this verb is for.
+    fn write(&mut self, region: &str, bytes: &[u8]) -> Result<(), WriteError>;
+
+    /// A span of one, written.
+    fn write_span(&mut self, region: &str, offset: usize, bytes: &[u8])
+    -> Result<(), WriteError>;
+
+    /// The processor state (§3.3).
+    ///
+    /// Opaque in this version — §7.6's question about what a processor state is
+    /// across platforms that do not share a register file is still open, and
+    /// §2.4 says not to answer it by guessing a shape.
+    fn read_processor(&self) -> Result<Processor, ReadError>;
+
+    /// The processor state, written. Carries the same warning as `write`.
+    fn write_processor(&mut self, processor: &Processor) -> Result<(), WriteError>;
+
+    /// Takes the machine's whole state, opaquely (§7.2, §4.7).
+    ///
+    /// Unlike `write`, this **is** the way to put a machine somewhere: a blob
+    /// holds everything, including the parts §3's model does not name.
+    ///
+    /// Implementations must give the blob the position the machine is at
+    /// **after** the save, because on at least one backend saving advances it
+    /// (`doc/backend.md`).
+    fn save_state(&mut self) -> Result<Blob, StateError>;
+
+    /// Puts one back, and checks that it arrived.
+    ///
+    /// The check is not optional politeness. A backend may report nothing at
+    /// all about a load that failed (§13's Q12), so an implementation that did
+    /// not compare where it landed against what the blob recorded would leave
+    /// its caller unable to tell a resumed machine from an untouched one.
+    fn load_state(&mut self, blob: &Blob) -> Result<(), StateError>;
 }
 
 /// Checks a read against the region set, so that every backend does not repeat

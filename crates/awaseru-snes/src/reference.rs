@@ -43,16 +43,17 @@
 //! is better than half working), and §13 carries the question of what to do
 //! about cross-checking two references when they are the same backend.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use awaseru_core::{
-    Bound, Platform, Position, ReadError, Reason, Region, Regions, RunError, Stop,
-    platform::BackendVersion, check_read,
+    Blob, Bound, Platform, Position, ReadError, Reason, Region, Regions, RunError, StateError,
+    Stop, WriteError, platform::BackendVersion, check_read, check_write,
 };
+use awaseru_core::snapshot::Processor;
 
-use crate::ffi::{Backend, LoadError, StepKind};
+use crate::ffi::{Backend, LoadError, PROCESSOR_STATE_BYTES, StepKind};
 use crate::memory::MAPPINGS;
 
 /// Taken for as long as a reference exists, because the backend's emulator is
@@ -140,6 +141,9 @@ struct Mapped {
 /// An emulator this crate drives, as the host sees it.
 pub struct Reference {
     backend: Backend,
+    /// Where the backend may keep its own files. The opaque blob goes through
+    /// one, because that is the only way this backend offers it.
+    home: PathBuf,
     mapped: Vec<Mapped>,
     regions: Regions,
     /// Whether the backend is sitting in a break.
@@ -281,6 +285,7 @@ impl Reference {
 
         Ok(Reference {
             backend,
+            home: home.to_path_buf(),
             mapped,
             regions,
             stopped: true,
@@ -347,6 +352,51 @@ impl Reference {
                   written underneath — the last run did not reach a break"
                 .to_string(),
         })
+    }
+
+    /// Refuses a write taken while the reference is running, for the same
+    /// reason a read is refused: the backend's own thread is writing the same
+    /// memory, so what lands is neither what was there nor what was asked for.
+    fn require_stopped_to_write(&self) -> Result<(), WriteError> {
+        if self.stopped {
+            return Ok(());
+        }
+        Err(WriteError::NotStopped)
+    }
+
+    /// Where the opaque blob goes. One file, reused — the blob's bytes are
+    /// carried in memory and this is only the hatch the backend insists on.
+    fn state_file(&self) -> PathBuf {
+        self.home.join("awaseru-state.tmp")
+    }
+
+    /// Something cheap to tell a resumed machine from an untouched one.
+    ///
+    /// The processor record, which begins with a cycle count that only goes up.
+    /// Two machines at the same position with different cycle counts are not
+    /// the same machine, and this is what notices.
+    fn fingerprint(&self) -> Vec<u8> {
+        self.backend.processor_state().bytes
+    }
+
+    /// Where the machine is after a save or a load, classified only as far as
+    /// it can be.
+    ///
+    /// Not claimed to be an instruction boundary even though it probably is —
+    /// the break that ends a save comes from completing whatever instruction
+    /// was in progress. Probably is not measured, and §2.4 would rather say
+    /// nothing (§3.4's kinds exist so that nothing has to be rounded).
+    fn position_now(&self) -> Position {
+        let video = self.backend.video_snapshot();
+        if video.line == 0 && video.dot == 0 {
+            Position::FrameBoundary {
+                frame: u64::from(video.frames),
+            }
+        } else {
+            Position::Unclassified {
+                pc: u64::from(self.backend.cpu_snapshot().pc),
+            }
+        }
     }
 
     /// One step of a bounded run: lodge the request, wait for the break.
@@ -465,6 +515,123 @@ impl Platform for Reference {
         check_read(&self.regions, region, Some((offset, len)))?;
         let whole = self.read(region)?;
         Ok(whole[offset..offset + len].to_vec())
+    }
+
+    fn write(&mut self, region: &str, bytes: &[u8]) -> Result<(), WriteError> {
+        self.require_stopped_to_write()?;
+        let declared = check_write(&self.regions, region, None)?;
+        if bytes.len() != declared.size {
+            // A partial write presented as a whole-region write would leave the
+            // rest of the region holding whatever was there, which is a machine
+            // state nobody asked for and nothing records.
+            return Err(WriteError::Span(
+                declared
+                    .span(0, bytes.len())
+                    .err()
+                    .unwrap_or(awaseru_core::SpanError::PastTheEnd {
+                        region: region.to_string(),
+                        offset: 0,
+                        len: bytes.len(),
+                        size: declared.size,
+                    }),
+            ));
+        }
+        let memory_type = self.memory_type(region).ok_or_else(|| WriteError::Absent {
+            region: region.to_string(),
+        })?;
+        self.backend
+            .write_memory(memory_type, bytes)
+            .map_err(|e| WriteError::Backend { why: e.to_string() })
+    }
+
+    fn write_span(
+        &mut self,
+        region: &str,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), WriteError> {
+        self.require_stopped_to_write()?;
+        check_write(&self.regions, region, Some((offset, bytes.len())))?;
+        let memory_type = self.memory_type(region).ok_or_else(|| WriteError::Absent {
+            region: region.to_string(),
+        })?;
+        let address = u32::try_from(offset).map_err(|_| WriteError::Backend {
+            why: "this backend addresses a span with a 32-bit number".to_string(),
+        })?;
+        self.backend
+            .write_memory_span(memory_type, address, bytes)
+            .map_err(|e| WriteError::Backend { why: e.to_string() })
+    }
+
+    fn read_processor(&self) -> Result<Processor, ReadError> {
+        self.require_stopped()?;
+        let read = self.backend.processor_state();
+        if read.wrote_beyond {
+            // The backend's record is bigger than this binding reads, so what
+            // came back is a truncation. Refusing is the only honest answer:
+            // the missing part is registers, and §3.3 says a comparison seeded
+            // without them is a comparison of something else.
+            return Err(ReadError::Backend {
+                why: format!(
+                    "the backend wrote more than the {PROCESSOR_STATE_BYTES} bytes this binding                      reads, so its processor record has grown and the transcription is stale"
+                ),
+            });
+        }
+        Ok(Processor::opaque(read.bytes))
+    }
+
+    fn write_processor(&mut self, processor: &Processor) -> Result<(), WriteError> {
+        self.require_stopped_to_write()?;
+        self.backend
+            .write_processor_state(processor.bytes())
+            .map_err(|e| WriteError::Backend { why: e.to_string() })
+    }
+
+    fn save_state(&mut self) -> Result<Blob, StateError> {
+        if !self.stopped {
+            return Err(StateError::NotStopped);
+        }
+        let path = self.state_file();
+        self.backend
+            .save_state_to(&path)
+            .map_err(|e| StateError::Backend { why: e.to_string() })?;
+        let bytes = std::fs::read(&path).map_err(|e| StateError::Backend {
+            why: format!("the state the backend wrote to {} could not be read: {e}", path.display()),
+        })?;
+        // After the save, never before — saving advances the machine
+        // (`doc/backend.md`), and a blob whose position was read first is a
+        // blob that appears to be off by one.
+        let position = self.position_now();
+        self.last_position = position.clone();
+        Ok(Blob::new(bytes, position, self.fingerprint()))
+    }
+
+    fn load_state(&mut self, blob: &Blob) -> Result<(), StateError> {
+        if !self.stopped {
+            return Err(StateError::NotStopped);
+        }
+        let path = self.state_file();
+        std::fs::write(&path, blob.bytes()).map_err(|e| StateError::Backend {
+            why: format!("the state could not be written to {}: {e}", path.display()),
+        })?;
+        self.backend
+            .load_state_from(&path)
+            .map_err(|e| StateError::Backend { why: e.to_string() })?;
+
+        // The backend says nothing about a load that failed (§13's Q12), so
+        // these two checks are the whole of knowing whether it did anything.
+        let found = self.position_now();
+        if found != *blob.position() {
+            return Err(StateError::LandedElsewhere {
+                expected: blob.position().clone(),
+                found,
+            });
+        }
+        if self.fingerprint() != blob.fingerprint() {
+            return Err(StateError::FingerprintDiffers);
+        }
+        self.last_position = found;
+        Ok(())
     }
 
     fn run(&mut self, bound: Bound) -> Result<Stop, RunError> {

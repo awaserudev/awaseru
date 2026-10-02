@@ -41,6 +41,8 @@ pub enum LoadError {
     Symbol { name: &'static str, why: String },
     /// A path that cannot be handed to a C API.
     Path { path: String, why: &'static str },
+    /// An argument this backend cannot be given.
+    Argument { why: &'static str },
 }
 
 impl std::fmt::Display for LoadError {
@@ -56,6 +58,9 @@ impl std::fmt::Display for LoadError {
                  the interop layer"
             ),
             LoadError::Path { path, why } => write!(f, "the path {path} cannot be used: {why}"),
+            LoadError::Argument { why } => {
+                write!(f, "this backend cannot be given {why}")
+            }
         }
     }
 }
@@ -96,6 +101,12 @@ struct Symbols {
     Step: unsafe extern "C" fn(cpu_type: u8, count: u32, step_type: i32),
     GetCpuState: unsafe extern "C" fn(state: *mut u8, cpu_type: u8),
     GetPpuState: unsafe extern "C" fn(state: *mut u8, cpu_type: u8),
+    SetCpuState: unsafe extern "C" fn(state: *const u8, cpu_type: u8),
+    SetMemoryState: unsafe extern "C" fn(memory_type: u32, buffer: *const u8, length: i32),
+    SetMemoryValues:
+        unsafe extern "C" fn(memory_type: u32, address: u32, data: *const u8, length: i32),
+    SaveStateFile: unsafe extern "C" fn(path: *const c_char),
+    LoadStateFile: unsafe extern "C" fn(path: *const c_char),
 }
 
 /// An opened backend library.
@@ -170,6 +181,11 @@ impl Backend {
             Step: symbol!("Step"),
             GetCpuState: symbol!("GetCpuState"),
             GetPpuState: symbol!("GetPpuState"),
+            SetCpuState: symbol!("SetCpuState"),
+            SetMemoryState: symbol!("SetMemoryState"),
+            SetMemoryValues: symbol!("SetMemoryValues"),
+            SaveStateFile: symbol!("SaveStateFile"),
+            LoadStateFile: symbol!("LoadStateFile"),
         };
 
         Ok(Backend {
@@ -376,6 +392,114 @@ impl Backend {
         }
     }
 
+    /// Writes a whole memory.
+    ///
+    /// The length is handed over as the backend declares it — a signed 32-bit
+    /// number on both sides of its interop boundary — so a buffer longer than
+    /// that is refused here rather than silently truncated to a negative.
+    pub fn write_memory(&self, memory_type: u32, bytes: &[u8]) -> Result<(), LoadError> {
+        let length = i32::try_from(bytes.len()).map_err(|_| LoadError::Argument {
+            why: "a memory longer than a signed 32-bit length can describe",
+        })?;
+        // SAFETY: the pointer is to `bytes`, which outlives the call, and the
+        // length is exactly its length.
+        unsafe { (self.symbols.SetMemoryState)(memory_type, bytes.as_ptr(), length) }
+        Ok(())
+    }
+
+    /// Writes part of a memory, at an address within it.
+    pub fn write_memory_span(
+        &self,
+        memory_type: u32,
+        address: u32,
+        bytes: &[u8],
+    ) -> Result<(), LoadError> {
+        let length = i32::try_from(bytes.len()).map_err(|_| LoadError::Argument {
+            why: "a span longer than a signed 32-bit length can describe",
+        })?;
+        // SAFETY: as `write_memory`. The backend is responsible for the range,
+        // and the caller has already checked it against the region (§3.1).
+        unsafe { (self.symbols.SetMemoryValues)(memory_type, address, bytes.as_ptr(), length) }
+        Ok(())
+    }
+
+    /// Reads the processor state, and says whether the backend wrote more of
+    /// the buffer than this binding reads.
+    ///
+    /// # How the length was arrived at
+    ///
+    /// By measurement, and the measurement is sound rather than approximate.
+    /// The buffer was filled with `0xFF`, the state read, and the last changed
+    /// byte noted; then the same with `0x00`. Bytes past 31 held the filler in
+    /// **both** cases — had the backend written them they would have come back
+    /// equal under both fillers, and they did not. So the backend writes
+    /// exactly 32 bytes, and this reads exactly those.
+    ///
+    /// `wrote_beyond` is how a backend whose record has grown is caught at run
+    /// time rather than by a truncated read nobody notices. §16.1's version
+    /// check would catch a version bump; this catches a rebuild that kept the
+    /// version and moved the struct.
+    pub fn processor_state(&self) -> ProcessorRead {
+        const FILLER: u8 = 0xFF;
+        let mut buffer = StateBuffer::filled(FILLER);
+        // SAFETY: the backend writes its own record into the buffer, which is
+        // far larger than the record and correctly aligned.
+        unsafe { (self.symbols.GetCpuState)(buffer.as_mut_ptr(), MAIN_CPU) };
+        ProcessorRead {
+            bytes: buffer.head(PROCESSOR_STATE_BYTES).to_vec(),
+            wrote_beyond: buffer
+                .tail(PROCESSOR_STATE_BYTES)
+                .iter()
+                .any(|&b| b != FILLER),
+        }
+    }
+
+    /// Writes the processor state back.
+    ///
+    /// The backend copies its own record's worth out of the buffer, so the
+    /// buffer is made the full size and the given bytes placed at the front.
+    /// Fewer bytes than it reads would leave the rest of the record filled with
+    /// whatever this buffer happened to hold, which is why a short state is
+    /// refused rather than padded.
+    pub fn write_processor_state(&self, bytes: &[u8]) -> Result<(), LoadError> {
+        if bytes.len() != PROCESSOR_STATE_BYTES {
+            return Err(LoadError::Argument {
+                why: "a processor state that is not the length this backend's record is",
+            });
+        }
+        let mut buffer = StateBuffer::filled(0);
+        buffer.put(bytes);
+        // SAFETY: the backend copies its record's worth from the front of the
+        // buffer; the buffer is larger than that and the front is the state.
+        unsafe { (self.symbols.SetCpuState)(buffer.as_ptr(), MAIN_CPU) }
+        Ok(())
+    }
+
+    /// Asks the backend to write its whole machine state to a file.
+    ///
+    /// **This advances the machine** to the next place its debugger can break
+    /// (`doc/backend.md`), so the position of what was saved is the position
+    /// read *after* this returns.
+    pub fn save_state_to(&self, path: &Path) -> Result<(), LoadError> {
+        let path = c_path(path)?;
+        // SAFETY: the string outlives the call.
+        unsafe { (self.symbols.SaveStateFile)(path.as_ptr()) }
+        Ok(())
+    }
+
+    /// Asks the backend to read a machine state back from a file.
+    ///
+    /// **Reports nothing.** Given a file of nonsense, or no file at all, the
+    /// backend leaves the machine as it was and says so to nobody (§13's Q12).
+    /// Whether it worked is decided by looking at where the machine is
+    /// afterwards, which is why a blob carries its position.
+    pub fn load_state_from(&self, path: &Path) -> Result<(), LoadError> {
+        let path = c_path(path)?;
+        // SAFETY: the string outlives the call.
+        unsafe { (self.symbols.LoadStateFile)(path.as_ptr()) }
+        Ok(())
+    }
+
     /// Where the video hardware stands.
     pub fn video_snapshot(&self) -> VideoSnapshot {
         let mut buffer = StateBuffer::new();
@@ -454,15 +578,40 @@ pub enum StepKind {
 #[repr(C, align(8))]
 struct StateBuffer([u8; StateBuffer::SIZE]);
 
+/// How many bytes the backend's processor record is, measured — see
+/// `Backend::processor_state` for how, and why the measurement is exact rather
+/// than a lower bound.
+pub const PROCESSOR_STATE_BYTES: usize = 32;
+
 impl StateBuffer {
     const SIZE: usize = 8192;
 
     fn new() -> Box<Self> {
-        Box::new(StateBuffer([0; Self::SIZE]))
+        Self::filled(0)
+    }
+
+    fn filled(byte: u8) -> Box<Self> {
+        Box::new(StateBuffer([byte; Self::SIZE]))
     }
 
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.0.as_mut_ptr()
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.0.as_ptr()
+    }
+
+    fn head(&self, len: usize) -> &[u8] {
+        &self.0[..len]
+    }
+
+    fn tail(&self, from: usize) -> &[u8] {
+        &self.0[from..]
+    }
+
+    fn put(&mut self, bytes: &[u8]) {
+        self.0[..bytes.len()].copy_from_slice(bytes);
     }
 
     fn u8_at(&self, offset: usize) -> u8 {
@@ -487,6 +636,25 @@ impl StateBuffer {
         bytes.copy_from_slice(&self.0[offset..offset + 8]);
         u64::from_ne_bytes(bytes)
     }
+}
+
+/// A read of the processor's record, with the one thing a caller cannot see for
+/// itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessorRead {
+    /// Exactly the record, as measured.
+    pub bytes: Vec<u8>,
+    /// Whether the backend wrote past what this binding reads — which would
+    /// mean its record has grown and this transcription has gone stale.
+    pub wrote_beyond: bool,
+}
+
+/// A path as a C string, refused rather than mangled when it cannot be one.
+fn c_path(path: &Path) -> Result<CString, LoadError> {
+    CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| LoadError::Path {
+        path: path.display().to_string(),
+        why: "it contains a zero byte, which a C string cannot carry",
+    })
 }
 
 /// As much of the processor's position as this binding reads.

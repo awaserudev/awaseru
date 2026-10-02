@@ -27,7 +27,7 @@
 //! what it depends on is that a console with memory in it has something in its
 //! memory.
 
-use awaseru_core::{Bound, Platform, Position, Reason, ReadError};
+use awaseru_core::{Blob, Bound, Platform, Position, ReadError, Reason, StateError, WriteError};
 use awaseru_snes::{OpenError, Reference};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -228,6 +228,172 @@ fn the_reference_maps_regions_and_runs_bounded() {
     assert!(
         matches!(stop.reason, Reason::Refused { .. }),
         "a count the backend cannot hold must be refused rather than truncated: {stop}"
+    );
+
+    // ---- writing a region, and reading back what was written -------------
+    let before = reference.read("work-ram").expect("it reads");
+    let pattern: Vec<u8> = (0..before.len()).map(|i| (i * 7 + 13) as u8).collect();
+    assert_ne!(
+        pattern, before,
+        "the pattern has to differ from what is there, or writing it proves nothing"
+    );
+    reference.write("work-ram", &pattern).expect("it writes");
+    assert_eq!(
+        reference.read("work-ram").expect("it reads"),
+        pattern,
+        "what was written must come back; a write that did nothing and a read that is cached \
+         look the same from here, and this is what tells them apart"
+    );
+
+    // A span, and only the span.
+    reference.write("work-ram", &before).expect("restore");
+    let segment = [0xA5u8; 64];
+    reference
+        .write_span("work-ram", 0x1000, &segment)
+        .expect("it writes");
+    let after_span = reference.read("work-ram").expect("it reads");
+    assert_eq!(&after_span[0x1000..0x1040], &segment, "the span arrived");
+    assert_eq!(
+        &after_span[..0x1000],
+        &before[..0x1000],
+        "and nothing before it moved"
+    );
+    assert_eq!(
+        &after_span[0x1040..],
+        &before[0x1040..],
+        "and nothing after it moved"
+    );
+
+    // ---- the write refusals ----------------------------------------------
+    let err = reference
+        .write("work-ram", &pattern[..100])
+        .expect_err("not the whole region");
+    assert!(
+        matches!(err, WriteError::Span(_)),
+        "a short whole-region write must be refused, not padded with whatever was there: {err:?}"
+    );
+    let err = reference
+        .write("program-rom", &[0u8; 16])
+        .expect_err("read-only");
+    assert!(
+        matches!(err, WriteError::NotWritable { .. }),
+        "the cartridge's program data is not writable; writing it would change the subject: {err:?}"
+    );
+    let err = reference
+        .write("nowhere", &[0u8; 16])
+        .expect_err("no such region");
+    assert!(matches!(err, WriteError::Absent { .. }), "got {err:?}");
+
+    // ---- the processor state round-trips ----------------------------------
+    let processor = reference.read_processor().expect("it reads");
+    assert!(
+        !processor.is_empty(),
+        "an empty processor state would make §3.3 unimplementable"
+    );
+    reference
+        .write_processor(&processor)
+        .expect("it writes it back");
+    assert_eq!(
+        reference.read_processor().expect("it reads").bytes(),
+        processor.bytes(),
+        "the state must survive being written back"
+    );
+
+    // And writing a *different* one arrives, so the round-trip above is not a
+    // pair of no-ops agreeing with each other.
+    let mut altered = processor.bytes().to_vec();
+    altered[0] ^= 0xFF;
+    reference
+        .write_processor(&awaseru_core::snapshot::Processor::opaque(altered.clone()))
+        .expect("it writes");
+    assert_eq!(
+        reference.read_processor().expect("it reads").bytes(),
+        &altered[..],
+        "a changed processor state must arrive, or `write_processor` is doing nothing"
+    );
+    reference.write_processor(&processor).expect("restore");
+
+    // ---- the blob: save, disturb, load, and prove the disturbance is gone -
+    reference.write("work-ram", &before).expect("restore");
+    let blob = reference.save_state().expect("it saves");
+    assert!(blob.len() > 1000, "a whole machine is not a few bytes");
+    eprintln!(
+        "blob of {} bytes, taken at {}, fingerprint of {}",
+        blob.len(),
+        blob.position(),
+        blob.fingerprint().len()
+    );
+    let at_blob = reference.read("work-ram").expect("it reads");
+
+    // **The anti-vacuous step.** Put the machine somewhere it demonstrably is
+    // not, then load the blob and show that what was put there is gone. A load
+    // that did nothing passes a read-load-read test; it cannot pass this one.
+    reference.write("work-ram", &pattern).expect("disturb it");
+    assert_eq!(
+        reference.read("work-ram").expect("it reads"),
+        pattern,
+        "the disturbance is really there"
+    );
+    reference.load_state(&blob).expect("it loads");
+    let restored = reference.read("work-ram").expect("it reads");
+    assert_eq!(
+        restored, at_blob,
+        "the load must put back what the blob holds"
+    );
+    assert_ne!(
+        restored, pattern,
+        "and the disturbance must be gone — if this passes while the one above also passes, \
+         the load is real"
+    );
+
+    // ---- a blob that does not describe this machine is refused ------------
+    let wrong_position = Blob::new(
+        blob.bytes().to_vec(),
+        Position::FrameBoundary { frame: u64::MAX },
+        blob.fingerprint().to_vec(),
+    );
+    let err = reference
+        .load_state(&wrong_position)
+        .expect_err("it did not land there");
+    assert!(
+        matches!(err, StateError::LandedElsewhere { .. }),
+        "the position check is the only detector of a load that did nothing on this backend: \
+         {err:?}"
+    );
+
+    let wrong_fingerprint = Blob::new(
+        blob.bytes().to_vec(),
+        reference.position(),
+        vec![0xFF; blob.fingerprint().len()],
+    );
+    let err = reference
+        .load_state(&wrong_fingerprint)
+        .expect_err("not this machine");
+    assert!(
+        matches!(err, StateError::FingerprintDiffers),
+        "got {err:?}"
+    );
+
+    // ---- §4.8's fourth step, in miniature --------------------------------
+    // Run the same bound onward from two separate resumes of one blob. If a
+    // blob restored only the memories this crate maps, these would part.
+    reference.load_state(&blob).expect("it loads");
+    reference.run(Bound::Frames(3)).expect("three frames");
+    let first_way = reference.read("work-ram").expect("it reads");
+    let first_cycles = reference.cycles().expect("stopped");
+
+    reference.load_state(&blob).expect("it loads again");
+    reference.run(Bound::Frames(3)).expect("three frames");
+    assert_eq!(
+        reference.read("work-ram").expect("it reads"),
+        first_way,
+        "running on from two resumes of one blob must agree; disagreement would mean the blob \
+         restores some of the machine and not the rest"
+    );
+    assert_eq!(
+        reference.cycles().expect("stopped"),
+        first_cycles,
+        "and arrive at the same cycle"
     );
 
     // ---- one reference per process ----------------------------------------
