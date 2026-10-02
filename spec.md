@@ -579,6 +579,42 @@ not configuration at all — they are a derived artefact keyed by §4.11, and
 configuration that pointed at a shared cache of blobs would be sharing the one
 artefact where a stale copy is invisible.
 
+The keys, as built:
+
+```toml
+[anchors]
+verify_from_origin = 3      # §4.9; 0 means never demonstrated
+reverify_after = 50         # §4.9; 0 means never
+
+[reference]
+use = "ref-a"
+start_at_power_on = true    # the reproducible position; the default
+zero_memory = true          # the default, and a divergence from the hardware
+
+[[anchor]]
+name = "accepts-input"
+# `after` omitted means power-on. One key rather than a reserved value, so a
+# configuration does not read two ways the day somebody names an anchor
+# `power-on`.
+frames = 600                # or `instructions`, or `address` in hexadecimal —
+                            # exactly one, because a default would be a number
+                            # nobody chose and two would mean whichever was read
+                            # first
+covers = ["work-ram"]       # §4.8's cheap check digests these
+
+[[anchor]]
+name = "in-the-second-area"
+after = "accepts-input"
+frames = 300
+covers = ["work-ram", "palette-ram"]
+```
+
+A configuration that cannot work is refused when it is read, not halfway
+through a replay: a circle, a parent nobody declares and two anchors of one
+name all stop the load. An anchor naming an input log is the exception — it
+loads, because the configuration is right and the tool cannot replay one yet,
+and asking for *that* anchor is what refuses (§4.7).
+
 ---
 
 ## 7. The platform boundary

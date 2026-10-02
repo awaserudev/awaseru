@@ -40,6 +40,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use toml::Value;
 
+use awaseru_core::anchor::{Anchor, AnchorError, Anchors, Definition, InputLog, Start};
+use awaseru_core::run::Bound;
+
 use crate::digest;
 
 /// Keys the shared file owns and the local file may not override (§6.2).
@@ -60,6 +63,15 @@ pub struct Configuration {
     #[serde(default, rename = "emulator")]
     pub emulators: Vec<Emulator>,
     pub reference: Reference,
+    /// §4.9's verification policy. Absent means the defaults, which are the
+    /// careful ones.
+    #[serde(default)]
+    pub anchors: AnchorPolicy,
+    /// §4.7's anchors, declared in the shared file because they are things the
+    /// project names and so travel with it (§6.7). The *cache* of their blobs
+    /// is machine-local and is not configuration at all.
+    #[serde(default, rename = "anchor")]
+    pub anchor_declarations: Vec<AnchorDeclaration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -104,6 +116,100 @@ pub struct Reference {
     /// to be declared somewhere.
     #[serde(default)]
     pub crosscheck: Vec<String>,
+    /// Begin at the reproducible power-on rather than wherever the backend had
+    /// got to (§2.5). On by default, because a reference that does not start
+    /// the same way twice cannot be the ground for anything.
+    #[serde(default = "yes")]
+    pub start_at_power_on: bool,
+    /// Write zeros over every writable memory there.
+    ///
+    /// On by default, and it is **a divergence from the hardware**: a real
+    /// console has rubbish in its memory at power-on and software that reads it
+    /// behaves differently. Turning it off makes runs stop repeating between
+    /// processes, which every report then says.
+    #[serde(default = "yes")]
+    pub zero_memory: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// §4.9's policy: how much verification, and how often.
+///
+/// Both numbers are the user's, because the trade is theirs — replaying from
+/// the origin is the expensive thing an anchor exists to avoid.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnchorPolicy {
+    /// Replays of a definition before an anchor is trusted (§4.8). Three is the
+    /// default. **Zero means never demonstrated** — permitted, and every
+    /// verdict made from that anchor says so.
+    #[serde(default = "three")]
+    pub verify_from_origin: u32,
+    /// After this many uses, replay from the origin again and check the blob
+    /// still produces the same state. Zero means never.
+    ///
+    /// Fifty is the default, which is the number §4.9 illustrates. The cheap
+    /// check covers only what an anchor declares; this is the audit of the
+    /// cheap check, and switching it off is a decision rather than an absence.
+    #[serde(default = "fifty")]
+    pub reverify_after: u64,
+}
+
+fn three() -> u32 {
+    3
+}
+
+fn fifty() -> u64 {
+    50
+}
+
+impl Default for AnchorPolicy {
+    fn default() -> Self {
+        AnchorPolicy {
+            verify_from_origin: three(),
+            reverify_after: fifty(),
+        }
+    }
+}
+
+/// One `[[anchor]]` as the shared file writes it.
+///
+/// The bound is given as exactly one of three keys rather than as a tagged
+/// value, because that is how a person writes it. Giving none, or more than
+/// one, is refused: a default bound would be a number nobody chose, and two
+/// would make the anchor mean whichever the code happened to read first.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnchorDeclaration {
+    pub name: String,
+    /// The anchor this one begins at. **Absent means power-on.**
+    ///
+    /// A single `from = "power-on"` key would be ambiguous the day somebody
+    /// names an anchor `power-on`, and a configuration that reads two ways is
+    /// worse than one with two keys.
+    #[serde(default)]
+    pub after: Option<String>,
+    /// Run to the end of this many frames.
+    #[serde(default)]
+    pub frames: Option<u64>,
+    /// Run for this many instructions.
+    #[serde(default)]
+    pub instructions: Option<u64>,
+    /// Run until the program counter reaches this address, in hexadecimal
+    /// because that is how addresses are written.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The regions §4.8's cheap check digests on every load. §4.10's guidance
+    /// is to declare the ones the comparisons read.
+    #[serde(default)]
+    pub covers: Vec<String>,
+    /// A recorded input log, where the software needs input before it will
+    /// proceed (§4.7). Carried and **refused**: nothing can replay one yet,
+    /// and reaching the anchor without it would arrive somewhere else.
+    #[serde(default)]
+    pub input: Option<PathBuf>,
 }
 
 /// Where one emulator is on this machine.
@@ -123,6 +229,9 @@ pub struct Loaded {
     /// The software's path, already checked to exist and to hash to what the
     /// shared half declares (§6.6).
     pub software: PathBuf,
+    /// The declared anchors, already checked to name each other sensibly
+    /// (§4.7, §4.11).
+    pub anchors: Anchors,
 }
 
 impl Loaded {
@@ -202,6 +311,22 @@ pub enum Error {
         declared: String,
         found: String,
     },
+    /// An anchor gives no bound, or more than one.
+    AnchorBound {
+        name: String,
+        given: Vec<&'static str>,
+    },
+    /// An anchor's address is not a hexadecimal number.
+    AnchorAddress { name: String, given: String },
+    /// The anchors do not make sense together — a circle, a parent nobody
+    /// declares, or two of one name (§4.7).
+    Anchors(AnchorError),
+    /// An input log was named and could not be read.
+    InputLogUnreadable {
+        anchor: String,
+        path: PathBuf,
+        why: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -274,7 +399,39 @@ impl std::fmt::Display for Error {
                  meaningless — which is worse than stopping (§6.6)",
                 path.display()
             ),
+            Error::AnchorBound { name, given } => write!(
+                f,
+                "the anchor `{name}` {}. Exactly one of `frames`, `instructions` or `address` \
+                 says how far to run from where it starts (§4.2); a default would be a number \
+                 nobody chose, and two would make the anchor mean whichever was read first",
+                if given.is_empty() {
+                    "says how far to run in no way at all".to_string()
+                } else {
+                    format!(
+                        "gives {} ways to say how far to run: {}",
+                        given.len(),
+                        given.join(", ")
+                    )
+                }
+            ),
+            Error::AnchorAddress { name, given } => write!(
+                f,
+                "the anchor `{name}` gives the address `{given}`, which is not a hexadecimal \
+                 number"
+            ),
+            Error::Anchors(e) => write!(f, "{e}"),
+            Error::InputLogUnreadable { anchor, path, why } => write!(
+                f,
+                "the input log for the anchor `{anchor}` could not be read from {}: {why}",
+                path.display()
+            ),
         }
+    }
+}
+
+impl From<AnchorError> for Error {
+    fn from(e: AnchorError) -> Self {
+        Error::Anchors(e)
     }
 }
 
@@ -296,7 +453,7 @@ fn list(names: &[String]) -> String {
 pub fn load(shared_path: &Path, local_path: &Path) -> Result<Loaded, Error> {
     let shared = read_document(shared_path)?;
     let local = read_document(local_path)?;
-    resolve(shared, local)
+    resolve_beside(shared, local, shared_path.parent().unwrap_or(Path::new(".")))
 }
 
 fn read_document(path: &Path) -> Result<toml::Table, Error> {
@@ -312,7 +469,18 @@ fn read_document(path: &Path) -> Result<toml::Table, Error> {
 
 /// The resolution rules, separated from the files so that they can be tested
 /// without any.
-pub fn resolve(shared: toml::Table, mut local: toml::Table) -> Result<Loaded, Error> {
+pub fn resolve(shared: toml::Table, local: toml::Table) -> Result<Loaded, Error> {
+    resolve_beside(shared, local, Path::new("."))
+}
+
+/// The same, saying which directory an anchor's input log is written beside —
+/// §6.3's rule that a relative path resolves against the file it is written in
+/// and never against the working directory.
+pub fn resolve_beside(
+    shared: toml::Table,
+    mut local: toml::Table,
+    beside: &Path,
+) -> Result<Loaded, Error> {
     for key in INVARIANTS {
         if dotted(&local, key).is_some() {
             return Err(Error::InvariantOverridden { key });
@@ -354,11 +522,101 @@ pub fn resolve(shared: toml::Table, mut local: toml::Table) -> Result<Loaded, Er
         });
     }
 
+    let anchors = anchors_from(&configuration.anchor_declarations, beside)?;
+
     Ok(Loaded {
         configuration,
         locations,
         software,
+        anchors,
     })
+}
+
+/// Turns the declarations into §4.7's anchors, refusing what cannot be one.
+///
+/// Every declared anchor's chain is resolved here rather than when it is first
+/// used, so a circle or a missing parent is a configuration error found at
+/// startup and not something discovered halfway through a replay.
+fn anchors_from(declarations: &[AnchorDeclaration], beside: &Path) -> Result<Anchors, Error> {
+    let mut anchors = Vec::new();
+    for declaration in declarations {
+        let mut given = Vec::new();
+        if declaration.frames.is_some() {
+            given.push("frames");
+        }
+        if declaration.instructions.is_some() {
+            given.push("instructions");
+        }
+        if declaration.address.is_some() {
+            given.push("address");
+        }
+        if given.len() != 1 {
+            return Err(Error::AnchorBound {
+                name: declaration.name.clone(),
+                given,
+            });
+        }
+
+        let bound = if let Some(frames) = declaration.frames {
+            Bound::Frames(frames)
+        } else if let Some(instructions) = declaration.instructions {
+            Bound::Instructions(instructions)
+        } else {
+            let text = declaration.address.as_deref().unwrap_or_default();
+            let cleaned = text.trim_start_matches("0x").replace('_', "");
+            let address = u64::from_str_radix(&cleaned, 16).map_err(|_| Error::AnchorAddress {
+                name: declaration.name.clone(),
+                given: text.to_string(),
+            })?;
+            Bound::Address(address)
+        };
+
+        // Read now, so that a log named and missing is a configuration error
+        // rather than a surprise at the moment it is needed. The anchor is
+        // refused either way (§4.7), and refused with the log in hand is a
+        // better refusal than refused because the file was not there.
+        let input = match &declaration.input {
+            None => None,
+            Some(relative) => {
+                let path = beside.join(relative);
+                let recorded = std::fs::read(&path).map_err(|why| Error::InputLogUnreadable {
+                    anchor: declaration.name.clone(),
+                    path: path.clone(),
+                    why,
+                })?;
+                Some(InputLog {
+                    name: relative.display().to_string(),
+                    recorded,
+                })
+            }
+        };
+
+        anchors.push(Anchor {
+            name: declaration.name.clone(),
+            definition: Definition {
+                start: match &declaration.after {
+                    None => Start::PowerOn,
+                    Some(parent) => Start::Anchor(parent.clone()),
+                },
+                bound,
+                input,
+            },
+            covers: declaration.covers.clone(),
+        });
+    }
+
+    let anchors = Anchors::new(anchors)?;
+    for name in anchors.names().map(str::to_string).collect::<Vec<_>>() {
+        match anchors.chain(&name) {
+            Ok(_) => {}
+            // An anchor needing input is declared-and-refused rather than
+            // malformed: the configuration is right and the tool cannot do it
+            // yet, so loading succeeds and asking for *that* anchor refuses.
+            Err(AnchorError::InputNotSupported { .. }) => {}
+            Err(e) => return Err(Error::Anchors(e)),
+        }
+    }
+    Ok(anchors)
 }
 
 /// Everything that can be decided from the two documents alone.
@@ -723,6 +981,250 @@ mod tests {
             ),
             "got {err}"
         );
+    }
+
+    // ---- anchors, §4.7 and §4.9 ----------------------------------------
+
+    /// A shared file with anchors in it, parsed as far as `anchors_from`.
+    fn anchors_of(text: &str) -> Result<Anchors, Error> {
+        let table = table(text);
+        let configuration: Configuration = {
+            let mut whole = shared();
+            for (k, v) in table {
+                whole.insert(k, v);
+            }
+            Value::Table(whole)
+                .try_into()
+                .map_err(|why| Error::Malformed { why })?
+        };
+        anchors_from(&configuration.anchor_declarations, Path::new("."))
+    }
+
+    /// Exactly one bound. **None** would mean a default nobody chose, and
+    /// **two** would make the anchor mean whichever the code read first.
+    #[test]
+    fn an_anchor_must_say_how_far_to_run_in_exactly_one_way() {
+        let err = anchors_of("[[anchor]]\nname = \"a\"\n").expect_err("no bound");
+        match &err {
+            Error::AnchorBound { name, given } => {
+                assert_eq!(name, "a");
+                assert!(given.is_empty());
+            }
+            other => panic!("got {other}"),
+        }
+        assert!(err.to_string().contains("no way at all"), "said: {err}");
+
+        let err = anchors_of("[[anchor]]\nname = \"a\"\nframes = 1\ninstructions = 2\n")
+            .expect_err("two bounds");
+        match &err {
+            Error::AnchorBound { given, .. } => {
+                assert_eq!(given, &["frames", "instructions"]);
+            }
+            other => panic!("got {other}"),
+        }
+        assert!(
+            err.to_string().contains("read first"),
+            "the message must say why two is worse than none, said: {err}"
+        );
+    }
+
+    #[test]
+    fn each_kind_of_bound_is_understood_and_an_address_is_hexadecimal() {
+        let anchors = anchors_of("[[anchor]]\nname = \"a\"\nframes = 600\n").unwrap();
+        assert_eq!(
+            anchors.get("a").unwrap().definition.bound,
+            Bound::Frames(600)
+        );
+
+        let anchors = anchors_of("[[anchor]]\nname = \"a\"\ninstructions = 90\n").unwrap();
+        assert_eq!(
+            anchors.get("a").unwrap().definition.bound,
+            Bound::Instructions(90)
+        );
+
+        let anchors = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"C40000\"\n").unwrap();
+        assert_eq!(
+            anchors.get("a").unwrap().definition.bound,
+            Bound::Address(0xC4_0000),
+            "an address is hexadecimal, because that is how addresses are written"
+        );
+        let anchors = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"0xC4_0000\"\n").unwrap();
+        assert_eq!(
+            anchors.get("a").unwrap().definition.bound,
+            Bound::Address(0xC4_0000),
+            "and the prefix and separators are accepted rather than refused on a technicality"
+        );
+
+        let err = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"nowhere\"\n")
+            .expect_err("not hexadecimal");
+        assert!(matches!(err, Error::AnchorAddress { .. }), "got {err}");
+        assert!(err.to_string().contains("nowhere"), "said: {err}");
+    }
+
+    /// `after` absent means power-on. A single `from = "power-on"` key would
+    /// read two ways the day somebody names an anchor `power-on`.
+    #[test]
+    fn an_anchor_with_no_after_begins_at_power_on() {
+        let anchors = anchors_of(
+            "[[anchor]]\nname = \"boot\"\nframes = 10\n\n\
+             [[anchor]]\nname = \"ready\"\nafter = \"boot\"\nframes = 5\n",
+        )
+        .unwrap();
+        assert_eq!(anchors.get("boot").unwrap().definition.start, Start::PowerOn);
+        assert_eq!(
+            anchors.get("ready").unwrap().definition.start,
+            Start::Anchor("boot".into())
+        );
+        let chain: Vec<&str> = anchors
+            .chain("ready")
+            .unwrap()
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(chain, ["boot", "ready"]);
+    }
+
+    /// **A configuration that cannot work is refused at startup**, not halfway
+    /// through a replay. A circle only noticed when somebody asks for that
+    /// anchor is a configuration that looks fine until it does not.
+    #[test]
+    fn a_circle_in_the_configuration_is_refused_when_it_is_read() {
+        let err = anchors_of(
+            "[[anchor]]\nname = \"a\"\nafter = \"b\"\nframes = 1\n\n\
+             [[anchor]]\nname = \"b\"\nafter = \"a\"\nframes = 1\n",
+        )
+        .expect_err("a circle");
+        assert!(matches!(err, Error::Anchors(AnchorError::Cycle { .. })), "got {err}");
+
+        let err = anchors_of("[[anchor]]\nname = \"a\"\nafter = \"missing\"\nframes = 1\n")
+            .expect_err("no such parent");
+        assert!(
+            matches!(err, Error::Anchors(AnchorError::Unknown { .. })),
+            "got {err}"
+        );
+
+        let err = anchors_of(
+            "[[anchor]]\nname = \"a\"\nframes = 1\n\n[[anchor]]\nname = \"a\"\nframes = 2\n",
+        )
+        .expect_err("two of one name");
+        assert!(
+            matches!(err, Error::Anchors(AnchorError::Duplicate { .. })),
+            "got {err}"
+        );
+    }
+
+    /// §4.9's defaults are the careful ones, and they apply when the table is
+    /// absent entirely — not only when it is present and empty.
+    #[test]
+    fn the_verification_policy_defaults_to_the_careful_numbers() {
+        assert_eq!(
+            AnchorPolicy::default(),
+            AnchorPolicy {
+                verify_from_origin: 3,
+                reverify_after: 50
+            }
+        );
+
+        let configuration: Configuration = Value::Table(shared()).try_into().expect("it parses");
+        assert_eq!(
+            configuration.anchors,
+            AnchorPolicy::default(),
+            "a configuration with no [anchors] table gets the defaults"
+        );
+
+        let mut with = shared();
+        with.insert(
+            "anchors".into(),
+            table("verify_from_origin = 0\n").into(),
+        );
+        let configuration: Configuration = Value::Table(with).try_into().expect("it parses");
+        assert_eq!(
+            configuration.anchors.verify_from_origin, 0,
+            "zero is permitted — §4.9 says so, and the verdict says it"
+        );
+        assert_eq!(
+            configuration.anchors.reverify_after, 50,
+            "and the key not given keeps its default"
+        );
+    }
+
+    /// The startup keys default to the reproducible ones, and can be turned
+    /// off. A default that was convenient rather than reproducible would make
+    /// every careless configuration's results quietly worth less.
+    #[test]
+    fn the_startup_keys_default_to_reproducible_and_can_be_turned_off() {
+        let configuration: Configuration = Value::Table(shared()).try_into().expect("it parses");
+        assert!(configuration.reference.start_at_power_on);
+        assert!(configuration.reference.zero_memory);
+
+        let mut off = shared();
+        off.insert(
+            "reference".into(),
+            table("use = \"ref-a\"\nzero_memory = false\n").into(),
+        );
+        let configuration: Configuration = Value::Table(off).try_into().expect("it parses");
+        assert!(
+            configuration.reference.start_at_power_on,
+            "the other key keeps its default"
+        );
+        assert!(!configuration.reference.zero_memory);
+    }
+
+    /// An anchor needing input **loads** — the configuration is right and the
+    /// tool cannot do it yet — and asking for that anchor is what refuses
+    /// (§4.7). Refusing the whole configuration would stop the other anchors
+    /// working for a reason that is not about them.
+    #[test]
+    fn an_anchor_needing_input_loads_and_refuses_only_when_asked_for() {
+        let dir = std::env::temp_dir().join("awaseru-config-input-log");
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join("press-start.input"), b"whatever").expect("write");
+
+        let table = table(
+            "[[anchor]]\nname = \"plain\"\nframes = 1\n\n\
+             [[anchor]]\nname = \"needs\"\nframes = 1\ninput = \"press-start.input\"\n",
+        );
+        let mut whole = shared();
+        for (k, v) in table {
+            whole.insert(k, v);
+        }
+        let configuration: Configuration = Value::Table(whole).try_into().expect("it parses");
+        let anchors = anchors_from(&configuration.anchor_declarations, &dir).expect("it loads");
+
+        assert!(anchors.chain("plain").is_ok(), "the other anchor still works");
+        let err = anchors.chain("needs").expect_err("not supported");
+        assert!(
+            matches!(err, AnchorError::InputNotSupported { .. }),
+            "got {err}"
+        );
+        assert_eq!(
+            anchors
+                .get("needs")
+                .unwrap()
+                .definition
+                .input
+                .as_ref()
+                .map(|l| l.recorded.len()),
+            Some(8),
+            "the log is read, so the refusal has it in hand"
+        );
+
+        // A log named and missing is a configuration error, found now.
+        let missing = table_with_missing_log();
+        let err = anchors_from(&missing, &dir).expect_err("no such file");
+        assert!(matches!(err, Error::InputLogUnreadable { .. }), "got {err}");
+    }
+
+    fn table_with_missing_log() -> Vec<AnchorDeclaration> {
+        vec![AnchorDeclaration {
+            name: "needs".into(),
+            after: None,
+            frames: Some(1),
+            instructions: None,
+            address: None,
+            covers: vec![],
+            input: Some(PathBuf::from("no-such-log.input")),
+        }]
     }
 
     // ---- the identity check -------------------------------------------
