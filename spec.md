@@ -250,6 +250,164 @@ tool owns savestate caching and input logs, and a client asks for a position
 rather than for a replay. A client that has to invent its own caching will
 invent a different one per client.
 
+§4.7 to §4.12 are what owning it requires.
+
+### 4.7 Anchors
+
+An **anchor** is a named position worth returning to. It has three parts:
+
+- a **name**, which appears in configuration and in reports;
+- a **definition** of how to reach it — from power-on, or **from another
+  anchor** — as a bound (§4.2) plus, where the software needs input before it
+  will proceed, a recorded input log;
+- a **cached state blob**, backend-opaque (§7.2), taken there.
+
+A client asks for an anchor by name. The tool arrives by loading the blob when
+it has a valid one (§4.11) and by replaying the definition when it does not.
+Which of the two happened is reported (§4.12) and must never change the result.
+
+**Anchors compose.** An anchor whose definition begins at another anchor pays
+the expensive prefix once, and every anchor downstream of it is cheap to add.
+This is what makes the mechanism general instead of a special case for one long
+opening: *anywhere* a position is reached by replaying something already
+replayed, an anchor is the answer.
+
+An anchor is a **blob and not a snapshot** (§3.2), and the difference is not
+incidental. A blob restores the whole machine, including whatever the reference
+was in the middle of. A structured snapshot cannot be seeded at a position that
+is not an instruction boundary, and a frame boundary frequently is not one
+(§3.4). The two are different tools: a snapshot is for comparing, and for
+seeding a routine; an anchor is for *arriving*.
+
+### 4.8 An anchor is not trusted until it has been shown equivalent
+
+Resuming from a cached blob instead of replaying trades time for a risk, and it
+is the worst-shaped risk this tool has: if the cached state is not the state the
+replay would have produced, then every comparison downstream of it measures the
+wrong machine — **and passes**.
+
+So an anchor carries a demonstration, and until it has one, comparisons made
+from it are *not determined* (§2.3) rather than trusted:
+
+1. the definition is replayed from its origin **three times**, and the state at
+   the end agrees with itself every time. An anchor whose derivation is not
+   deterministic is not an anchor (§2.5);
+2. a run started from the cached blob produces the same state as a run that
+   arrived by replaying;
+3. both are recorded against the identity the blob is keyed by (§4.9).
+
+The demonstration is expensive, and it is run **once per anchor per key** — not
+once per comparison. What runs on every load is the cheap check: the position is
+the one recorded, and a digest over the regions the anchor declares is the one
+recorded. A mismatch throws the blob away and replays.
+
+Worked through, which is also the shape of the test that proves it:
+
+1. replay the definition from its origin, and record the state. Twice more, and
+   the three agree — the definition is deterministic;
+2. take the blob there and cache it;
+3. in a fresh process, resume from the blob. The state agrees with the three;
+4. run the same bound onward from each: from a replay and from a resume. They
+   arrive at the same place with the same state. **This is the one that matters**
+   — agreeing at the anchor is not the same as agreeing after running on from
+   it, because a blob can restore the memories an anchor declares and still
+   leave something it does not declare in a different state;
+5. delete the cache. Everything above still passes, and only the clock changes
+   (§4.11).
+
+### 4.9 How much verification, and how often
+
+Both numbers are the user's, because the trade is theirs: replaying from the
+origin is the expensive thing the anchor exists to avoid, and how much of it to
+keep paying for assurance depends on how much they trust the ground.
+
+```toml
+[anchors]
+# Replays of the definition before an anchor is trusted (§4.8). Three is the
+# default. Zero means never demonstrated — permitted, and every verdict made
+# from that anchor says so.
+verify_from_origin = 3
+
+# After this many uses, replay from the origin again and check the blob still
+# produces the same state. Zero means never.
+reverify_after = 50
+```
+
+**Why re-verify something whose key has not changed.** The cheap check covers
+only what the anchor *declares* it covers. Something outside that set can drift
+and never be noticed — and §4.8's whole point is that this failure passes
+instead of complaining. Periodic re-derivation is the audit of the cheap check,
+and it is the same idea as §16.5 pointing the tool's own comparison machinery at
+its own dependency: the cheap thing is trusted because an expensive thing checks
+it on a schedule, not because it is believed.
+
+**A verdict records how well verified its anchor was**: the anchor's name, how
+many replays it was demonstrated against, and how many uses ago. Turning the
+numbers down is allowed; being quiet about having turned them down is not. A
+result that reads "agrees" from an anchor nobody ever demonstrated is a result
+whose foundation the reader cannot see, which is §2.3's mistake wearing
+different clothes.
+
+### 4.10 Using anchors without getting lost
+
+Guidance rather than rules, and written down because the mechanism has a failure
+mode that is comfortable to live with for a long time.
+
+- **Anchor at a position you can describe in words.** "The software accepts
+  input" is an anchor. "Frame 18 400" is a number that will mean something else
+  after any change to anything.
+- **Declare the regions your comparisons read.** The cheap check digests what
+  the anchor declares (§4.8), so an anchor that declares nothing is checked for
+  nothing, and an anchor that declares the regions you actually compare catches
+  a stale blob on the load before it can produce a wrong verdict.
+- **When a comparison starts failing in a way that makes no sense, delete the
+  cache first.** §4.11 guarantees that this costs only time. It is the cheapest
+  diagnostic the tool has, and it is cheap precisely because the cache is never
+  an input.
+- **Build long chains out of short links.** An anchor defined on top of another
+  (§4.7) is re-derived only from its parent, so a chain of five cheap anchors
+  recovers from an invalidation far faster than one anchor defined from
+  power-on.
+- **Do not anchor what is already cheap.** An anchor has a cost of its own — a
+  demonstration, a key, a cache entry to be wrong about. Positions a few
+  thousand instructions from somewhere you already are do not need one.
+
+### 4.11 What an anchor is keyed by, and when it is thrown away
+
+An anchor's blob is keyed by:
+
+- the backend's name and version (§16.1);
+- the software's identity (§6.6);
+- the anchor's own definition, the input log included, and the anchors it is
+  defined on top of.
+
+Any of those changing invalidates the blob. A behaviour change in the reference
+is a new reference (§16.5), so a blob produced by one version is not a blob for
+another — and a blob is the one artefact where using a stale one is **invisible**
+rather than noisy.
+
+**Blobs are a cache, never an input.** Deleting the entire cache must change
+nothing except how long a run takes. That property is what makes the cache safe
+to be wrong about, and it is worth more than any amount of care in invalidating
+it.
+
+### 4.12 Waiting is reported, not hidden
+
+Every run says how it arrived — replayed or resumed — and how long that took.
+
+This is not a convenience, and it is in the specification because of a measured
+failure. On the project this tool grew out of, a verification loop ran for about
+thirty hours without finishing, and the great majority of that time was spent
+replaying an opening sequence that takes minutes before the software will accept
+input — once per comparison, hundreds of times. Nothing in the output said so.
+The work looked slow rather than wasteful, which is why it went on for thirty
+hours.
+
+A tool that hides where its time goes cannot be made faster by the person using
+it, because they cannot see what to fix. So: wherever a position can be reached
+by resuming rather than by replaying, the tool is expected to do so, and to say
+which it did.
+
 ---
 
 ## 5. Comparison
@@ -408,6 +566,18 @@ The shared file carries the ROM's hash; the local file carries its path. A
 mismatch is refused. Pointing the tool at a different revision of the software
 makes every comparison meaningless, and meaningless comparisons that pass are
 worse than a stopped run.
+
+### 6.7 Anchors
+
+Anchors (§4.7) are declared in the shared file: a name, how to reach it, what it
+covers, and the verification policy of §4.9. They are things the project names,
+so they travel with it.
+
+What does **not** travel is the cache. The blobs are machine-local, and they are
+not configuration at all — they are a derived artefact keyed by §4.11, and
+§4.11's rule is that deleting the lot changes nothing but the clock. A
+configuration that pointed at a shared cache of blobs would be sharing the one
+artefact where a stale copy is invisible.
 
 ---
 
@@ -699,10 +869,23 @@ and a comparison over an unexposed region reports *not determined*.
 
 ### M2 — The execution primitive
 
-Seed, bounded run, read (§4). Stop reasons. Savestate caching (§4.6).
+Seed, bounded run, read (§4). Stop reasons. Anchors and their cache
+(§4.6–§4.12).
 
 *Done when*: the same run from the same seed produces the same stop reason and
-the same state three times, in three separate processes (§2.5).
+the same state three times, in three separate processes (§2.5) — **and an
+anchor's demonstration passes end to end** (§4.8), as a test that runs:
+
+1. the definition replayed from its origin, as many times as `verify_from_origin`
+   says, agreeing with itself every time;
+2. a run resumed from the cached blob, in a fresh process, agreeing with those;
+3. **the same bound run onward from a replay and from a resume, arriving at the
+   same position with the same state** — the step that catches a blob which
+   restores what the anchor declares and leaves something it does not;
+4. the cache deleted, everything above still passing, and only the clock
+   different;
+5. and `reverify_after` honoured: after that many uses, the tool replays from the
+   origin of its own accord and says it did.
 
 ### M3 — The differ and the honesty rules
 
