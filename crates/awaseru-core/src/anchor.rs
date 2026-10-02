@@ -285,7 +285,7 @@ impl Anchors {
 }
 
 /// A digest of the regions an anchor declares — §4.8's cheap check, one half.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Coverage {
     entries: Vec<(String, String)>,
 }
@@ -310,6 +310,22 @@ impl Coverage {
             entries.push((name.clone(), hex));
         }
         Ok(Coverage { entries })
+    }
+
+    /// A coverage from digests somebody else computed — a cache reading one
+    /// back, or a test.
+    ///
+    /// The digests must have come from `of`, because a comparison between a
+    /// digest of these bytes and a digest of something else computed another
+    /// way says nothing. There is no way to check that here, which is why this
+    /// says so rather than pretending to.
+    pub fn from_digests(entries: Vec<(String, String)>) -> Self {
+        Coverage { entries }
+    }
+
+    /// The regions and their digests, in the order they were read.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries.iter().map(|(n, d)| (n.as_str(), d.as_str()))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -339,7 +355,7 @@ impl Coverage {
 }
 
 /// What a load must reproduce for a blob to be believed — §4.8.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CheapCheck {
     pub position: Position,
     pub coverage: Coverage,
@@ -616,12 +632,12 @@ mod tests {
     // ---- the cheap check, §4.8 -------------------------------------------
 
     fn coverage(entries: &[(&str, &str)]) -> Coverage {
-        Coverage {
-            entries: entries
+        Coverage::from_digests(
+            entries
                 .iter()
                 .map(|(n, d)| ((*n).to_string(), (*d).to_string()))
                 .collect(),
-        }
+        )
     }
 
     #[test]

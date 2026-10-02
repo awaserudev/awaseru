@@ -5,6 +5,7 @@
 //!
 //! See `spec.md`, which is normative.
 
+pub mod cache;
 pub mod config;
 pub mod digest;
 pub mod platform;

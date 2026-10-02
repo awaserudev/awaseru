@@ -8,7 +8,7 @@
 /// be seeded into a reimplementation, because there is no instruction to begin
 /// at. Losing the distinction means discovering it much later as a comparison
 /// that cannot be explained.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Position {
     /// Between frames. Says nothing about instructions.
     FrameBoundary { frame: u64 },

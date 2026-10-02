@@ -11,6 +11,12 @@ repository.workspace = true
 # key and §4.8's coverage both need a digest, and M1 recorded at length why this
 # project does not write one of those itself.
 sha2 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+# Also already approved, and already here. The anchor cache has to write a
+# position and a coverage digest to disk; a hand-written format in another crate
+# would have to know these shapes anyway. The cache being free to be wrong
+# (§4.11) is what makes coupling them to a format safe: a format that changes
+# invalidates a cache, and invalidating a cache costs only time.
+serde = { version = "1.0.229", features = ["derive"] }
 
 [lints]
 workspace = true
