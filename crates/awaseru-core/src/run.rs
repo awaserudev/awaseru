@@ -50,8 +50,19 @@ impl std::fmt::Display for Position {
 pub enum Bound {
     /// To the end of this many frames.
     Frames(u64),
-    /// Until the program counter reaches this address.
-    Address(u64),
+    /// Until the program counter reaches `address`, or `within` instructions
+    /// have run — whichever comes first.
+    ///
+    /// **The budget is not optional**, which is §4.4: every run carries one,
+    /// and exhausting it is a stop reason rather than a failure. An address is
+    /// the first bound this project has that can fail to arrive — frames and
+    /// instructions always do — and a run that does not stop is
+    /// indistinguishable from one that has not finished (§4.2).
+    ///
+    /// A count and not a clock, so the same run exhausts it at the same place
+    /// every time (§2.5). A wall-clock limit would make a slow machine report
+    /// a different result from a fast one.
+    Address { address: u64, within: u64 },
     /// For this many instructions.
     Instructions(u64),
 }
@@ -60,7 +71,9 @@ impl std::fmt::Display for Bound {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Bound::Frames(n) => write!(f, "{n} frame(s)"),
-            Bound::Address(a) => write!(f, "until {a:#X}"),
+            Bound::Address { address, within } => {
+                write!(f, "until {address:#X}, within {within} instruction(s)")
+            }
             Bound::Instructions(n) => write!(f, "{n} instruction(s)"),
         }
     }
@@ -125,6 +138,37 @@ impl Stop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §4.4. An address bound says both things, and a reader of the bound can
+    /// see the budget — which is the point of it being in the bound rather
+    /// than hidden in an implementation.
+    #[test]
+    fn an_address_bound_says_how_long_it_will_wait() {
+        let said = Bound::Address {
+            address: 0xC4_0000,
+            within: 50_000,
+        }
+        .to_string();
+        assert!(said.contains("C40000"), "said: {said}");
+        assert!(
+            said.contains("50000") && said.contains("instruction"),
+            "the budget must be visible in the bound, not only in the code that honours it: \
+             {said}"
+        );
+
+        // And two bounds to the same address with different budgets are
+        // different bounds, because they can stop in different places.
+        assert_ne!(
+            Bound::Address {
+                address: 0x8000,
+                within: 1
+            },
+            Bound::Address {
+                address: 0x8000,
+                within: 2
+            }
+        );
+    }
 
     #[test]
     fn only_a_frame_boundary_is_not_an_instruction_boundary() {

@@ -237,17 +237,82 @@ fn the_reference_maps_regions_and_runs_bounded() {
         "a thousand instructions must advance the cycle count"
     );
 
-    // ---- what this binding will not do, it refuses ------------------------
+    // ---- an address bound, which M0 refused and M3 honours ---------------
+    //
+    // **This assertion is the opposite of the one M0 wrote.** M0 refused an
+    // address bound, because the backend's breakpoint record was not among the
+    // declarations transcribed then. It is now, so the refusal became an
+    // arrival — and the test that asserted the refusal says so rather than
+    // quietly disappearing.
+    //
+    // The assertions are about plumbing (§11.2): where the software goes is
+    // read from the reference rather than written down here.
+    // A mark of its own, because the blob the rest of this test uses is made
+    // further down and an address bound has to be able to start twice from the
+    // same place.
+    let mark = reference.save_state().expect("it saves");
     let stop = reference
-        .run(Bound::Address(0x008000))
-        .expect("a bound it cannot honour is still an answer");
-    assert!(
-        matches!(stop.reason, Reason::Refused { .. }),
-        "a bound this binding cannot honour must be refused, not approximated (§2.4): {stop}"
+        .run(Bound::Instructions(1))
+        .expect("one instruction");
+    let Position::InstructionBoundary { pc: next } = stop.position else {
+        panic!("expected an instruction boundary, got {stop}")
+    };
+
+    reference.load_state(&mark).expect("back to the mark");
+    let stop = reference
+        .run(Bound::Address {
+            address: next,
+            within: 10,
+        })
+        .expect("an address bound");
+    assert_eq!(
+        stop.reason,
+        Reason::AddressHit { address: next },
+        "an address one instruction away must be reached, and reported as reached rather than \
+         as a budget running out: {stop}"
+    );
+    assert!(stop.arrived(), "{stop}");
+    assert_eq!(
+        stop.position,
+        Position::InstructionBoundary { pc: next },
+        "and the position is the address asked for"
+    );
+
+    // ---- and §4.4's budget, reachable for the first time -----------------
+    // An address the software is not about to reach, with a budget of one
+    // instruction. The budget wins, and that is a result rather than a failure
+    // (§4.3).
+    reference.load_state(&mark).expect("back to the mark");
+    let unreachable = 0x00_0001;
+    assert_ne!(unreachable, next, "the address must not be the next one");
+    let stop = reference
+        .run(Bound::Address {
+            address: unreachable,
+            within: 1,
+        })
+        .expect("a bounded look is still an answer");
+    assert_eq!(
+        stop.reason,
+        Reason::BudgetExhausted,
+        "one instruction is not enough to reach an arbitrary address, and running out is a stop \
+         reason and not an error (§4.3, §4.4): {stop}"
     );
     assert!(
         !stop.arrived(),
-        "and a refusal is not an arrival, so a comparison made here is not determined (§2.3)"
+        "and exhausting a budget is not arriving, so a comparison here is not determined (§2.3)"
+    );
+
+    // A budget of nothing is refused rather than always exhausting.
+    let stop = reference
+        .run(Bound::Address {
+            address: next,
+            within: 0,
+        })
+        .expect("still an answer");
+    assert!(
+        matches!(stop.reason, Reason::Refused { .. }),
+        "a budget of no instructions cannot reach anything, and pretending to look is worse \
+         than refusing (§2.4): {stop}"
     );
 
     let stop = reference

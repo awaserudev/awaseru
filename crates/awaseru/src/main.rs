@@ -27,6 +27,8 @@ Options
     --frames N          run to the end of N frames      (default 1)
     --instructions N    run for N instructions
     --address ADDR      run until the program counter reaches ADDR (hexadecimal)
+    --within N          how many instructions an --address bound may spend
+                        looking. Required with --address (§4.4)
 
     --anchor NAME       arrive at this anchor instead of running a bound (§4.7)
     --cache PATH        where the anchor cache lives (machine-local, §6.7)
@@ -189,6 +191,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut local = PathBuf::from("awaseru.local.toml");
     let mut home = std::env::temp_dir().join("awaseru-backend-home");
     let mut bound = None;
+    let mut address = None;
+    let mut within = None;
     let mut region = None;
     let mut offset = 0usize;
     let mut length = 256usize;
@@ -210,7 +214,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--home" => home = PathBuf::from(value()?),
             "--frames" => bound = Some(Bound::Frames(number(&value()?, 10)?)),
             "--instructions" => bound = Some(Bound::Instructions(number(&value()?, 10)?)),
-            "--address" => bound = Some(Bound::Address(number(&value()?, 16)?)),
+            "--address" => address = Some(number(&value()?, 16)?),
+            "--within" => within = Some(number(&value()?, 10)?),
             "--region" => region = Some(value()?),
             "--offset" => offset = number(&value()?, 10)? as usize,
             "--length" => length = number(&value()?, 10)? as usize,
@@ -224,6 +229,24 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             other => return Err(format!("awaseru takes options, not `{other}`")),
         }
     }
+
+    // §4.4: an address is the first bound that can fail to arrive, so it
+    // carries a budget. A default would be a number nobody chose.
+    let bound = match (address, within) {
+        (Some(address), Some(within)) => Some(Bound::Address { address, within }),
+        (Some(_), None) => {
+            return Err("`--address` needs `--within N`: every run carries a budget (§4.4), \
+                        because a run that does not stop is indistinguishable from one that has \
+                        not finished"
+                .to_string());
+        }
+        (None, Some(_)) => {
+            return Err("`--within` is the budget for `--address` and means nothing without \
+                        one; a frame or instruction bound always arrives"
+                .to_string());
+        }
+        (None, None) => bound,
+    };
 
     Ok(Command::Run {
         plan: Plan {
@@ -318,15 +341,38 @@ mod tests {
             Bound::Instructions(1000)
         );
         assert_eq!(
-            plan_of(&["--address", "C40000"]).bound,
-            Bound::Address(0xC4_0000),
+            plan_of(&["--address", "C40000", "--within", "90"]).bound,
+            Bound::Address {
+                address: 0xC4_0000,
+                within: 90
+            },
             "an address is hexadecimal, because that is how addresses are written"
         );
         assert_eq!(
-            plan_of(&["--address", "0xC40000"]).bound,
-            Bound::Address(0xC4_0000),
+            plan_of(&["--address", "0xC40000", "--within", "90"]).bound,
+            Bound::Address {
+                address: 0xC4_0000,
+                within: 90
+            },
             "and the prefix is accepted rather than refused on a technicality"
         );
+    }
+
+    /// §4.4 at the command line: an address without a budget is refused, and
+    /// a budget without an address is too. A default budget would be a number
+    /// nobody chose, which is the same argument that makes the bound itself
+    /// mandatory for an anchor.
+    #[test]
+    fn an_address_at_the_command_line_needs_a_budget_and_the_reverse() {
+        let err = parse_args(&["--address", "8000"]).expect_err("no budget");
+        assert!(err.contains("--within"), "said: {err}");
+        assert!(
+            err.contains("has not finished"),
+            "the message must say why an unbounded run is not a run: {err}"
+        );
+
+        let err = parse_args(&["--within", "90"]).expect_err("no address");
+        assert!(err.contains("always arrives"), "said: {err}");
     }
 
     /// The last bound wins, rather than two being combined into something

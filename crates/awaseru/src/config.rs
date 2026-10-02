@@ -199,8 +199,16 @@ pub struct AnchorDeclaration {
     pub instructions: Option<u64>,
     /// Run until the program counter reaches this address, in hexadecimal
     /// because that is how addresses are written.
+    ///
+    /// Requires `within`, because §4.4 says every run carries a budget and an
+    /// address is the first bound that can fail to arrive. A default budget
+    /// would be a number nobody chose — the same argument that makes the bound
+    /// itself mandatory.
     #[serde(default)]
     pub address: Option<String>,
+    /// How many instructions an `address` bound may spend looking.
+    #[serde(default)]
+    pub within: Option<u64>,
     /// The regions §4.8's cheap check digests on every load. §4.10's guidance
     /// is to declare the ones the comparisons read.
     #[serde(default)]
@@ -318,6 +326,8 @@ pub enum Error {
     },
     /// An anchor's address is not a hexadecimal number.
     AnchorAddress { name: String, given: String },
+    /// An address bound without a budget, or a budget without an address.
+    AnchorBudget { name: String, missing: bool },
     /// The anchors do not make sense together — a circle, a parent nobody
     /// declares, or two of one name (§4.7).
     Anchors(AnchorError),
@@ -418,6 +428,19 @@ impl std::fmt::Display for Error {
                 f,
                 "the anchor `{name}` gives the address `{given}`, which is not a hexadecimal \
                  number"
+            ),
+            Error::AnchorBudget { name, missing: true } => write!(
+                f,
+                "the anchor `{name}` runs until an address and does not say `within` how many \
+                 instructions. §4.4: every run carries a budget, and an address is the first \
+                 bound that can fail to arrive — a run that does not stop is indistinguishable \
+                 from one that has not finished. A default would be a number nobody chose"
+            ),
+            Error::AnchorBudget { name, missing: false } => write!(
+                f,
+                "the anchor `{name}` gives `within` and no `address`. A budget belongs to an \
+                 address; beside a frame or instruction count it would mean something other \
+                 than it says, because those bounds always arrive"
             ),
             Error::Anchors(e) => write!(f, "{e}"),
             Error::InputLogUnreadable { anchor, path, why } => write!(
@@ -556,6 +579,15 @@ fn anchors_from(declarations: &[AnchorDeclaration], beside: &Path) -> Result<Anc
                 given,
             });
         }
+        // A budget belongs to an address and to nothing else, so one given
+        // beside a frame or an instruction count is a configuration that means
+        // something other than it says.
+        if declaration.within.is_some() && declaration.address.is_none() {
+            return Err(Error::AnchorBudget {
+                name: declaration.name.clone(),
+                missing: false,
+            });
+        }
 
         let bound = if let Some(frames) = declaration.frames {
             Bound::Frames(frames)
@@ -568,7 +600,11 @@ fn anchors_from(declarations: &[AnchorDeclaration], beside: &Path) -> Result<Anc
                 name: declaration.name.clone(),
                 given: text.to_string(),
             })?;
-            Bound::Address(address)
+            let within = declaration.within.ok_or_else(|| Error::AnchorBudget {
+                name: declaration.name.clone(),
+                missing: true,
+            })?;
+            Bound::Address { address, within }
         };
 
         // Read now, so that a log named and missing is a configuration error
@@ -1042,23 +1078,65 @@ mod tests {
             Bound::Instructions(90)
         );
 
-        let anchors = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"C40000\"\n").unwrap();
+        let anchors =
+            anchors_of("[[anchor]]\nname = \"a\"\naddress = \"C40000\"\nwithin = 90\n").unwrap();
         assert_eq!(
             anchors.get("a").unwrap().definition.bound,
-            Bound::Address(0xC4_0000),
+            Bound::Address {
+                address: 0xC4_0000,
+                within: 90
+            },
             "an address is hexadecimal, because that is how addresses are written"
         );
-        let anchors = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"0xC4_0000\"\n").unwrap();
+        let anchors =
+            anchors_of("[[anchor]]\nname = \"a\"\naddress = \"0xC4_0000\"\nwithin = 90\n")
+                .unwrap();
         assert_eq!(
             anchors.get("a").unwrap().definition.bound,
-            Bound::Address(0xC4_0000),
+            Bound::Address {
+                address: 0xC4_0000,
+                within: 90
+            },
             "and the prefix and separators are accepted rather than refused on a technicality"
         );
 
-        let err = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"nowhere\"\n")
+        let err = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"nowhere\"\nwithin = 1\n")
             .expect_err("not hexadecimal");
         assert!(matches!(err, Error::AnchorAddress { .. }), "got {err}");
         assert!(err.to_string().contains("nowhere"), "said: {err}");
+    }
+
+    /// §4.4 in the configuration: an address needs a budget, and a budget
+    /// without an address is a configuration that means something other than
+    /// it says.
+    #[test]
+    fn an_address_bound_needs_a_budget_and_a_budget_needs_an_address() {
+        let err = anchors_of("[[anchor]]\nname = \"a\"\naddress = \"8000\"\n")
+            .expect_err("no budget");
+        assert!(
+            matches!(err, Error::AnchorBudget { missing: true, .. }),
+            "got {err}"
+        );
+        assert!(
+            err.to_string().contains("has not finished"),
+            "the message must say why an unbounded run is not a run, said: {err}"
+        );
+
+        let err = anchors_of("[[anchor]]\nname = \"a\"\nframes = 10\nwithin = 90\n")
+            .expect_err("a budget with no address");
+        assert!(
+            matches!(err, Error::AnchorBudget { missing: false, .. }),
+            "got {err}"
+        );
+        assert!(
+            err.to_string().contains("always arrive"),
+            "and why a frame bound has no use for one, said: {err}"
+        );
+
+        // Together they are accepted.
+        assert!(
+            anchors_of("[[anchor]]\nname = \"a\"\naddress = \"8000\"\nwithin = 90\n").is_ok()
+        );
     }
 
     /// `after` absent means power-on. A single `from = "power-on"` key would
@@ -1222,6 +1300,7 @@ mod tests {
             frames: Some(1),
             instructions: None,
             address: None,
+            within: None,
             covers: vec![],
             input: Some(PathBuf::from("no-such-log.input")),
         }]

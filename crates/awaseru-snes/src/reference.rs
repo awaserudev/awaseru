@@ -53,7 +53,7 @@ use awaseru_core::{
 };
 use awaseru_core::snapshot::Processor;
 
-use crate::ffi::{Backend, LoadError, PROCESSOR_STATE_BYTES, StepKind};
+use crate::ffi::{Backend, Breakpoint, LoadError, PROCESSOR_STATE_BYTES, StepKind};
 use crate::memory::{MAPPINGS, ZEROED_AT_POWER_ON};
 
 /// Taken for as long as a reference exists, because the backend's emulator is
@@ -957,16 +957,69 @@ impl Platform for Reference {
                 Ok(self.arrive(at))
             }
 
-            Bound::Address(address) => Ok(Stop {
-                reason: Reason::Refused {
-                    why: format!(
-                        "this binding cannot stop on an address yet. The backend can — it takes a \
-                         list of breakpoints — but the shape of that list is not among the \
-                         declarations transcribed here, and {address:#X} is not worth guessing at"
-                    ),
-                },
-                position: self.last_position.clone(),
-            }),
+            Bound::Address { address, within } => {
+                let Ok(budget) = u32::try_from(within) else {
+                    return Ok(Stop {
+                        reason: Reason::Refused {
+                            why: format!(
+                                "this backend counts instructions in a 32-bit number, and a \
+                                 budget of {within} does not fit"
+                            ),
+                        },
+                        position: self.last_position.clone(),
+                    });
+                };
+                if budget == 0 {
+                    // A budget of nothing cannot arrive anywhere, and a run of
+                    // no instructions that claims to be looking for an address
+                    // would be a run that always exhausts.
+                    return Ok(Stop {
+                        reason: Reason::Refused {
+                            why: "a budget of no instructions cannot reach an address".to_string(),
+                        },
+                        position: self.last_position.clone(),
+                    });
+                }
+
+                let target = u32::try_from(address).map_err(|_| RunError::Backend {
+                    why: format!("this backend addresses in 24 bits, and {address:#X} is wider"),
+                })?;
+
+                // §4.4's budget and the address are **one mechanism** here: a
+                // step request of `within` instructions with a breakpoint
+                // armed stops at whichever comes first (`doc/backend.md`).
+                // Nothing else is needed, and nothing else would be a count.
+                self.backend
+                    .set_breakpoints(&[Breakpoint::execute_at(target)])
+                    .map_err(|e| RunError::Backend { why: e.to_string() })?;
+                let stepped = self.step_and_wait(budget, StepKind::Instruction);
+                self.backend.clear_breakpoints();
+
+                if let Err(stop) = stepped {
+                    return Ok(stop);
+                }
+
+                // Which of the two happened is told apart by looking: the
+                // instruction's own counter, not the processor's, because at a
+                // breakpoint the processor's has not necessarily moved and
+                // §5.4's measurements use the same call.
+                let reached = self.backend.instruction_pc();
+                let at = self.instruction_position();
+                self.last_position = at.clone();
+                Ok(Stop {
+                    reason: if reached == target {
+                        Reason::AddressHit {
+                            address: u64::from(reached),
+                        }
+                    } else {
+                        // §4.3: a reason is a result. The budget ran out, which
+                        // is not a failure — the caller asked for a bounded
+                        // look and got one.
+                        Reason::BudgetExhausted
+                    },
+                    position: at,
+                })
+            }
         }
     }
 }

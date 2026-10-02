@@ -599,7 +599,9 @@ name = "accepts-input"
 frames = 600                # or `instructions`, or `address` in hexadecimal —
                             # exactly one, because a default would be a number
                             # nobody chose and two would mean whichever was read
-                            # first
+                            # first. An `address` also needs `within = N`: §4.4
+                            # says every run carries a budget, and an address is
+                            # the first bound that can fail to arrive
 covers = ["work-ram"]       # §4.8's cheap check digests these
 
 [[anchor]]
