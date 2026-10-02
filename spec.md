@@ -1,0 +1,964 @@
+# awaseru — specification
+
+**Status**: draft. This document is normative: where it and the code disagree, the
+code is wrong. Sections marked **OPEN** are decisions not yet taken, with what
+would settle them.
+
+`awaseru` (合わせる, Japanese: *to put two things together so that they match*) is a
+verification harness for reimplementing console software. The name is the verb,
+not a property: the tool does not hold the truth, it places two sides side by
+side and says whether they agree.
+
+---
+
+## 1. What this is
+
+### 1.1 The problem
+
+Reimplementing a game natively — moving it from emulation to code — has two bad
+options today. Either you write the reimplementation blind, and discover the
+routine you did not know about weeks later when something looks wrong; or you
+build verification infrastructure first, months before the first line of game
+logic.
+
+`awaseru` is the third option: the verification infrastructure, ready, giving an
+answer at every step. The developer chooses a unit, writes it, asks whether it
+matches, and fixes until it does.
+
+### 1.2 What it does
+
+It drives a reference emulator and compares its state against the state the
+developer's reimplementation produces, at points the developer chooses, and
+reports where they diverge.
+
+### 1.3 What it is not
+
+- **Not an emulator.** It drives one. The reference must be an existing,
+  independently tested emulator; a reference written here would make this
+  project's own bugs into "the truth" (§2.5, §7.1).
+- **Not a framework.** It does not own the developer's code, its language, its
+  build or its process (§8).
+- **Not a decompiler.** It makes no claim about what the original code *means*.
+- **Not a player.** Running a game for enjoyment is out of scope; where a
+  feature serves only that, it is out.
+
+### 1.4 The claim it makes, exactly
+
+> These two agree on the data you asked about, at the point you asked about.
+
+Nothing more. §5 exists to keep that claim honest, because the ways it can be
+hollow are more numerous than the ways it can be wrong.
+
+### 1.5 What the user brings
+
+| | who supplies it | why |
+|---|---|---|
+| the tool | this project | |
+| the reference emulator | the user | §11.1 |
+| the ROM | the user | §11.1 |
+| the mapping of the title | the user, or a community config | §2.1 |
+| the reimplementation | the user | §1.3 |
+
+---
+
+## 2. Principles
+
+These are not style. A change that violates one of them is a change to this
+section first.
+
+### 2.1 No title knowledge in the tool
+
+No address, name, region layout or behaviour of any particular piece of software
+appears in this codebase. That knowledge lives in configuration the user loads
+(§6, §9). The tool is to a ROM what a disassembler is to a binary.
+
+### 2.2 No silent agreement
+
+Every comparison reports **how much of the compared data the reference itself
+changed** over the interval. A comparison where the reference changed nothing is
+reported as *vacuous*: the two sides agree about data neither of them touched,
+which is not evidence. This is the most common way a verification tool lies, and
+it lies by passing.
+
+### 2.3 Three values, never two
+
+Every verdict is one of:
+
+- **agrees** — compared, and equal.
+- **differs** — compared, and not equal, with §5.4's localisation.
+- **not determined** — not compared, or compared without meaning. Causes:
+  the backend does not expose the region (§3.5); two references disagree with
+  each other (§5.5); the run did not reach the point (§4.3); the comparison was
+  vacuous (§2.2).
+
+"Not determined" is never collapsed into "agrees". A tool that cannot tell
+"they match" from "I did not look" is worse than no tool.
+
+### 2.4 Refusal over guessing
+
+Where the tool cannot establish something, it refuses and says why. Being
+blocked is a correct state for a value. No default stands in for a fact.
+
+### 2.5 Determinism
+
+The same inputs produce the same result: in one process, across processes, and
+across machines. Where the reference emulator is not deterministic — a
+pseudo-random memory fill at power-on is the usual case — the tool either makes
+it deterministic or declares the affected state as not determined. It never
+compares against a value that varies between runs, and it never reports a
+*change set* against a varying baseline: what is deterministic is the final
+value at the addresses the software wrote, not the set of addresses that changed.
+
+### 2.6 One path
+
+State is read and written through one mechanism. Where a second door would be
+convenient, it is not added, because the second door diverges from the first on
+some case and the divergence is found late.
+
+### 2.7 The platform is opaque to the host
+
+The host never names a platform-specific region. It asks the backend what
+regions exist and addresses them by the names it is given (§3.1, §7). This is
+what makes a second platform an addition rather than a rewrite.
+
+### 2.8 Every claim carries its position
+
+A divergence is reported with where it is, and — where the backend can supply
+it — with what produced it. "Byte 3 differs" is a fact; "byte 3 differs, written
+at this position" is an answer.
+
+---
+
+## 3. The state model
+
+### 3.1 Regions
+
+A **region** is a named, addressable span of bytes that a backend exposes:
+
+- `name` — a string the backend chooses.
+- `size` — in bytes.
+- `access` — readable, writable, or both.
+- `unit` — the addressable unit, where it is not one byte.
+
+The host obtains the list by asking. It does not know, and must not assume,
+which names exist. Fixed-field state models are the mistake this avoids: a model
+with fields for one platform's memories cannot gain a second platform without
+changing every comparison written against it.
+
+### 3.2 Snapshots
+
+A **snapshot** is:
+
+- the contents of some set of regions,
+- the processor state (§3.3),
+- the position (§3.4),
+- and the identity of the backend and ROM it came from (§6.6).
+
+A snapshot need not be complete. A snapshot that omits a region is not a
+snapshot that says the region is empty (§3.5).
+
+### 3.3 The processor state is not optional
+
+Registers, flags, the stack pointer, the program counter and any mode bits are
+part of the snapshot and part of seeding. A comparison seeded without them runs
+the developer's routine with some other routine's registers, and then reports
+the difference as that routine's error. This is not a refinement; without it,
+unit-level comparison does not work at all.
+
+### 3.4 Positions
+
+A **position** is where execution stands. A position declares its kind:
+
+- a frame boundary,
+- an instruction boundary,
+- an address,
+- or the end of a bounded run (§4.4).
+
+**A frame boundary is not necessarily an instruction boundary.** A reference
+sampled at the end of a frame is frequently part way through an instruction. A
+snapshot taken there cannot be seeded into a reimplementation, because there is
+no instruction to begin at. The tool therefore records which kind a position is,
+and refuses to seed from a non-instruction boundary unless the caller asks for
+that explicitly and accepts the result as not determined.
+
+### 3.5 Absent is not equal
+
+A region a backend does not expose is **absent**. Comparisons over absent
+regions are *not determined* (§2.3). Optional state must be optional in the
+type, so that "they agree" and "they were not compared" cannot be written the
+same way.
+
+### 3.6 OPEN — snapshots by value or by handle
+
+A snapshot of a console's full state is of the order of hundreds of kilobytes.
+Passing it by value across the API (§8) for every comparison is wasteful; a
+handle the tool holds is cheaper but makes the client's state harder to inspect.
+
+*What would settle it*: the first real client, and the measured cost of a
+routine-level cycle. Until then the API carries both and the wire format does
+not forbid either.
+
+---
+
+## 4. Execution
+
+### 4.1 The primitive
+
+Three operations, and everything else is built from them:
+
+1. **seed** — place a state into the reference.
+2. **run** — advance it, bounded (§4.2).
+3. **read** — take a snapshot.
+
+### 4.2 Bounds
+
+Every run is bounded, and the bound is part of the request:
+
+- to the next frame boundary,
+- to an address,
+- for *n* instructions,
+- until a condition over state.
+
+There is no unbounded run. "Run until it stops" is not a thing the tool offers,
+because a run that does not stop is indistinguishable from a run that has not
+finished.
+
+### 4.3 Stop reasons
+
+A run reports where it stopped and why: the bound was reached, an address was
+hit, the budget was exhausted, the backend refused, or the backend reached a
+state it cannot continue from. The reason is a result, not an error.
+
+### 4.4 Budget
+
+Every run carries a step budget. Exhausting it is a stop reason (§4.3), not a
+failure. A count, not a timeout: the same run must stop the same way every time
+(§2.5).
+
+### 4.5 A measurement must not run past its subject
+
+A run started to measure one routine must be bounded to that routine. If it is
+allowed to continue, the next routine writes over the data being compared and
+the comparison silently becomes a reading of something else. This is a rule
+about how the tool is *used*, so the tool makes the bound mandatory (§4.2)
+rather than trusting the caller to remember.
+
+### 4.6 Reaching a point is the tool's problem, not the client's
+
+Arriving at frame *n* from power-on is expensive and every client needs it. The
+tool owns savestate caching and input logs, and a client asks for a position
+rather than for a replay. A client that has to invent its own caching will
+invent a different one per client.
+
+---
+
+## 5. Comparison
+
+### 5.1 The verdict
+
+Three values (§2.3), per comparison, over a named set of regions or a span
+within one.
+
+### 5.2 Movement
+
+Every comparison reports `moved`: how many of the compared bytes differ between
+the **seed** and the **reference's own result**. `moved == 0` makes the
+comparison vacuous (§2.2) and the verdict *not determined*.
+
+This number is the difference between a measurement and a decoration, and it is
+reported always, not on request.
+
+### 5.3 Controls
+
+The tool offers **perturbation**: run the reference again with a named input
+changed, and report whether the comparison noticed. A comparison whose
+perturbed form gives the same verdict cannot discriminate, and the tool says so.
+
+A measurement without a control that varies is incomplete. The tool cannot force
+the client to run one, but it can record that none was run, and it does.
+
+### 5.4 Localisation
+
+On *differs*, the report carries:
+
+- the first differing offset, and the two values;
+- the count of differing bytes;
+- where the backend supplies it (§7.3), the **position that last wrote** that
+  byte in the reference.
+
+The third item is the one that changes the developer's day. "Your byte is one
+too low" sends them reading; "the write at this position did not happen" is the
+answer.
+
+### 5.5 Cross-check
+
+Where the configuration names more than one reference for a platform (§6.4),
+the tool may run them together. If they disagree with each other, the verdict is
+**not determined**, and the report names both references and where they parted.
+
+This is a statement no single emulator can make about itself, and it is the
+honest answer when the ground is not solid.
+
+### 5.6 Granularity
+
+**Routine-level comparison is the primary unit.** Seed a state, run one routine,
+compare the data that routine touches. Frame-level comparison is a special case
+of the same primitive with a frame boundary as the bound.
+
+The order matters because the reverse does not work: a frame runs hundreds of
+routines, and a single wrong byte early cascades until the report is a large
+number with no information in it. Frame-level agreement is a milestone, not a
+daily tool.
+
+---
+
+## 6. Configuration
+
+### 6.1 Two files
+
+| file | committed | contains |
+|---|---|---|
+| `awaseru.toml` | yes | the platform, the ROM's identity, mapping patterns, which reference to use **by name** |
+| `awaseru.local.toml` | no | where each named emulator and the ROM are **on this machine** |
+
+The principle: **the shared file names things and declares invariants; the local
+file says where things are.** A configuration meant to travel in a repository
+cannot carry absolute paths.
+
+### 6.2 Resolution
+
+The local file overrides the shared one per key; the last file read wins. This
+is the `.env` / `.env.local` convention.
+
+With one exception: **overriding an invariant is refused, not applied.** The
+ROM's hash (§6.6) is an invariant; overriding it locally would annul the reason
+it exists. The tool reports the attempt and stops.
+
+### 6.3 Mapping patterns
+
+```toml
+[mapping]
+files = [
+  "map2/ram.toml",        # one file
+  "map/*",                # one level of map/
+  "map/events/**",        # map/events/ and below
+  "!map/routines.toml",   # excluded
+  "!map/draft/*",         # excluded, a set
+]
+```
+
+1. Paths resolve against **the directory of the file they are written in**,
+   never the working directory.
+2. `*` does not cross `/`; `**` does. One level is the default, so
+   subdirectories are opt-in, per pattern rather than per configuration.
+3. A **glob** matches only `*.toml`. An **explicit path**, with no wildcard,
+   matches that file whatever its name. A stray `README.md` inside a mapping
+   directory is therefore not a candidate, which is different from being
+   silently skipped.
+4. **Exclusions always win, regardless of order.** There is no re-inclusion.
+   Predictability beats power in a file that several people compose.
+5. **A pattern that matches nothing is an error.** This is the rule that earns
+   its place: a typo in an exclusion, under any other semantics, does nothing
+   and is never noticed.
+6. An empty final set is an error.
+7. Expansion is sorted lexicographically. Directory order is not stable across
+   filesystems, and without sorting the same configuration loads differently on
+   different machines (§2.5).
+8. Nothing resolves outside the configuration's own tree, and symbolic links out
+   of it are not followed. A shared configuration must be safe to run.
+
+### 6.4 Emulators
+
+```toml
+[[emulator]]
+name = "ref-a"
+platform = "snes"
+backend = "some-backend"
+
+[[emulator]]
+name = "ref-b"
+platform = "snes"
+backend = "other-backend"
+
+[reference]
+use = "ref-a"
+crosscheck = ["ref-b"]      # optional, §5.5
+```
+
+- `name` is distinct from `backend` because two builds of the same backend — a
+  patched and an unpatched one, or two versions — must be distinguishable, and
+  the name is what appears in reports.
+- `use` is explicit rather than positional, so that appending an emulator to a
+  shared configuration does not change its meaning.
+- The paths live in the local file (§6.1), keyed by `name`.
+
+### 6.5 Startup verification
+
+A backend is a contract, not a label. At startup the tool asks the backend which
+regions and capabilities it exposes (§3.1, §7.3) and compares that against what
+the configuration and the loaded mapping require. A shortfall is refused with
+the list of what is missing.
+
+The alternative — discovering three weeks later that one region was never
+actually compared — is the failure this prevents.
+
+### 6.6 ROM identity
+
+The shared file carries the ROM's hash; the local file carries its path. A
+mismatch is refused. Pointing the tool at a different revision of the software
+makes every comparison meaningless, and meaningless comparisons that pass are
+worse than a stopped run.
+
+---
+
+## 7. The platform boundary
+
+### 7.1 Shape
+
+Platform support is a Rust trait, implemented by one crate per platform, linked
+into the host and **selected by name at runtime**. There is no dynamic loading
+of Rust code across an unstable ABI, and no need for one: the user experience of
+"load the platform you want" is a registry lookup.
+
+Inside a platform crate, the reference is an existing emulator, driven as a
+library or as a child process. The platform crate translates that emulator's
+state into §3's model. It does not emulate (§1.3).
+
+### 7.2 The verbs
+
+The trait's surface, in the order it was arrived at:
+
+- enumerate regions (§3.1);
+- read a region, or a span of one;
+- write a region, or a span of one;
+- read the processor state; write the processor state (§3.3);
+- run, bounded, returning a stop reason (§4.2, §4.3);
+- save and load a backend-opaque state blob (§4.6).
+
+And, as declared capabilities (§7.3):
+
+- callbacks on read, write and execution over an address range;
+- execution coverage;
+- call and return events;
+- register writes with their position within a frame.
+
+### 7.3 Capabilities are declared, not assumed
+
+A backend states what it can do. The host asks before relying on anything beyond
+§7.2's mandatory list, and a comparison that needed an absent capability is
+*not determined* (§2.3), never silently weaker.
+
+### 7.4 The crate layout
+
+Three crates, and three is the minimum rather than a preference — the dependency
+arrows force it:
+
+| crate | kind | holds | depends on |
+|---|---|---|---|
+| `awaseru-core` | library | the platform trait, the state model, the execution primitive, the differ, the configuration | — |
+| `awaseru-<platform>` | library | one backend, implementing the trait | core |
+| `awaseru` | **binary** | the host: configuration, backend registry, the external API | core, and each backend it registers |
+
+A backend must see the trait in order to implement it. If the trait lived in the
+binary, the backend would depend on the binary — and the binary must depend on the
+backend to register it. The third crate is what breaks that cycle.
+
+`awaseru` is the name published and the thing a user installs; the others are its
+parts.
+
+### 7.5 Backends from outside
+
+Two things are easily confused, and only the second is closed.
+
+**A third party can write a backend as their own crate, today.** They publish
+`awaseru-<platform>` depending on `awaseru-core`, which is an ordinary Rust
+dependency and needs nothing from this project beyond `awaseru-core` being
+published. Whoever builds the host adds it as a dependency and registers it.
+
+**A pre-built binary cannot load one at runtime.** That would need either a
+stable ABI across the boundary, which Rust does not have, or backends as external
+processes speaking a protocol — which buys any language and costs a second
+protocol, serialization on the hot path of routine-level comparison, and a design
+with no users to shape it.
+
+Three things keep the first open and cost nothing today, so they are decided now
+rather than designed later:
+
+- `awaseru-core` is published, so a backend can depend on it without vendoring;
+- the trait lives in `awaseru-core`, never in the binary (§7.4);
+- the backend registry is a table from name to constructor, so adding one is a
+  registration rather than surgery.
+
+The language requirement is also milder than it first appears: an adapter mostly
+marshals an emulator's own C API into the trait, and the real work of adding a
+platform is **instrumenting that emulator**, which is C++ work whatever language
+the adapter is in.
+
+*Left open* (Q8): runtime loading into a pre-built binary. *What would settle
+it*: someone with an emulator worth having who cannot rebuild the host.
+
+### 7.6 OPEN — the exact trait
+
+The signatures are not fixed here, and deliberately: an abstraction over two
+platforms built while only one exists is a guess. Two decisions **are** taken
+now, because they are cheap today and a rewrite later:
+
+- regions are named and enumerated, never fixed fields (§3.1);
+- no platform name appears in the trait or the protocol (§2.7).
+
+*What would settle the rest*: the second platform, with a real backend behind it.
+
+---
+
+## 8. The external API
+
+### 8.1 Who drives
+
+**The client spawns `awaseru`.** The developer runs their own test suite and
+debugger as they normally would, and the tool is a subprocess they control, like
+any other fixture. The reverse would make their debugging workflow hostage to
+the tool's lifecycle.
+
+### 8.2 Transport
+
+Messages over the child process's standard input and output. No ports, no
+listening sockets, no firewall or permission dialog, and identical behaviour on
+every platform the host runs on. A socket mode may be added when something needs
+several clients at once; it is not the first door.
+
+### 8.3 Framing
+
+A length-prefixed **JSON envelope** carrying the command or result, optionally
+followed by a length-prefixed **binary payload** carrying state.
+
+JSON for the control plane because every language reads it and a human can debug
+it. Binary for state because a snapshot is of the order of hundreds of kilobytes
+and encoding that as hexadecimal inside JSON, thousands of times per session,
+makes the arbiter the bottleneck.
+
+The data model is the contract; the encoding of a payload is an implementation
+detail that may change behind a version (§8.6).
+
+### 8.4 Bindings
+
+- For a client in the host's own language: a crate, calling in process, no IPC.
+- For every other language: the subprocess and the protocol.
+
+Same semantics, two bindings. The fast path exists without closing the open one.
+
+### 8.5 The vocabulary is the configuration's
+
+Region names and symbol names in the API are the names the backend and the
+loaded mapping supply (§3.1, §9.1). There is no second naming scheme to learn,
+and the API's surface is documented by whatever configuration is loaded.
+
+### 8.6 OPEN — versioning and negotiation
+
+How the protocol version is agreed, and how a client discovers the tool's and
+the backend's capabilities, is not specified.
+
+*What would settle it*: the first client written by someone who did not write
+the tool.
+
+---
+
+## 9. Mapping and provenance
+
+### 9.1 Symbols
+
+A mapping entry has: a name, a location (a region and an offset, or an address),
+zero or more groups, a description, relations to other symbols, and a
+**provenance** (§9.2). Groups may nest and may relate to other groups: the
+mapping is a graph with tags, not a flat list, so that a concept scattered
+across a binary can be navigated as a concept.
+
+The description is read by the API, so that a consumer — human or program —
+obtains the context without reconstructing it from raw code.
+
+### 9.2 Provenance is mandatory
+
+Every symbol records how it was established. This serves two purposes, and the
+second is not obvious:
+
+- **Epistemic.** A value established by measurement and a value someone
+  remembered are not the same value, and a mapping that cannot tell them apart
+  decays. Entries with weak provenance are marked as hypotheses and are not
+  treated as fact.
+- **Distribution.** The provenance field is the audit trail for where the
+  mapping's content came from. A mapping is only safely shareable if its
+  contributors can say how each entry was established; an entry derived from
+  material that may not be redistributable is identifiable rather than mixed in.
+
+Contribution policy, stated once and enforced by review: nothing derived from
+leaked source material is accepted.
+
+### 9.3 Validation
+
+- The files parse.
+- No two symbols share a name, including across separately loaded files.
+- Group references resolve to groups that exist.
+- Locations fall inside a region the backend exposes (checked at §6.5).
+
+### 9.4 Deferred
+
+The structured mapping system is a later milestone (§12, M7). What exists from
+the start is the **door**: the tool loads mapping from external files the user
+supplies, and holds no mapping of its own. A plain-text provenance convention is
+the prototype of the structured format, and converts into it.
+
+---
+
+## 10. Reverse-engineering features
+
+These are what make the tool worth using beyond verification, and they are
+declared capabilities (§7.3), not assumptions.
+
+- **Write provenance** — for each byte, the position that wrote it. Turns
+  "search the disassembly for what writes this address" into a query.
+- **Execution coverage** — which bytes of the software executed under this
+  input. This is the structural answer to "there is always a routine I did not
+  know about": it says what has not been seen yet.
+- **Call and return events** — the call tree of an interval.
+- **Register writes with position** — most register writes on a console happen
+  while the picture is being drawn, so end-of-frame register state does not
+  reconstruct a frame. The position is part of the datum.
+- **First-divergence localisation** — §5.4, which depends on write provenance.
+
+---
+
+## 11. Distribution and posture
+
+### 11.1 What is never shipped
+
+No ROM, no emulator, no mapping of any particular title. The user brings all
+three (§1.5). The tool's position is that of a disassembler: a neutral
+development instrument that contains none of the material it is pointed at.
+
+### 11.2 No title is named
+
+No commercial title appears in any file, test, fixture, path, message or commit
+message of this project. Public material — documentation, examples, the site —
+uses homebrew software only.
+
+### 11.3 The public test suite proves the tool with material it may contain
+
+Expected values from software this project may not redistribute cannot appear in
+its tests. Therefore:
+
+- **generated test ROMs** are the primary fixture: small programs assembled
+  here, whose behaviour is defined completely, which can also exercise cases a
+  real title may never reach — a frame boundary inside an instruction, a
+  transfer with a fixed source address, a per-scanline register write;
+- **homebrew** provides the end-to-end example and the tutorial;
+- "bring your own ROM" tests read a path from the environment and take their
+  expectations from configuration, and skip when unset.
+
+### 11.4 OPEN — licence
+
+The intent is a strong copyleft licence for the tool and a permissive one for
+mapping configurations, which are data rather than program and should circulate
+without friction. Not fixed here: the project is private, and a dependency taken
+in the meantime can constrain the choice.
+
+*What would settle it*: the first intent to publish, with the dependency set
+known.
+
+### 11.5 Releases are signed
+
+Checksums and signatures, with the key published through more than one channel.
+A tool whose premise is verification distributes itself verifiably.
+
+---
+
+## 12. Milestones
+
+Each milestone has a done-condition that can be run, not judged.
+
+### M0 — Walking skeleton
+
+The host reads a configuration, selects a platform backend, drives a reference
+to a position, and prints one region's bytes.
+
+*Done when*: a generated test ROM (§11.3) runs and one region's contents come
+out. No differ, no API.
+
+### M1 — The state model
+
+Regions enumerated by name (§3.1). Snapshots with processor state and position
+(§3.2–§3.4). Absent distinguished from equal (§3.5).
+
+*Done when*: a snapshot round-trips — read, seed, read again, identical bytes —
+and a comparison over an unexposed region reports *not determined*.
+
+### M2 — The execution primitive
+
+Seed, bounded run, read (§4). Stop reasons. Savestate caching (§4.6).
+
+*Done when*: the same run from the same seed produces the same stop reason and
+the same state three times, in three separate processes (§2.5).
+
+### M3 — The differ and the honesty rules
+
+Verdicts, movement (§5.2), perturbation (§5.3), localisation (§5.4).
+
+*Done when*: a deliberately wrong reimplementation of a generated ROM's routine
+is caught with the first differing offset named; a vacuous comparison is
+reported as vacuous; and a perturbation that should be noticed is noticed.
+
+### M4 — The external API
+
+Framing (§8.3), stdio transport (§8.2), in-process binding (§8.4).
+
+*Done when*: a client written in a language other than the host's drives a full
+cycle — seed, run, compare — without linking the host.
+
+### M5 — Dogfooding
+
+Reimplement a routine of a homebrew program through the API, as a user of the
+tool rather than its author.
+
+*Done when*: the cycle — choose a unit, write it, compare, fix until it agrees,
+record provenance, commit — runs end to end without touching the tool's
+internals. Anything that forces a change inside the tool is a finding, and is
+recorded as one.
+
+### M6 — Reverse-engineering features
+
+§10, as declared capabilities.
+
+*Done when*: a write to an address can be attributed to the position that made
+it, and coverage distinguishes executed from unexecuted ROM, on the generated
+fixtures.
+
+### M7 — The structured mapping system
+
+§9.1–§9.3.
+
+*Done when*: a mapping split across several files loads as one graph, duplicate
+names across files are refused, and the API reports a divergence by symbol name
+rather than by address.
+
+---
+
+## 13. Open questions
+
+| id | what is open | what would settle it |
+|---|---|---|
+| Q1 | Snapshots by value or by handle across the API (§3.6) | the first real client and the measured cost of a routine-level cycle |
+| Q2 | The platform trait's exact signatures (§7.6) | the second platform, with a real backend |
+| Q3 | Protocol versioning and capability negotiation (§8.6) | the first client written by someone who did not write the tool |
+| Q4 | Licence for the tool and for mapping data (§11.4) | the intent to publish, with the dependency set known |
+| Q6 | Whether a backend driven as a child process and one driven as a library can share one trait without the trait leaking the difference | implementing one of each |
+| Q7 | The first backend's upstream is a community fork of a project whose original author archived it (§15.4). How much of the risk the narrow C ABI absorbs is untested | a second backend, and one upstream version bump survived |
+| Q8 | Whether a pre-built binary should be able to load a backend at runtime, rather than backends being compiled in (§7.5) | someone with an emulator worth having who cannot rebuild the host |
+
+---
+
+## 14. Conventions
+
+### 14.1 Language
+
+Code, file names, identifiers, comments, documentation and commit messages are
+in English.
+
+### 14.2 Refusals are values
+
+A function that cannot establish its answer returns the reason, not a default.
+Reasons are specific enough to act on: what was looked for, where, and what was
+found instead.
+
+### 14.3 One commit per unit
+
+A unit is a thing that can be stated in one line and verified on its own. Its
+commit carries the measurement that verified it.
+
+### 14.4 This document
+
+Changes to §2, §3 and §11 are changes to what the project is, and are made
+deliberately rather than in passing. Everything else bends to what is measured.
+
+---
+
+## 15. The first backend — decided
+
+### 15.1 The question that matters is not accuracy
+
+The instinct is to pick the most accurate emulator, because the reference is the
+source of truth. That instinct leads nowhere: the most accurate emulators in this
+family expose almost nothing programmatically, so choosing one means writing C++
+before a line of this tool exists — the trap §1.1 says the project exists to
+avoid.
+
+The question that decides it is **which backend is the most instrumentable**,
+because accuracy is auditable *later, by this tool*. §5.5's cross-check was
+designed for exactly this: add the accuracy reference as a second backend, run
+both, and where they disagree the verdict is *not determined*, with both named.
+The accuracy worry resolves itself with the thing being built, which is why it
+must not block the start.
+
+So: **instrument first, audit second.**
+
+### 15.2 The decision
+
+The first backend is **MesenCE** — the live community fork of Mesen 2 — driven
+from Rust over the flat C ABI it already exports.
+
+### 15.3 Why, in the order the evidence arrived
+
+- **The internals already hold everything §7.2 needs.** Its scripting binding
+  exposes state read *and write*, memory read and write by type and address,
+  memory callbacks for read, write and **execution** — which is a breakpoint by
+  address, the primitive §5.6's routine-level comparison depends on — and
+  savestates as opaque data rather than files. The existence of that binding is
+  the proof: these internals are already shaped for consumption from outside.
+- **The C++ side has what the script binding lacks**: stepping by count and
+  type, resuming, and savestate files.
+- **The boundary already exists.** The project is a C++ core consumed by a
+  separate UI written in another language, through a directory whose whole
+  purpose is exporting a C API. We are not inventing an interface; we are
+  writing another front end against a maintained one.
+- **Seven systems in one codebase** — NES, SNES, Game Boy, Game Boy Advance, PC
+  Engine, SMS/Game Gear, WonderSwan. One integration amortises across every
+  platform this project might add, which is the opposite of a single-system
+  emulator where the work never extends.
+- **Licence**: GPLv3, matching §11.4's intent.
+- **Alive**: thousands of commits, regular releases, automatic development
+  builds, under a community organisation rather than one person.
+
+### 15.4 What was ruled out, and definitively
+
+**The scripting binding as the backend transport.** It has no file I/O, no
+sockets and no inter-process communication of any kind. A script that cannot talk
+to another process cannot serve a tool that lives in another process. This is a
+fact about the binding, not a guess about its performance, so there is no
+"prototype in the script language first" branch to weigh.
+
+**The accuracy-reference family as the *first* backend.** The capability is not
+there to expose: beyond running and reading a few fixed regions, everything
+§7.2 requires would have to be added in C++ first. Worse, such a patch is bound
+to one version of that core and does not survive an upgrade, and the ones with
+the strongest accuracy claim are single-system, so the work never amortises.
+They belong in the configuration later — as the reference this tool audits
+(§15.1), not as the one it starts on.
+
+### 15.5 One backend at a time
+
+Only one backend is supported until it works end to end. Others — including ones
+that require C++ work to expose what §7.2 needs — are added afterwards, against a
+trait that by then has a real implementation behind it rather than a guess.
+
+### 15.6 The risk, named
+
+The original upstream was archived and the live line is a community fork. That is
+a real dependency risk (Q7). What absorbs it: the licence permits forking; the
+surface depended on is a narrow C ABI rather than the whole codebase; and §7.3's
+declared capabilities plus a second backend mean the tool is not married to one
+emulator. What does not absorb it: nothing, if the fork stalls and no second
+backend exists yet — which is an argument for reaching M4 before depending on
+this for anything that matters.
+
+---
+
+---
+
+## 16. Backend versions and the dependency policy
+
+### 16.1 A backend is a name *and* a version
+
+The configuration declares both:
+
+```toml
+[[emulator]]
+name = "ref-a"
+platform = "snes"
+backend = "mesence"
+version = "2.2.1"
+```
+
+The tool asks the loaded library which version it is and **refuses on mismatch**.
+This is §6.6's ROM-hash rule applied to the other half of the reference: a
+configuration that says 2.2.1 and a library that is 2.2.0 produces comparisons
+nobody can interpret, and producing them silently is worse than stopping.
+
+The first backend supports this directly: its exported C API returns its own
+version and build date, so the check costs one call.
+
+### 16.2 Three legs, because a version is a label
+
+A version string says *which* build, not *what it can do*. All three checks
+happen at startup, and they answer different questions:
+
+| check | question it answers | §
+|---|---|---|
+| **version** | which adaptation code to run | 16.1 |
+| **capabilities** | whether this build can do the job at all | 6.5, 7.3 |
+| **conformance fixtures** | whether it actually behaves as expected | 16.5 |
+
+A development build between releases may carry an odd version string and the
+right capabilities; a release may carry the right version and a regression. Only
+the three together are worth anything.
+
+### 16.3 Supported versions are a declared set, never a range
+
+A backend declares the versions it has adaptations for — `["2.2.0", "2.2.1"]` —
+and not `>= 2.2.0`. An open range is a promise about builds that do not exist
+yet, which nobody can keep: the next release may change behaviour the adaptation
+depends on.
+
+An unknown version is refused, naming what is supported. That is §2.4: the tool
+does not guess that a newer build behaves like an older one.
+
+### 16.4 Adaptations are additive
+
+Adding support for a new version never removes an older one. When 2.2.0 works and
+2.3.0 breaks, the work is to add what 2.3.0 needs — and a user who stays on 2.2.0
+deliberately keeps working, with the same results as before.
+
+This is not politeness toward old versions. A reimplementation verified against
+2.2.0 was verified against *that reference*; forcing its author forward invalidates
+their work for a reason that is the tool's convenience.
+
+### 16.5 A behaviour change in the reference is a new reference
+
+If a version changes what the emulator *does* — an accuracy fix is exactly this —
+then the truth changed, not the adaptation. Comparisons made against the old
+version are not automatically valid against the new one.
+
+Therefore:
+
+- a snapshot records the backend name and version it came from (§3.2);
+- comparing a snapshot taken on one version against a run on another is refused,
+  or reported as *not determined* when the caller insists;
+- and the generated fixtures (§11.3) serve as a **conformance suite for the
+  backend**: on every version bump they say whether the reference still behaves
+  the same.
+
+That last item is the one worth noticing. The tool's own comparison machinery,
+pointed at its own dependency, turns "we hope the upgrade was safe" into a
+measurement. No other kind of tool can audit its dependency this way, and it
+costs nothing extra: M0's fixtures and M3's differ are the same parts.
+
+### 16.6 The dependency policy
+
+- **Vendor the backend's source at a pinned commit.** The licence permits it and
+  the project's own licence makes it natural. The upstream's fate then does not
+  reach us.
+- **Pin, never track.** Upgrades are deliberate acts, with §16.5's conformance
+  run as the gate.
+- **Depend on the narrow surface.** The exported C API, not the codebase. What we
+  bind to is what they maintain for their own front end.
+- **The real insurance is the second backend** (§15.5), and it is insurance only
+  once it exists. Until then, M4 is the point before which nothing important
+  should rest on this.
+
+### 16.7 Why an emulator dependency is not an ordinary dependency
+
+Stated once, because the intuition it corrects is strong and comes from elsewhere:
+a dependency that stops being maintained usually decays — its API moves, its
+runtime advances, its vulnerabilities accumulate. **An emulator does not.** The
+console it reproduces will not change, and neither will the software pointed at
+it. A frozen emulator is a frozen reference, which is the desirable state for a
+reference; what an unmaintained one stops doing is *improving*, not *working*.
+
+The corollary, which is §15.1 again from the other side: the accuracy that a
+future version might add is accuracy this tool can measure for itself.

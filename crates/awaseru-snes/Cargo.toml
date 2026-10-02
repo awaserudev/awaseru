@@ -1,0 +1,10 @@
+[package]
+name = "awaseru-snes"
+description = "awaseru's first platform backend."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+awaseru-core = { path = "../awaseru-core", version = "0.0.0" }

@@ -1,0 +1,12 @@
+/target
+
+# Committed on purpose: this becomes an application, and an application pins its
+# dependency versions for everyone who builds it.
+# Cargo.lock
+
+# §6.1 — the machine-local half of the configuration: where things are on *this*
+# machine. The shared half, awaseru.toml, is committed.
+awaseru.local.toml
+
+# A vendored reference backend (§16.6) is committed deliberately, never by accident.
+/vendor/**/target

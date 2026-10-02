@@ -1,0 +1,14 @@
+[package]
+name = "awaseru"
+description = "Verified reimplementation harness: runs a reference emulator alongside a reimplementation and reports where their state diverges."
+readme = "../../README.md"
+keywords = ["verification", "emulator", "differential", "reverse-engineering"]
+categories = ["development-tools", "emulators"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+awaseru-core = { path = "../awaseru-core", version = "0.0.0" }
+awaseru-snes = { path = "../awaseru-snes", version = "0.0.0" }

@@ -1,0 +1,9 @@
+[package]
+name = "awaseru-core"
+description = "awaseru's platform-independent half: the state model, the execution primitive and the differ."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

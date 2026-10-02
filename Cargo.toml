@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+# Shared by every crate here, so a change to the licence or the repository is one
+# edit rather than three (§14.4).
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/awaserudev/awaseru"
