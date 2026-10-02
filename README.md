@@ -30,8 +30,16 @@ that cannot be redistributed cannot appear in a public test suite, so they
 don't: tests that need somebody's own ROM read its path from the environment
 and skip when it is unset.
 
-**Status**: the state model. The host reads a configuration, selects a backend
-by name and drives a reference to a bounded position; snapshots are read off it
-and written back, compared with a verdict that distinguishes *agrees* from *not
-determined*, and the whole thing is tested against a program this repository
-contains. No differ and no external API yet. Version 0.0.0 holds the name.
+**Status**: the execution primitive. The host reads a configuration, brings a
+reference up at a position it can return to, and arrives at **anchors** — named
+positions it caches so that getting there is paid for once. Snapshots are read
+off it and written back, compared with a verdict that distinguishes *agrees*
+from *not determined*, and the same run gives the same state in three separate
+processes. No differ and no external API yet. Version 0.0.0 holds the name.
+
+Anchors are the part worth knowing about if you are reading this to decide
+whether the tool is for you. Reaching a position by replaying from power-on is
+what makes a verification loop spend its day waiting; an anchor turns that into
+a cached state, and §4.8 of the specification is the machinery that proves
+resuming the cache is the same as replaying — because if it is not, every
+comparison below it measures the wrong machine and *passes*.

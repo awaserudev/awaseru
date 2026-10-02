@@ -934,6 +934,29 @@ anchor's demonstration passes end to end** (§4.8), as a test that runs:
 5. and `reverify_after` honoured: after that many uses, the tool replays from the
    origin of its own accord and says it did.
 
+*How it was met*: in two tests, because the five steps do not all live in one
+process. Steps one, three, four and five run as code the tool itself runs
+(`demonstrate`), against the generated fixture of §11.3 where the assertions may
+be about content. Step two's "in a fresh process" is a separate test that
+**spawns** the host — three children with empty caches replaying, agreeing on a
+state digest to the byte, and a fourth resuming a blob one of them wrote and
+agreeing with it. Measured through the host against supplied software: 4.380
+seconds replayed against 0.010 resumed.
+
+What M2 established that it did not set out to:
+
+- **A reproducible power-on exists** (§13's Q9, now answered). Loading the
+  software twice stops at cycle zero at the reset vector, before one
+  instruction.
+- **Zeroing the seven writable memories there makes runs repeat** (Q13, now
+  answered) — including two memories this project does not model as regions,
+  one of which was the last thing still differing. The cost is a declared
+  divergence from the hardware, which every report states.
+- **Input logs are not reachable on this backend** (Q14). It exposes no control
+  device for an input to arrive at, so an anchor behind software that waits for
+  input is refused rather than reached some other way. The gated fixture that
+  would prove otherwise exists and waits.
+
 ### M3 — The differ and the honesty rules
 
 Verdicts, movement (§5.2), perturbation (§5.3), localisation (§5.4).
@@ -993,7 +1016,7 @@ rather than by address.
 
 | Q11 | **The first backend's version does not identify a build.** Its `GetVersion` returns a constant written into a source file, so every commit between two releases reports the same number and §16.1's check cannot tell them apart. The commit hash is the real identity, and `doc/backend.md` records it. | §16.5's conformance fixtures, which compare behaviour rather than labels — on this backend they are not a refinement of the upgrade policy but the load-bearing part of it. A backend that derived its version from its build would also settle it, and is not ours to change |
 
-| Q12 | **A failed state load is silent.** *Measured since*: a position-and-fingerprint check after the load catches a load that landed elsewhere, and **not** a load that did nothing while the machine had not moved since the save — both checks pass in that case, which was proven by deleting the load call. A test of a load must disturb the machine first. The first backend's `LoadStateFile` returns `void`; given nonsense or a missing file it leaves the machine as it was and says nothing, so success and failure are indistinguishable from the call. §4.8's cheap check is therefore not only the cache's audit but the only detector of a load that did nothing. | a backend that reports whether the load took, or the cheap check being made mandatory on every load rather than expected of it — which is the cheaper of the two and does not need anybody else to change anything |
+| Q12 | **A failed state load is silent.** *Reinforced in M2*: the cheap check earned its place twice over. It caught a blob file that several processes were overwriting between one another's save and read-back — a bug that would otherwise have been a wrong answer rather than a failure — and it caught an injected fault that landed a resume a frame late. What it did **not** catch was an injected fault outside the regions an anchor declares; that is the demonstration's job, and M2 widened the demonstration to every writable region because of it. *Measured since*: a position-and-fingerprint check after the load catches a load that landed elsewhere, and **not** a load that did nothing while the machine had not moved since the save — both checks pass in that case, which was proven by deleting the load call. A test of a load must disturb the machine first. The first backend's `LoadStateFile` returns `void`; given nonsense or a missing file it leaves the machine as it was and says nothing, so success and failure are indistinguishable from the call. §4.8's cheap check is therefore not only the cache's audit but the only detector of a load that did nothing. | a backend that reports whether the load took, or the cheap check being made mandatory on every load rather than expected of it — which is the cheaper of the two and does not need anybody else to change anything |
 
 | Q13 | **ANSWERED in M2**, by writing zeros to all seven writable memory types at Q9's power-on position: three processes then agree on every memory, the processor record, the video record, the cycle count and the position. It cost a declared divergence from the hardware rather than a transcribed configuration record, and every report says which was done. Measured in `doc/backend.md`. The original question was: **the first backend fills work memory pseudo-randomly at power-on, differently in every process.** This is the case §2.5 names by example. Measured with the generated fixture, which does not clear memory: two processes loading the same image see different bytes everywhere the program did not write. It is invisible with software that initialises its own memory, which is why it was not found until there was a fixture that does not. Its consequence is larger than it looks: **determinism from power-on is not attainable on this backend, and determinism from a blob is** — U1 measured that everything downstream of a blob agrees exactly across processes. So §4.7's anchors are not only how a run becomes fast, they are how it becomes reproducible, and M2's done-condition is reachable only through one. | making it deterministic, which this backend can do — it has a power-on memory setting — but only through a configuration record far larger than anything transcribed so far (§16.1), so it is a cost rather than an unknown. Until then, §2.5's other half applies: memory the software has not written is *not determined*, and a comparison must say so rather than compare it |
 

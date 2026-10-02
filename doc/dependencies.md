@@ -19,7 +19,7 @@ was taken against.
 | crate | for | what we would do without it |
 |---|---|---|
 | `libloading` 0.9.0 | loading the backend's shared library at a path that comes from the configuration at run time | link it at build time — but then the path stops being configurable and §6.1's split between the shared and the machine-local file collapses |
-| `serde` 1.0.229 | deserializing the configuration | hand-write the parsing, which is work with no payoff |
+| `serde` 1.0.229 | deserializing the configuration, and writing the anchor cache's entries (§4.11) | hand-write the parsing, which is work with no payoff. The cache's use of it is safe to couple to a format precisely because §4.11 says a cache may be wrong: a format that changes invalidates a cache, and invalidating a cache costs only time |
 | `toml` 1.1.6 | the configuration format, decided in §6 | change the format, which §6 chose for explicit structure, comments and unambiguous types |
 | `sha2` 0.11.0 | the hash §6.6 identifies software by, and §4.11's anchor key and §4.8's coverage digests | write it out — which this project did, and `Not taken` below records why that was the wrong call |
 
