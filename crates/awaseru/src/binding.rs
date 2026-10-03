@@ -33,7 +33,7 @@ use crate::cache::Cache;
 use crate::config::AnchorPolicy;
 use crate::differ::{self, Request};
 use crate::perturb::Perturbation;
-use crate::protocol::{self, Command, Reply, PROTOCOL};
+use crate::protocol::{self, Beginning, Command, Established, Position, Reply, PROTOCOL};
 use crate::routine::{Given, Span};
 
 /// One answer: the reply, and the bytes that go with it (§8.3's payload).
@@ -229,6 +229,30 @@ impl<'a> Binding<'a> {
                 }
             }
 
+            // §4.7, and it demonstrates nothing: see
+            // `Arriver::arrive_without_demonstrating` for why, and
+            // `Established` for what the reply says instead of staying quiet.
+            Command::Arrive { anchor } => {
+                match self.arriver.arrive_without_demonstrating(&anchor) {
+                    Ok(arrived) => {
+                        let established = establishment(&arrived);
+                        let at = self.arriver.at().clone();
+                        Answered::of(Reply::Arrived {
+                            anchor: arrived.anchor,
+                            position: Position::from(&at),
+                            how: arrived.how.to_string(),
+                            took_ms: arrived.took.as_millis() as u64,
+                            beginning: Beginning::from(&arrived.beginning),
+                            established,
+                        })
+                    }
+                    Err(e) => Answered::refuse(
+                        format!("the anchor `{anchor}`"),
+                        e.to_string(),
+                    ),
+                }
+            }
+
             Command::Reverify { anchor } => match self.arriver.reverify(&anchor) {
                 Ok(done) => Answered::of(Reply::Reverified {
                     anchor: done.anchor,
@@ -370,6 +394,40 @@ impl<'a> Binding<'a> {
     pub fn can_localise(&self) -> bool {
         let declared = self.arriver.capabilities();
         declared.has(Capability::StopOnWrite) && declared.has(Capability::WritingPosition)
+    }
+}
+
+/// What §4.8 has established about the anchor an arrival reached.
+///
+/// Three answers and not two, because "shown by somebody else" is neither shown
+/// nor unshown: finding 29 decided that a demonstration belongs to the run that
+/// performed it, so a blob that arrived in a box is reported as **theirs** and
+/// counts for nothing here. Folding that into "not established" would lose the
+/// only thing a person can act on, which is who to ask.
+fn establishment(arrived: &crate::arrive::Arrived) -> Established {
+    if let Some(whose) = &arrived.demonstrated_elsewhere {
+        return Established::Elsewhere {
+            by: whose.clone(),
+            says: format!(
+                "this anchor was shown to produce what replaying it produces by {whose}, and \
+                 not here. §4.8 makes a demonstration the property of the run that performed \
+                 it, so a comparison from this position is not evidence in this session until \
+                 something establishes it here"
+            ),
+        };
+    }
+    match &arrived.caveat {
+        Some(caveat) => Established::Nowhere {
+            says: caveat.to_string(),
+        },
+        None => Established::Here {
+            replays: arrived.demonstrated_with,
+            says: format!(
+                "this anchor has been shown to produce what replaying its definition produces, \
+                 here, with {} replay(s) — so a comparison from this position is evidence",
+                arrived.demonstrated_with
+            ),
+        },
     }
 }
 

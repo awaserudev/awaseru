@@ -87,6 +87,49 @@ impl Witness {
     }
 }
 
+/// Whether §4.9 asks for a demonstration before this blob is used.
+///
+/// A free function because it is a **decision**, and the audit's third unit
+/// found three guards whose tests asserted only the happy path and so could not
+/// fail. A decision taken inline can be tested one way; a decision with a name
+/// can be asked every question there is.
+///
+/// The four answers it has to get right:
+///
+/// - **nothing has demonstrated it anywhere** → yes, §4.9 demonstrates before
+///   first use, of the tool's own accord;
+/// - **demonstrated here** → no, it is already established;
+/// - **demonstrated elsewhere** → no, and this is finding 29: a blob that came
+///   in a box carries its packer's demonstration, which is theirs and counts
+///   for nothing here. Forcing the replay would spend exactly the time the box
+///   saved, on work nobody asked for, and the arrival says whose it is instead;
+/// - **the client asked only to arrive** → no, whatever the rest says. Arriving
+///   is looking and examining is measuring, and a person who asked where the
+///   reference is has not asked to spend several replays.
+fn owes_a_demonstration(
+    demonstrated_with: u32,
+    demonstrated_elsewhere: bool,
+    verify_from_origin: u32,
+    demonstrating: Demonstrating,
+) -> bool {
+    demonstrating == Demonstrating::WhenNeeded
+        && verify_from_origin > 0
+        && demonstrated_with == 0
+        && !demonstrated_elsewhere
+}
+
+/// Whether an arrival may spend §4.9's demonstration.
+///
+/// A named pair rather than a `bool`, because `arrive(name, false)` at a call
+/// site says nothing about what the false is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Demonstrating {
+    /// As §4.9 asks: before the first use of an anchor nobody has established.
+    WhenNeeded,
+    /// Never, for a client that asked only where the reference is.
+    Never,
+}
+
 /// How a reference got somewhere — §4.12.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum How {
@@ -150,6 +193,14 @@ pub struct Arrived {
     /// Set when this arrival re-ran the demonstration because §4.9's
     /// `reverify_after` came due.
     pub reverified: bool,
+    /// How many replays established this anchor, here. Zero means nothing
+    /// here has, which `caveat` then says in words.
+    ///
+    /// Carried because a client asking where the reference is wants to know
+    /// what a comparison from there would be worth, and "shown with three
+    /// replays" and "shown with one" are different strengths of the same
+    /// claim (§4.9's `verify_from_origin`).
+    pub demonstrated_with: u32,
     /// Who demonstrated this blob, when it was not this session.
     ///
     /// A blob that came in a box carries its packer's demonstration, and that
@@ -664,6 +715,33 @@ impl<'a> Arriver<'a> {
     /// demonstrated first — §4.8 says an anchor carries a demonstration, and
     /// the tool is what carries it rather than the user remembering to ask.
     pub fn arrive(&mut self, name: &str) -> Result<Arrived, ArriveError> {
+        self.arrive_either(name, Demonstrating::WhenNeeded)
+    }
+
+    /// The same arrival, and it will not demonstrate.
+    ///
+    /// For a client that asked to **arrive** and nothing more (§8's `Arrive`).
+    /// §4.9 demonstrates an anchor nobody has established before it is *used*,
+    /// which costs several replays of the definition, and a person who asked
+    /// where the reference is has not asked to spend them.
+    ///
+    /// Nothing is weakened by this, because nothing is claimed: the arrival
+    /// reports that the anchor is not established, and §4.8's caveat is what
+    /// any comparison from here would carry. What it does mean is that the
+    /// cost moves rather than disappearing — the first `Examine` from this
+    /// anchor pays it. Arriving is looking; examining is measuring.
+    pub fn arrive_without_demonstrating(
+        &mut self,
+        name: &str,
+    ) -> Result<Arrived, ArriveError> {
+        self.arrive_either(name, Demonstrating::Never)
+    }
+
+    fn arrive_either(
+        &mut self,
+        name: &str,
+        demonstrating: Demonstrating,
+    ) -> Result<Arrived, ArriveError> {
         let began = Instant::now();
         // §7.3, before the cache and not after it. An anchor this reference
         // cannot replay cannot be demonstrated either (§4.8), so a cached blob
@@ -694,20 +772,15 @@ impl<'a> Arriver<'a> {
         // `reverify` after.
         let reverified = false;
         if let Some(stored) = self.cache.get(&key)
-            && stored.demonstrated_with == 0
-            // A blob that arrived in a box had been demonstrated, by whoever
-            // packed it. That is not this session's demonstration and is never
-            // counted as one — every verdict from it stays *not determined*
-            // (§4.8) until somebody establishes it here. What it does mean is
-            // that nothing replays it automatically: forcing the demonstration
-            // would spend exactly the time the box was for, on work the person
-            // did not ask for. They are told whose it is and they decide.
-            && stored.demonstrated_elsewhere.is_none()
-            && self.policy.verify_from_origin > 0
+            && owes_a_demonstration(
+                stored.demonstrated_with,
+                stored.demonstrated_elsewhere.is_some(),
+                self.policy.verify_from_origin,
+                demonstrating,
+            )
         {
             self.demonstrate(name)?;
         }
-
         if let Some(stored) = self.cache.get(&key) {
             match self.resume(&stored, &anchor) {
                 Ok(()) => {
@@ -719,6 +792,7 @@ impl<'a> Arriver<'a> {
                         beginning: self.platform.beginning(),
                         caveat: caveat_for(name, stored.demonstrated_with),
                         reverified,
+                        demonstrated_with: stored.demonstrated_with,
                         demonstrated_elsewhere: stored.demonstrated_elsewhere.clone(),
                     });
                 }
@@ -743,7 +817,9 @@ impl<'a> Arriver<'a> {
 
         // Demonstrating after a replay that has just produced the blob, when
         // the policy asks for one and nothing has done it.
-        let demonstrated = if self.policy.verify_from_origin > 0 {
+        let demonstrated = if self.policy.verify_from_origin > 0
+            && demonstrating == Demonstrating::WhenNeeded
+        {
             self.demonstrate(name)?;
             self.policy.verify_from_origin
         } else {
@@ -754,6 +830,7 @@ impl<'a> Arriver<'a> {
             anchor: name.to_string(),
             how: How::Replayed { anchors_run },
             took: began.elapsed(),
+            demonstrated_with: demonstrated,
             // Replayed here, so whatever demonstration there is, is this
             // session's.
             demonstrated_elsewhere: None,
@@ -936,10 +1013,63 @@ mod tests {
                 },
                 by_input_log: None,
             },
+            // §4.8's caveat is exactly the absence of a demonstration, so a
+            // fixture that set the two independently could describe a state
+            // the tool cannot be in.
+            demonstrated_with: if caveat.is_none() { 3 } else { 0 },
             caveat,
             reverified: false,
             demonstrated_elsewhere: None,
         }
+    }
+
+    /// Every answer the demonstration gate has, and not only the one that
+    /// says yes.
+    ///
+    /// The audit's third unit found three guards whose tests asserted the happy
+    /// path and so could not fail. This asks the decision all four of its
+    /// questions, including the two that are decisions rather than facts.
+    #[test]
+    fn the_demonstration_gate_answers_each_of_its_four_questions() {
+        use Demonstrating::{Never, WhenNeeded};
+
+        // §4.9: nothing has established it, so the tool establishes it before
+        // the blob is used. This is the only yes.
+        assert!(
+            owes_a_demonstration(0, false, 3, WhenNeeded),
+            "an anchor nobody has demonstrated is demonstrated before use"
+        );
+
+        // Already established here.
+        assert!(
+            !owes_a_demonstration(3, false, 3, WhenNeeded),
+            "an established anchor is not established again"
+        );
+
+        // Finding 29: established by whoever packed the box. Theirs, counting
+        // for nothing here — and forcing the replay would spend what the box
+        // saved on work nobody asked for.
+        assert!(
+            !owes_a_demonstration(0, true, 3, WhenNeeded),
+            "a demonstration made elsewhere is not replaced by one made here \
+             unasked"
+        );
+
+        // The policy turned off.
+        assert!(
+            !owes_a_demonstration(0, false, 0, WhenNeeded),
+            "a policy of zero replays asks for none"
+        );
+
+        // And the decision this frente is about: a client that asked to
+        // arrive gets no demonstration, whatever the rest would have said.
+        assert!(
+            !owes_a_demonstration(0, false, 3, Never),
+            "arriving is looking; a client that asked where the reference is \
+             did not ask to spend several replays"
+        );
+        assert!(!owes_a_demonstration(0, true, 3, Never));
+        assert!(!owes_a_demonstration(3, false, 3, Never));
     }
 
     /// §4.12's line says how it arrived and how long. The number is there so

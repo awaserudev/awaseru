@@ -885,6 +885,34 @@ Region names and symbol names in the API are the names the backend and the
 loaded mapping supply (§3.1, §9.1). There is no second naming scheme to learn,
 and the API's surface is documented by whatever configuration is loaded.
 
+### 8.5a Arriving is not measuring
+
+A client may ask the reference to **arrive** at an anchor and nothing else, and
+that command does not demonstrate.
+
+§4.9 demonstrates an anchor nobody has established before it is *used*, of the
+tool's own accord, and that costs several replays of the definition. A client
+that asked where the reference is has not asked to spend them. So the cost moves
+rather than disappearing: the first measurement from that anchor pays it, and
+until then nothing is claimed.
+
+What the arrival says instead of staying quiet is **whether anything has
+established the anchor, and whose establishing it was** — shown here, shown by
+whoever packed the box it came in, or shown nowhere. Three answers and not two,
+because a demonstration belongs to the run that performed it (§4.8) and folding
+somebody else's into "not established" would lose the only thing a person can
+act on, which is who to ask.
+
+This is not a verdict and a client must not read it as one. An arrival compares
+nothing; §2.3's three values are for comparisons. It says what a comparison made
+from this position *would* be worth.
+
+Why the section exists at all: §10's half of this tool is looking at what the
+reference holds somewhere, before there is a reimplementation to compare against,
+and it had no verb. The whole anchor cache — §4.12's 686 seconds becoming
+milliseconds — was reachable only as a side effect of a measurement nobody
+wanted.
+
 ### 8.6 Versioning and negotiation
 
 This section was open, and said that what would settle it was *the first client

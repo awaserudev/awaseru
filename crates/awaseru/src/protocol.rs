@@ -93,6 +93,7 @@ pub const COMMANDS: &[&str] = &[
     "read",
     "write",
     "run",
+    "arrive",
     "reverify",
     "examine",
 ];
@@ -121,6 +122,21 @@ pub enum Command {
     Write { region: String, offset: usize },
     /// Advance, bounded (§4.2). There is no unbounded run to ask for.
     Run { bound: Bound },
+    /// Put the reference at an anchor, and nothing else — §4.7, and Q26.
+    ///
+    /// **It does not demonstrate.** §4.9 demonstrates an anchor nobody has
+    /// established before it is *used*, and that costs several replays of the
+    /// definition; a client asking to arrive has not asked to spend them.
+    /// Arriving is looking, examining is measuring, and the reply says which
+    /// of the two this position is fit for rather than leaving silence to be
+    /// read as "fine".
+    ///
+    /// This is the half of the tool §10 is about: looking at what the
+    /// reference holds somewhere, before there is a reimplementation to
+    /// compare it against. It had no verb, so the whole anchor cache was
+    /// reachable only as a side effect of a measurement nobody wanted
+    /// (`doc/findings.md`'s thirty-fourth entry).
+    Arrive { anchor: String },
     /// §4.9's closing check: replay the anchor's definition once and see that
     /// the cached blob still produces what replaying produces.
     ///
@@ -275,6 +291,21 @@ pub enum Reply {
     /// field or two: without it, every reply on the wire would be the size of
     /// the largest one.
     /// §4.9's closing check passed: everything that rested on this blob stands.
+    /// Where the reference now stands, and what a comparison from here would
+    /// be worth — the answer to `Arrive`.
+    Arrived {
+        anchor: String,
+        /// Where it is, and what kind of place that is (§3.4).
+        position: Position,
+        /// Replayed or resumed, and how long — §4.12 next to the result.
+        how: String,
+        took_ms: u64,
+        /// How the reference came up (§4.12).
+        beginning: Beginning,
+        /// §4.8: whether anything has shown this anchor produces what replaying
+        /// its definition produces.
+        established: Established,
+    },
     Reverified {
         anchor: String,
         /// How many times the blob was resumed since it was demonstrated.
@@ -546,6 +577,31 @@ impl Coverage {
             never_ran: c.never_ran().into_iter().map(|r| [r.start, r.end]).collect(),
         }
     }
+}
+
+/// Whether §4.8 has established an anchor, and whose establishing it was.
+///
+/// An enum and **not** an `Option<Cause>`, for the reason `Control` gives about
+/// its own absence: a field reading `null` is read as "no problem". A client
+/// that has to notice an absence in order to learn that nothing here is
+/// evidence will sometimes not notice.
+///
+/// It is not a verdict and must not be read as one. An arrival compares nothing
+/// — §2.3's three values are for comparisons — and this says what a comparison
+/// made from this position **would** be worth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "established", rename_all = "kebab-case")]
+pub enum Established {
+    /// Shown here, by this session, with the number of replays it took (§4.9's
+    /// `verify_from_origin`).
+    Here { replays: u32, says: String },
+    /// Shown by whoever packed the box this blob arrived in, and therefore not
+    /// shown here. §4.8 makes a demonstration the property of the run that
+    /// performed it, so this is reported as theirs and counts for nothing.
+    Elsewhere { by: String, says: String },
+    /// Not shown anywhere. The blob may well be right, and nothing has
+    /// established that.
+    Nowhere { says: String },
 }
 
 /// How the reference came up — §4.12.
@@ -1482,6 +1538,7 @@ mod tests {
             Command::Run {
                 bound: Bound::Frames { count: 1 },
             },
+            Command::Arrive { anchor: "a".into() },
             Command::Reverify { anchor: "a".into() },
             Command::Examine {
                 routine: Routine {
@@ -1508,6 +1565,7 @@ mod tests {
                 Command::Read { .. } => "read",
                 Command::Write { .. } => "write",
                 Command::Run { .. } => "run",
+                Command::Arrive { .. } => "arrive",
                 Command::Reverify { .. } => "reverify",
                 Command::Examine { .. } => "examine",
             };
@@ -1553,6 +1611,58 @@ mod tests {
             "and one it does not have is not: {j}"
         );
         assert_eq!(said.len(), COMMANDS.len());
+    }
+
+    /// An arrival says what a comparison from it would be worth, in three
+    /// answers rather than two.
+    ///
+    /// "Shown by somebody else" is neither shown nor unshown. Finding 29
+    /// decided that a demonstration belongs to the run that performed it, so a
+    /// blob that arrived in a box is reported as **theirs** — and folding that
+    /// into "not established" would lose the only thing a person can act on,
+    /// which is who to ask.
+    ///
+    /// An enum and not an `Option`, for the reason `Control` gives about its
+    /// own absence: a field reading `null` is read as "no problem".
+    #[test]
+    fn an_arrival_says_whether_it_is_established_and_whose_establishing_it_was() {
+        let here = Established::Here {
+            replays: 3,
+            says: "shown here".into(),
+        };
+        let elsewhere = Established::Elsewhere {
+            by: "a backend 1.0.0".into(),
+            says: "shown by them".into(),
+        };
+        let nowhere = Established::Nowhere {
+            says: "nothing has shown it".into(),
+        };
+
+        assert_eq!(json(&here)["established"], "here");
+        assert_eq!(json(&here)["replays"], 3);
+        assert_eq!(json(&elsewhere)["established"], "elsewhere");
+        assert_eq!(json(&elsewhere)["by"], "a backend 1.0.0");
+        assert_eq!(json(&nowhere)["established"], "nowhere");
+
+        // The three are distinguishable on the wire, which is the whole point:
+        // a client must not have to tell them apart by reading a sentence.
+        let tags: Vec<String> = [&here, &elsewhere, &nowhere]
+            .iter()
+            .map(|e| json(e)["established"].as_str().expect("a tag").to_string())
+            .collect();
+        assert_eq!(tags.len(), 3);
+        assert_eq!(
+            tags.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            3,
+            "three answers, three tags: {tags:?}"
+        );
+
+        // And each carries its sentence, so a client that only prints has
+        // something to print.
+        for e in [&here, &elsewhere, &nowhere] {
+            let says = json(e)["says"].as_str().expect("a sentence").to_string();
+            assert!(!says.is_empty(), "{e:?}");
+        }
     }
 
     /// §4.3's stop carries whether it arrived, because every client would
