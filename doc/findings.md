@@ -42,6 +42,7 @@ on until something was done about it; **slowed** means it cost real time;
 | 20 | the watchdog could not tell a stuck backend from a long run | **blocked** §4.9 on a long anchor | **fixed while closing Q14** — it watches progress now, not duration |
 | 21 | six more calls the host believes although they cannot report failure | **would block** a verdict, invisibly | **all six fixed by the audit**, plus the half-guarded seventh |
 | 22 | a guard against a silent failure cannot be tested end to end | annoyed, and it is a limit rather than a defect | a note for `doc/` — found by the audit, by its own mutation |
+| 23 | the parent's deadline on its child is finding 20 again, one level up, and it is live | **will block** the use pass on a cold expensive anchor | a design decision — found by the audit |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -684,3 +685,52 @@ would refuse every honest write.
 What would close it properly is a backend that can be told to misbehave — a
 fake implementing the same symbols, returning nothing. That is a real option and
 a day's work, and nobody has needed it enough yet (§2.4).
+
+## 23. The parent's deadline on its child is finding 20 one level up
+
+**Will block the FF5 use pass**, on the first `examine` from a cold anchor
+behind the recording. Found by asking of every fixed number what finding 20
+asked of one.
+
+`child.rs` gives the parent 120 seconds to receive one answer. Its comment says
+the number is *generous, because an `examine` replays a routine several times
+and a cold anchor replays from the origin* — which is the author knowing the
+risk and answering it with a bigger guess. **A bigger guess is still a guess,
+and this project now has the measurement that exceeds it: a cold arrival at the
+anchor behind the recording takes 754 seconds.**
+
+`Child::set_watchdog` exists and **nothing in the host ever calls it**, so the
+120 is not a default anybody can move.
+
+### What it actually guards, which is less than it looks
+
+A **dead** child is already noticed at once: the channel disconnects and the
+parent reports a death rather than waiting. And since finding 20, a **hung
+backend** is caught by the child itself, in about ten seconds of no progress,
+and comes back as a refusal.
+
+So the parent's deadline guards one case: a child hung in its own code, with the
+backend fine. That is the rarest of the three, and the deadline's price is every
+legitimate run longer than two minutes.
+
+**The deadline is in the wrong place.** The thing that can hang is guarded
+better one level down.
+
+### The three routes, none of them taken
+
+- **a heartbeat on the wire.** The child says "still working" while it works,
+  and the parent's deadline becomes what it should be — silence, not duration,
+  exactly as finding 20's fix. It is a protocol change (§8) and a new message
+  kind, which is not additive (§8.6) and is the user's to decide;
+- **watching the child's processor time.** A working child burns it and a hung
+  one does not, which is observable without the child's cooperation. It is
+  `/proc` on Linux, and the host is the platform-independent half of this
+  project — putting an operating system's file layout in it is a worse trade
+  than it first looks;
+- **letting the caller set it.** `set_watchdog` is already there; what is
+  missing is a way to reach it from outside, which means a name on the command
+  line or on the wire, frozen forever.
+
+Not guessed. The first is the right shape and the most expensive; the third is
+the cheapest and the least honest, since it asks the user to predict what they
+cannot measure yet.

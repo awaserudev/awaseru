@@ -148,9 +148,26 @@ pub struct Child {
 
 /// How long a parent waits for one answer before saying the child is silent.
 ///
-/// Generous, because an `examine` replays a routine several times and a cold
-/// anchor replays from the origin. It is a bound rather than a tuning: §4.2's
-/// "no unbounded run" applied to waiting for someone else's run.
+/// It is a bound rather than a tuning: §4.2's "no unbounded run" applied to
+/// waiting for somebody else's run.
+///
+/// # It is also too short, and the number cannot fix that
+///
+/// A cold arrival at an anchor behind a long recording takes **754 seconds**,
+/// measured. This is 120. The first version of this comment called the number
+/// *generous*, which was the author seeing the risk and answering it with a
+/// bigger guess — the same mistake `doc/findings.md`'s twentieth entry is about,
+/// one level up.
+///
+/// What this deadline actually guards is narrower than it looks. A **dead**
+/// child is noticed at once, by the channel disconnecting. A **hung backend** is
+/// caught by the child itself in about ten seconds of no progress and comes back
+/// as a refusal. So this covers a child hung in its own code with the backend
+/// fine — the rarest of the three — and charges every legitimate run over two
+/// minutes for it.
+///
+/// `doc/findings.md`'s twenty-third entry has the three routes out. All of them
+/// cost a decision rather than a number, which is why this still says 120.
 pub const WATCHDOG: Duration = Duration::from_secs(120);
 
 impl Child {
