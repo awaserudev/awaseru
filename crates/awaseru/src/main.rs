@@ -1134,20 +1134,20 @@ mod tests {
     #[test]
     fn a_session_supplies_the_places_and_an_explicit_path_still_wins() {
         let plan = match parse(
-            ["--session", "/tmp/work/ff5-battle"]
+            ["--session", "/tmp/work/a-battle"]
                 .iter()
                 .map(|w| w.to_string()),
         )
         .expect("it parses")
         {
             Command::Run { plan, session, .. } => {
-                assert_eq!(session, Some(PathBuf::from("/tmp/work/ff5-battle")));
+                assert_eq!(session, Some(PathBuf::from("/tmp/work/a-battle")));
                 *plan
             }
             other => panic!("expected a run, got {other:?}"),
         };
-        assert_eq!(plan.home, PathBuf::from("/tmp/work/ff5-battle/home"));
-        assert_eq!(plan.cache, PathBuf::from("/tmp/work/ff5-battle/anchors"));
+        assert_eq!(plan.home, PathBuf::from("/tmp/work/a-battle/home"));
+        assert_eq!(plan.cache, PathBuf::from("/tmp/work/a-battle/anchors"));
 
         let plan = plan_of(&["--cache", "/somewhere-else"]);
         assert_eq!(

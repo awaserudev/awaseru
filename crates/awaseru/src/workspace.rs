@@ -374,10 +374,10 @@ mod tests {
 
     #[test]
     fn opening_makes_the_places_and_takes_its_name_from_the_path() {
-        let at = scratch("open").join("ff5-battle");
+        let at = scratch("open").join("a-battle");
         let session = Session::open(&at).expect("it opens");
 
-        assert_eq!(session.name(), "ff5-battle");
+        assert_eq!(session.name(), "a-battle");
         for place in [session.home(), session.anchors(), session.runs(), session.logs()] {
             assert!(place.is_dir(), "{} should be there", place.display());
         }
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn a_name_that_cannot_be_a_directory_is_refused_and_a_plain_one_is_not() {
-        assert_eq!(unusable_as_a_name("ff5-battle"), None);
+        assert_eq!(unusable_as_a_name("a-battle"), None);
         assert_eq!(unusable_as_a_name("work_2"), None);
         assert_eq!(unusable_as_a_name(""), Some("it is empty"));
         assert_eq!(

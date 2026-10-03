@@ -2,7 +2,7 @@
 //!
 //! Twenty-one of this backend's thirty-one imported symbols return `void`.
 //! Six of them sit where a wrong answer still looks like an answer, and the
-//! audit before the FF5 use pass gave each one something observable to check
+//! audit before the first use pass gave each one something observable to check
 //! instead of a status to believe. These are those checks, exercised by making
 //! the failure happen rather than by asserting the happy path still works.
 //!

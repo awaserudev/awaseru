@@ -1,7 +1,7 @@
 # The numbers, and when they were last taken
 
 Every measurement in `doc/` is a claim with a date on it. This says which were
-re-taken by the audit before the FF5 use pass, which were not, and why.
+re-taken by the audit before the first use pass, which were not, and why.
 
 **Nothing moved enough to change a decision**, which is the only question that
 matters here and was asked of each one.

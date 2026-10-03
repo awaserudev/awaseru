@@ -623,7 +623,7 @@ caught in the same ten seconds as before. The comment on the constant had the
 reasoning in it all along — "a run that ended on one would not be reproducible"
 — and the implementation was measuring the wrong thing.
 
-# Found by the audit before the FF5 use pass
+# Found by the audit before the first use pass
 
 ## 21. Six more calls the host believes, and the pattern they form
 
@@ -715,7 +715,7 @@ a day's work, and nobody has needed it enough yet (§2.4).
 
 ## 23. The parent's deadline on its child is finding 20 one level up
 
-**Will block the FF5 use pass**, on the first `examine` from a cold anchor
+**Will block the first use pass**, on the first `examine` from a cold anchor
 behind the recording. Found by asking of every fixed number what finding 20
 asked of one.
 
@@ -1070,3 +1070,120 @@ itself as always present, with one code path that does not set it, reads as
 correct in every test that uses the other path.** The tests were right about
 what they covered, and nobody had asked a control about a real region until
 somebody outside the project did.
+
+## 34. A client cannot ask to arrive at an anchor
+
+**Found in the first hour of the first use from outside, by wanting to do the
+most ordinary thing there is.** The vocabulary has eight commands — `Hello`,
+`Capabilities`, `Regions`, `Read`, `Write`, `Run`, `Reverify`, `Examine` — and
+none of them puts the reference at an anchor.
+
+So a client **cannot resume a cached blob.** The only two ways to an anchor are
+`Examine`, which arrives as part of a measurement the client may not want to
+make, and `Reverify`, which replays the definition and therefore costs the thing
+the cache exists to avoid.
+
+Which means the whole of §4.7 to §4.12 — the anchors, the cache, the
+demonstration, 686 seconds becoming 0.014 — **is unavailable over the protocol
+except as a side effect.** A client that only wants to look at what the
+reference holds at a position has to replay from power-on with `Run`, every
+time. That is §10's half of the work, the reverse-engineering half, and it is
+the first thing anybody does before they have a reimplementation to compare.
+
+**Not fixed: it is a new verb, which is a decision rather than a repair** (§13's
+Q26).
+
+Worth saying what the absence is *not*. It is not an oversight in the sense of
+somebody forgetting: §5.6 makes routine comparison the primary unit, and a
+client doing only that never needs to arrive separately, because `Examine`
+arrives for it. The vocabulary is exactly large enough for the thing the
+specification calls primary. What the first outside use found is that **a person
+does other things first**, and the smallest of them has no verb.
+
+## 35. `moved` is absent in the one case where the count is zero
+
+Small, and worth writing down because of where it falls. §5.2's movement is
+reported as `Option<usize>`, documented *absent rather than zero where there is
+no count* — and in a vacuous comparison it comes back absent.
+
+But there **is** a count there: it is zero, and zero is the reason for the
+verdict. The sentence beside the verdict says so in words — *the reference
+changed none of the N bytes compared* — so the information is not lost, only the
+machine-readable half of it.
+
+A client that branches on `moved.is_some()` to decide whether a measurement was
+real therefore concludes that nothing was counted, in exactly the case where
+counting happened and produced the number that decided everything. One that
+branches on the value is fine. The two readings disagree only here.
+
+**Not fixed, because it is a shape question rather than a bug**: `None` and
+`Some(0)` mean different things to a client and the right answer is to decide
+which this is, not to change it quietly. Recorded so that the decision is one
+somebody makes.
+
+## 36. One budget serves two runs that have nothing in common
+
+Found by reading, and recorded with that said plainly, because this project's
+record is that reading does not find defects — so this is a structural
+observation that has not yet cost anything.
+
+A routine carries one `within`, and §5.6's measurement spends it twice: once
+running from the anchor **to the entry**, and once running from the entry **to
+the return**. Those two are not the same kind of number. Reaching a routine
+depends on how far away the anchor is and can be millions of instructions;
+running one is as long as the routine, and §4.5's whole point is that the second
+bound must be tight.
+
+So a budget large enough to reach a distant routine is a budget that no longer
+bounds the measurement, and a budget tight enough to bound it cannot reach. One
+field cannot be both.
+
+It has not bitten: the subject of the first use is reached within two thousand
+instructions of its anchor, which is also a tight bound on the routine itself.
+That is the lucky case rather than the general one, and the general one is a
+routine somebody has to run a frame of software to reach.
+
+## 37. The supplied software's name was in this repository, and the check could not see it
+
+**The worst finding in this file, and it is mine.** The subject's title, in its
+common abbreviation, was written into this repository in six places — three test
+doc comments, two source files using it as an example session name, one
+measurements document — and pushed. `tools/leak-check.sh` said `clean` every
+time, before every one of those pushes.
+
+It was right about what it checks. It searches tracked files for the words in a
+local list, and the abbreviation was not one of them. Finding 32 recorded that
+the check covers one of §11.2's five kinds; this is the same gap with a real
+leak behind it instead of a near miss, and in the kind the check **does** cover.
+
+### Why the word was not in the list, which is the part worth knowing
+
+Three letters and a digit. Put in a list that `grep -i` applies to every tracked
+file, **binaries included**, it also matches a hexadecimal fragment — and this
+repository is full of digests, addresses and fixtures that contain it by
+coincidence. A list entry that fires on `0x…ff5…` makes the check cry wolf, and
+a check that cries wolf is one somebody turns off.
+
+So the abbreviation is a word a word-list cannot hold. That is not an argument
+for leaving it out; it is an argument that **the list is the wrong instrument for
+a short name**, and nobody had noticed because nobody had tried to add one.
+
+### What was done and what was not
+
+The working tree is clean: all six occurrences are redacted, and the check now
+finds nothing in any tracked file.
+
+**The history is not, and cannot be from here.** Twenty-eight blobs name it, in
+commits that are already on the remote. Removing them means rewriting published
+history and forcing it, which is not a repair — it is a decision about a
+published repository, and it belongs to whoever owns it.
+
+### The shape, which is general
+
+A private-word list is a **denylist**, and a denylist protects against what
+somebody remembered. Every leak in this file got through one: the compiled
+Python files that embedded a path (finding in §11.2's own header), the addresses
+in finding 32, and now a title short enough to be mistaken for a number. The
+alternative is an allowlist — a check that refuses anything in `doc/` and
+`spec.md` outside a vocabulary — and it is more work and more false refusals and
+it fails the other way, which is the way that is safe.
