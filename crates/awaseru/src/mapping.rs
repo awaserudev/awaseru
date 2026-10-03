@@ -38,6 +38,32 @@
 //! the first unit expected, and it is why this is written down rather than
 //! deferred.
 //!
+//! # What a hypothesis does, and what it deliberately does not
+//!
+//! §9.2 says entries with weak provenance "are not treated as fact". Where that
+//! bites has to be decided once rather than discovered later, so: **a hypothesis
+//! changes what a report SAYS and never what a verdict IS.**
+//!
+//! The distinction that makes this safe is which side supplies the numbers.
+//!
+//! - Where the mapping only **names** something the measurement already found —
+//!   which is all it does today — a hypothesis is a label. The verdict rests on
+//!   the client's spans and the reference's bytes, neither of which the mapping
+//!   touched, so folding a label into §2.3's three values would be refusing to
+//!   answer a question that was answered. What the report owes is to say the
+//!   name is a hypothesis, because presenting one beside names confirmed twice
+//!   over is the well-formatted guess §9.2 exists to prevent.
+//! - Where the mapping would **supply** a number the measurement rests on — the
+//!   span to seed, the span to compare, the address to stop at — a hypothesis
+//!   would bear on the verdict directly: a comparison over a span that may be
+//!   the wrong span is not determined (§2.3), however neatly the bytes match.
+//!
+//! **Nothing in this project does the second yet**, and that is why this is
+//! written here rather than built. The day a measurement takes its spans from
+//! the mapping, a hypothesis among them stops being a label — and that is a
+//! change to §2 and §5, which is the user's to make and not a thing to arrive
+//! at by accident.
+//!
 //! # Every name here is permanent
 //!
 //! A mapping is written by hand, in files that outlive any version of this
@@ -79,12 +105,66 @@ pub struct Symbol {
     /// the context without reconstructing it from raw code". Required: a symbol
     /// nobody can explain is one nobody should rely on.
     pub description: String,
-    /// §9.2, mandatory. Its contents are M7's third unit; what is fixed here is
-    /// that no symbol may exist without one, so that no example is ever written
-    /// that a later unit has to go back and fix.
-    pub provenance: toml::Table,
+    /// §9.2, mandatory.
+    pub provenance: Provenance,
     /// §9.1's relations to other symbols.
     pub relations: Vec<Relation>,
+}
+
+/// How a symbol was established — §9.2's first half, the epistemic one.
+///
+/// §9.2: "A value established by measurement and a value someone remembered are
+/// not the same value, and a mapping that cannot tell them apart decays." These
+/// are the three this project has actually needed, read off the real mapping
+/// rather than imagined:
+///
+/// - **measured** — observed on the machine. The real mapping's strongest rows
+///   are measured *twice by two different means*, which is stronger still and
+///   is what the note is for;
+/// - **inferred** — derived from something observed, but not observed. The real
+///   mapping has exactly one of these, and it is the only row its author said
+///   he would not trust again without checking;
+/// - **assumed** — neither. Somebody said so, or it came from elsewhere.
+///
+/// §2.4 keeps the list at three. A fourth is added the day something needs one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Established {
+    Measured,
+    Inferred,
+    Assumed,
+}
+
+/// §9.2's provenance, mandatory on every symbol.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    pub how: Established,
+    /// What was done, in the writer's own words. Required, and it carries both
+    /// of §9.2's purposes:
+    ///
+    /// - the **epistemic** one, because "measured" alone does not say measured
+    ///   how, and the real mapping's useful rows say "two sources: the
+    ///   instruction's operand, and the span the memory actually changed";
+    /// - the **distribution** one. §9.2 wants an entry derived from material
+    ///   that may not be redistributable to be *identifiable rather than mixed
+    ///   in*, and a mandatory note is what makes that findable by reading or by
+    ///   searching. A structured source field would be a vocabulary nobody has
+    ///   asked for (§2.4) and can be added later, which is the safe direction.
+    pub note: String,
+}
+
+impl Provenance {
+    /// §9.2: "Entries with weak provenance are marked as hypotheses and are not
+    /// treated as fact."
+    ///
+    /// Anything not measured is a hypothesis. That is deliberately harsh on
+    /// `inferred`: the real mapping's one inferred row was inferred from a
+    /// single observation, and presenting it beside rows confirmed twice over
+    /// is exactly the well-formatted guess §9.2 exists to prevent.
+    pub fn is_hypothesis(&self) -> bool {
+        !matches!(self.how, Established::Measured)
+    }
 }
 
 /// §9.1's relation from one symbol to another.
@@ -138,7 +218,7 @@ struct SymbolForm {
     #[serde(default)]
     groups: Vec<String>,
     description: String,
-    provenance: toml::Table,
+    provenance: Provenance,
     #[serde(default, rename = "relation")]
     relations: Vec<Relation>,
 }
@@ -228,10 +308,10 @@ pub fn parse(text: &str) -> Result<File, Error> {
                 field: "description",
             });
         }
-        if s.provenance.is_empty() {
+        if s.provenance.note.trim().is_empty() {
             return Err(Error::Empty {
                 symbol: s.name,
-                field: "provenance",
+                field: "provenance.note",
             });
         }
 
@@ -531,7 +611,7 @@ offset = 64
 length = 18
 groups = ["the-decompressor"]
 description = "Expands each input byte into two output bytes."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 
 [[group]]
 name = "the-decompressor"
@@ -572,7 +652,8 @@ description = "Everything that turns the packed stream into bytes."
         assert_eq!(s.length, Some(18), "§9.1 has no extent and a mapping needs one");
         assert_eq!(s.groups, vec!["the-decompressor"]);
         assert!(s.description.starts_with("Expands"));
-        assert_eq!(s.provenance.get("how").and_then(|v| v.as_str()), Some("measured"));
+        assert_eq!(s.provenance.how, Established::Measured);
+        assert!(!s.provenance.is_hypothesis(), "measured is not a hypothesis");
         assert!(s.relations.is_empty(), "§9.1 says relations, and none is a number");
     }
 
@@ -585,7 +666,7 @@ description = "Everything that turns the packed stream into bytes."
 name = "entry"
 address = 0x8020
 description = "Where the routine begins."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("it parses");
@@ -668,12 +749,19 @@ provenance = { how = "measured" }
             "§9.1: the description is read by the API, so it has to say something"
         );
         assert_eq!(
-            parse(&whole().replace("provenance = { how = \"measured\" }", "provenance = {}")),
+            parse(&whole().replace("note = \"seen on the machine\"", "note = \"   \"")),
             Err(Error::Empty {
                 symbol: "expand".into(),
-                field: "provenance"
+                field: "provenance.note"
             }),
-            "§9.2 is mandatory, and an empty table is not a provenance"
+            "§9.2 wants an audit trail, and a blank note is not one"
+        );
+        assert!(
+            parse(&without("provenance ="))
+                .unwrap_err()
+                .to_string()
+                .contains("provenance"),
+            "and a symbol with no provenance at all is refused by name (§9.2 is mandatory)"
         );
         assert!(parse(&whole()).is_ok());
     }
@@ -757,7 +845,7 @@ name = "expand"
 address = 0x8040
 groups = ["the-decompressor"]
 description = "Entered once per screen."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 [[symbol.relation]]
 kind = "writes"
 to = "out-buffer"
@@ -767,7 +855,7 @@ name = "hot-loop"
 address = 0x8044
 groups = ["its-inner-loop"]
 description = "Runs once per byte."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("symbols parse");
@@ -781,7 +869,7 @@ offset = 1024
 length = 64
 groups = ["the-decompressor"]
 description = "Where the expanded bytes land."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("data parses");
@@ -833,7 +921,7 @@ provenance = { how = "measured" }
 name = "expand"
 address = 0x8040
 description = "One."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("parses");
@@ -843,7 +931,7 @@ provenance = { how = "measured" }
 name = "expand"
 address = 0x9000
 description = "Another, and somebody is wrong."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("parses");
@@ -871,7 +959,7 @@ provenance = { how = "measured" }
 name = "expand-2"
 address = 0x9000
 description = "Another."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("parses");
@@ -888,7 +976,7 @@ provenance = { how = "measured" }
 name = "expand"
 address = 0x8040
 description = "One."
-provenance = { how = "measured" }
+provenance = { how = "measured", note = "seen on the machine" }
 "#,
         )
         .expect("parses");
@@ -922,7 +1010,7 @@ name = "expand"
 address = 0x8040
 groups = ["{group}"]
 description = "One."
-provenance = {{ how = "measured" }}
+provenance = {{ how = "measured", note = "seen on the machine" }}
 "#
             )
         };
@@ -949,7 +1037,7 @@ provenance = {{ how = "measured" }}
 name = "expand"
 address = 0x8040
 description = "One."
-provenance = {{ how = "measured" }}
+provenance = {{ how = "measured", note = "seen on the machine" }}
 [[symbol.relation]]
 kind = "writes"
 to = "{to}"
@@ -960,7 +1048,7 @@ region = "work-ram"
 offset = 0
 length = 4
 description = "Two."
-provenance = {{ how = "measured" }}
+provenance = {{ how = "measured", note = "seen on the machine" }}
 "#
             )
         };
@@ -1050,5 +1138,64 @@ inside = ["a"]
         assert!(map.is_empty());
         assert!(map.symbol("anything").is_none());
         assert!(map.members("anything").is_empty());
+    }
+
+    // --------------------------------------------------- §9.2's provenance --
+
+    /// The three values, and which of them §9.2 calls a hypothesis.
+    #[test]
+    fn measured_is_fact_and_everything_else_is_a_hypothesis() {
+        let of = |how: &str| {
+            parse(&whole().replace("how = \"measured\"", &format!("how = \"{how}\""))) 
+                .expect("it parses")
+                .symbols
+                .swap_remove(0)
+                .provenance
+        };
+
+        assert_eq!(of("measured").how, Established::Measured);
+        assert!(!of("measured").is_hypothesis(), "observed on the machine");
+
+        assert!(
+            of("inferred").is_hypothesis(),
+            "derived from an observation is not an observation — the real mapping's one \
+             inferred row is the only one its author would not trust again"
+        );
+        assert!(of("assumed").is_hypothesis(), "somebody said so");
+
+        // And the three are three, not two: a reader branching on `how` must be
+        // able to tell inferred from assumed, even though both are hypotheses.
+        assert_ne!(of("inferred").how, of("assumed").how);
+    }
+
+    /// A value nobody declared is a mistake in somebody's file, and §2.4 does
+    /// not guess which of the three was meant. The near miss is the right
+    /// spelling parsing.
+    #[test]
+    fn a_provenance_nobody_declared_is_refused_and_names_what_it_wanted() {
+        let err = parse(&whole().replace("how = \"measured\"", "how = \"measuered\""))
+            .expect_err("a typo is not a fourth kind of evidence");
+        let said = err.to_string();
+        assert!(
+            said.contains("measured") && said.contains("inferred") && said.contains("assumed"),
+            "the refusal lists what it would have accepted: {said}"
+        );
+        assert!(parse(&whole()).is_ok());
+    }
+
+    /// §9.2's second purpose, the one the specification calls not obvious: the
+    /// note is the audit trail, so it may not be blank even when `how` is the
+    /// strongest value there is.
+    #[test]
+    fn the_strongest_provenance_still_needs_its_note() {
+        assert_eq!(
+            parse(&whole().replace("note = \"seen on the machine\"", "note = \"\"")),
+            Err(Error::Empty {
+                symbol: "expand".into(),
+                field: "provenance.note"
+            }),
+            "`measured` does not say measured HOW, and §9.2 wants an entry whose derivation \
+             may be unshareable to be identifiable rather than mixed in"
+        );
     }
 }
