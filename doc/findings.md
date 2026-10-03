@@ -33,6 +33,8 @@ on until something was done about it; **slowed** means it cost real time;
 | 11 | a vacuous verdict cannot say why nothing moved | annoyed | a fix worth making — **not made**: the distance is known by the caller and not by `compare`, so saying it means a new field on the wire, which is §8's to decide (§13's Q17) |
 | 12 | a control that is not noticed has a third explanation | annoyed | **fixed in U10** |
 | 13 | the keyboard that reached no controller | annoyed | a note for `doc/backend.md` |
+| 14 | `localise` answers `NothingWrote` on a machine where the routine has not run | annoyed | a fix worth making — found in M6 |
+| 15 | forgetting coverage forgets write recency too | **would have blocked** | a note for `doc/backend.md`, and a shape to watch — found in M6 |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -375,3 +377,64 @@ costs. The general lesson is the one worth keeping: **a tool that depends on a
 person operating a GUI inherits every bug in that GUI**, including the ones
 nobody has written down. This project now depends on a *recording* instead, which
 it does not.
+
+---
+
+# Found in M6
+
+The first thirteen are M5's, from using the tool. These two came from building
+on it, which is a different kind of evidence and worth keeping apart.
+
+## 14. `localise` answers `NothingWrote` on a machine where nothing has run
+
+**Annoyed**, and it cost a confused twenty minutes in M6's done-condition test.
+
+§5.4's localisation begins with a cheap filter: the backend's write record for
+the byte. If the record shows no write, there is nothing to go looking for and
+the answer comes back without a replay — which is right, and fast.
+
+What it cannot distinguish is **whose** state that is a fact about. Asked on a
+freshly loaded machine, before the routine has been measured, it answers:
+
+```text
+NothingWrote
+```
+
+which is true of the machine and reads as a statement about the routine: *this
+routine does not write that byte*. Those are very different, and §2.3's habit —
+never collapse "not determined" into an answer — applies to this pair as much as
+to a verdict.
+
+The precondition is real and undocumented: `localise` explains a write that has
+happened, so the routine has to have run. A caller who has not run it gets the
+answer that means "stop looking".
+
+A fix worth making, and it is a third value rather than a new verb: *the record
+shows no write, and this machine has not executed the routine*.
+
+## 15. Forgetting coverage forgets write recency as well
+
+**Would have blocked**, and was caught before it could, by a test that failed
+for the wrong reason first.
+
+`forget_coverage` is implemented on the one thing the backend offers:
+`ResetMemoryAccessCounts`. That record is not three records. Clearing it clears
+the read counts, the write counts and the execute counts together, with their
+stamps — so a caller who forgets coverage after measuring and then localises
+has thrown away §5.4's cheap filter, and gets finding 14's `NothingWrote`.
+
+Nothing in the verb's name says so. `forget_coverage` sounds like it forgets
+coverage.
+
+The two orders are not symmetric, which is what makes this survivable:
+
+| order | what happens |
+|---|---|
+| forget, run, read coverage, localise | **correct** — the run rewrites the write record |
+| run, forget, localise | the write record is gone and the attribution is lost |
+
+M6's own code takes the first order, and the done-condition test is written in
+that order on purpose. What is owed is the honest name or the honest refusal:
+either the verb says it clears the whole record, or the backend grows a way to
+clear one third of it. `doc/backend.md` records the behaviour beside the
+measurements.

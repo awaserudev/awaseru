@@ -568,6 +568,14 @@ struct { uint64 read_stamp, write_stamp, execute_stamp; uint32 reads, writes, ex
 The last row is the one with a consequence beyond this document; it is in
 `doc/report-options.md`.
 
+**The record is one record.** `ResetMemoryAccessCounts` is all this backend
+offers for clearing it, and it clears the read, write and execute counts
+together, with their stamps. So `Platform::forget_coverage` on this backend also
+throws away what §5.4's cheap filter reads: forget *after* a measurement and the
+attribution of a write is gone with it. Forget *before* and the run rewrites the
+record, which is the order everything here uses and the order M6's
+done-condition test is written in. `doc/findings.md` has it as finding 15.
+
 Both halves are tested, and the test was checked by mutation: a record forced to
 answer "executed" for every byte fails it, and so does one forced to answer
 "never".
