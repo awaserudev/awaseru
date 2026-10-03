@@ -913,6 +913,30 @@ and it had no verb. The whole anchor cache — §4.12's 686 seconds becoming
 milliseconds — was reachable only as a side effect of a measurement nobody
 wanted.
 
+### 8.5b Establishing an anchor is asked for
+
+A client may ask the tool to **establish** an anchor: §4.8's five steps, run now,
+recorded in this session, answering with what it cost.
+
+§4.9 runs them before the first *use* of an anchor nobody has established, of
+the tool's own accord — which leaves two positions with no way out:
+
+- one reached by §8.5a's arrival, which deliberately does not demonstrate;
+- one resumed from a blob that arrived in a box, carrying the demonstration of
+  whoever packed it, which is theirs and counts for nothing here (§4.11).
+
+Both resume in milliseconds and no comparison from either is evidence.
+§4.9's closing check does **not** help: it verifies that a blob still produces
+what replaying it produces, and does not record that anything was established.
+That is deliberate — it is the closing half of a bracket — and conflating the two
+halves would blur a distinction this specification drew on purpose.
+
+**A demonstration made here wins over one made elsewhere**, and both are kept. A
+blob can carry its packer's demonstration and this session's at once; the first
+is provenance and the second is what decides whether a comparison is evidence.
+Reading them the other way round reports somebody else's work after this session
+has done its own.
+
 ### 8.6 Versioning and negotiation
 
 This section was open, and said that what would settle it was *the first client

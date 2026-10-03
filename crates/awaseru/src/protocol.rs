@@ -94,6 +94,7 @@ pub const COMMANDS: &[&str] = &[
     "write",
     "run",
     "arrive",
+    "demonstrate",
     "reverify",
     "examine",
 ];
@@ -137,6 +138,25 @@ pub enum Command {
     /// reachable only as a side effect of a measurement nobody wanted
     /// (`doc/findings.md`'s thirty-fourth entry).
     Arrive { anchor: String },
+    /// Establish an anchor here — §4.8's five steps, asked for.
+    ///
+    /// The **opening** half of §4.9's bracket, and a command because nothing
+    /// could ask for it. §4.9 runs it before the first *use* of an anchor
+    /// nobody has established, which leaves two cases with no way out: an
+    /// anchor reached by `Arrive`, which deliberately does not demonstrate, and
+    /// a blob that came in a box carrying its packer's demonstration, which is
+    /// theirs and counts for nothing here (§4.11, and `doc/findings.md`'s
+    /// twenty-ninth entry). Both leave a position that resumes in milliseconds
+    /// and from which no comparison is evidence, and `Reverify` does not help:
+    /// it **checks** and does not establish.
+    ///
+    /// Not an extension of `Reverify` for that reason. §4.9 makes reverify the
+    /// closing half, read after a session; conflating the two would blur a
+    /// distinction the specification drew on purpose.
+    ///
+    /// It answers with what it cost, which is the number Q23 asked for and
+    /// nobody had.
+    Demonstrate { anchor: String },
     /// §4.9's closing check: replay the anchor's definition once and see that
     /// the cached blob still produces what replaying produces.
     ///
@@ -305,6 +325,15 @@ pub enum Reply {
         /// §4.8: whether anything has shown this anchor produces what replaying
         /// its definition produces.
         established: Established,
+    },
+    /// §4.8 done, here, and what it cost — the answer to `Demonstrate`.
+    Demonstrated {
+        anchor: String,
+        /// How many replays stood behind it (§4.9's `verify_from_origin`).
+        replays: u32,
+        took_ms: u64,
+        /// §2.5: whether the same state was reached in another process as well.
+        across_processes: bool,
     },
     Reverified {
         anchor: String,
@@ -1539,6 +1568,7 @@ mod tests {
                 bound: Bound::Frames { count: 1 },
             },
             Command::Arrive { anchor: "a".into() },
+            Command::Demonstrate { anchor: "a".into() },
             Command::Reverify { anchor: "a".into() },
             Command::Examine {
                 routine: Routine {
@@ -1566,6 +1596,7 @@ mod tests {
                 Command::Write { .. } => "write",
                 Command::Run { .. } => "run",
                 Command::Arrive { .. } => "arrive",
+                Command::Demonstrate { .. } => "demonstrate",
                 Command::Reverify { .. } => "reverify",
                 Command::Examine { .. } => "examine",
             };

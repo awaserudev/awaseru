@@ -253,6 +253,27 @@ impl<'a> Binding<'a> {
                 }
             }
 
+            // §4.9's opening half, asked for. See `protocol::Command::Demonstrate`
+            // for why this is a command of its own rather than something
+            // `Reverify` grew into.
+            Command::Demonstrate { anchor } => match self.arriver.demonstrate(&anchor) {
+                Ok(done) => Answered::of(Reply::Demonstrated {
+                    anchor: done.anchor,
+                    replays: done.replays,
+                    took_ms: done.took.as_millis() as u64,
+                    across_processes: done.across_processes,
+                }),
+                // §4.8 failing is a refusal and not a result: it says the
+                // definition does not repeat, or that resuming the blob is not
+                // the same machine as replaying it. Either way nothing from
+                // this anchor is worth anything, and that is not something to
+                // hand back beside a number.
+                Err(e) => Answered::refuse(
+                    format!("`{anchor}` to produce what replaying its definition produces (§4.8)"),
+                    e.to_string(),
+                ),
+            },
+
             Command::Reverify { anchor } => match self.arriver.reverify(&anchor) {
                 Ok(done) => Answered::of(Reply::Reverified {
                     anchor: done.anchor,
@@ -405,6 +426,26 @@ impl<'a> Binding<'a> {
 /// counts for nothing here. Folding that into "not established" would lose the
 /// only thing a person can act on, which is who to ask.
 fn establishment(arrived: &crate::arrive::Arrived) -> Established {
+    // **This session first, and the order is the whole correctness of this
+    // function.** A blob that arrived in a box and has since been established
+    // here carries BOTH facts — finding 29 keeps the packer's demonstration
+    // rather than erasing it, which is right as provenance — and reading the
+    // packer's first would report somebody else's work after this session had
+    // done its own.
+    //
+    // What a client is asking is whether a comparison from here is evidence,
+    // and only this session's demonstration answers that. Where the blob came
+    // from is provenance, kept in the entry, and a different question.
+    if arrived.demonstrated_with > 0 {
+        return Established::Here {
+            replays: arrived.demonstrated_with,
+            says: format!(
+                "this anchor has been shown to produce what replaying its definition produces, \
+                 here, with {} replay(s) — so a comparison from this position is evidence",
+                arrived.demonstrated_with
+            ),
+        };
+    }
     if let Some(whose) = &arrived.demonstrated_elsewhere {
         return Established::Elsewhere {
             by: whose.clone(),
@@ -416,16 +457,16 @@ fn establishment(arrived: &crate::arrive::Arrived) -> Established {
             ),
         };
     }
-    match &arrived.caveat {
-        Some(caveat) => Established::Nowhere {
-            says: caveat.to_string(),
-        },
-        None => Established::Here {
-            replays: arrived.demonstrated_with,
-            says: format!(
-                "this anchor has been shown to produce what replaying its definition produces, \
-                 here, with {} replay(s) — so a comparison from this position is evidence",
-                arrived.demonstrated_with
+    Established::Nowhere {
+        says: match &arrived.caveat {
+            Some(caveat) => caveat.to_string(),
+            // Reachable only if a blob says nobody demonstrated it and the
+            // caveat is absent, which would be the two disagreeing. Said
+            // rather than silently read as established.
+            None => format!(
+                "nothing has shown that the anchor `{}` produces what replaying its definition \
+                 produces, so a comparison from this position is not evidence",
+                arrived.anchor
             ),
         },
     }
@@ -826,4 +867,69 @@ mod tests {
         // client and the tool disagree about the shape of the message.
         assert!(examine(vec![0; 9]).was_refused());
     }
+    /// The state where **both** are true, which is the one that was wrong.
+    ///
+    /// A blob that arrived in a box and has since been established here carries
+    /// its packer's demonstration *and* this session's: finding 29 keeps the
+    /// packer's rather than erasing it, which is right as provenance. Reading
+    /// that one first reported somebody else's work after this session had done
+    /// its own — so the order of these two checks is the whole correctness of
+    /// the function, and this is the test that says so.
+    #[test]
+    fn a_blob_established_here_says_here_even_when_it_came_from_somebody_else() {
+        use crate::arrive::{Arrived, How};
+        use awaseru_core::platform::Beginning as CoreBeginning;
+
+        let arrival = |demonstrated_with: u32, elsewhere: Option<&str>| Arrived {
+            anchor: "an-anchor".into(),
+            how: How::Resumed,
+            took: std::time::Duration::from_millis(11),
+            beginning: CoreBeginning {
+                reproducible: true,
+                settled: vec!["work".into()],
+                by_input_log: None,
+            },
+            caveat: (demonstrated_with == 0).then(|| {
+                awaseru_core::Undetermined::AnchorNotDemonstrated {
+                    anchor: "an-anchor".into(),
+                }
+            }),
+            reverified: false,
+            demonstrated_with,
+            demonstrated_elsewhere: elsewhere.map(str::to_string),
+        };
+
+        // The case that was wrong: both true.
+        match establishment(&arrival(3, Some("a backend 1.0.0"))) {
+            Established::Here { replays, says } => {
+                assert_eq!(replays, 3);
+                assert!(
+                    says.contains("here"),
+                    "this session's demonstration is what decides: {says}"
+                );
+            }
+            other => panic!(
+                "a blob this session established must say so, however it arrived: {other:?}"
+            ),
+        }
+
+        // Theirs and only theirs.
+        match establishment(&arrival(0, Some("a backend 1.0.0"))) {
+            Established::Elsewhere { by, .. } => assert_eq!(by, "a backend 1.0.0"),
+            other => panic!("got {other:?}"),
+        }
+
+        // Nobody's.
+        assert!(matches!(
+            establishment(&arrival(0, None)),
+            Established::Nowhere { .. }
+        ));
+
+        // Established here, and it never came from anywhere.
+        assert!(matches!(
+            establishment(&arrival(3, None)),
+            Established::Here { replays: 3, .. }
+        ));
+    }
+
 }
