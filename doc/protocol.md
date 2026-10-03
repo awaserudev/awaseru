@@ -377,6 +377,23 @@ goes quiet, so a question always gets an answer or an end of stream. A client in
 a language with a convenient deadline may add one; a client without one is not
 left hanging by this design.
 
+### Two things a client learns here rather than from the shapes
+
+**A control leaves the machine perturbed.** §5.3's control runs the reference
+again with an input changed, and the reference is left where *that* run ended —
+so a `read` after a control returns the perturbed answer, which is correct and is
+not what the comparison was about. Found by the Python client's own assertion
+failing with its read at the end of the cycle; the read now happens before the
+control, and the client says why.
+
+**A control's verdicts carry no region.** The report's own difference names its
+region (§13's Q16), and the two verdicts inside a control do not: they are
+summaries of *whether the comparison moved*, which is what `noticed` is computed
+from, and they come from a comparison folded across regions rather than one kept
+per region. A client that wants a localisable difference from perturbed inputs
+sends an `examine` with those inputs instead. Recorded rather than filled with a
+wrong name, which is what taking the plain difference's region would have been.
+
 ### What a second client would need from this document
 
 Everything above: the frame's four fields and their widths, the two limits, the
