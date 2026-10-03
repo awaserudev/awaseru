@@ -641,10 +641,15 @@ impl Reference {
     /// was in progress. Probably is not measured, and §2.4 would rather say
     /// nothing (§3.4's kinds exist so that nothing has to be rounded).
     fn position_now(&self) -> Position {
+        // `None` is the backend having written nothing into the record, and the
+        // honest answer to that is the same as the answer to "it is not at a
+        // frame boundary": this does not know where it is. Saying so is what
+        // `Unclassified` is for, and it is what keeps a failed read from
+        // reporting a frame boundary at frame zero.
         let video = self.backend.video_snapshot();
-        if video.line == 0 && video.dot == 0 {
+        if video.is_some_and(|v| v.line == 0 && v.dot == 0) {
             Position::FrameBoundary {
-                frame: u64::from(video.frames),
+                frame: u64::from(video.expect("just checked").frames),
             }
         } else {
             Position::Unclassified {
@@ -679,6 +684,39 @@ impl Reference {
         })
     }
 
+    /// Checks that a write arrived — and it is not optional politeness.
+    ///
+    /// The call that performs it returns `void`: a memory type the backend
+    /// declines, a span it clips, a build where it does nothing at all, every
+    /// one of them comes back looking like success. A seed that silently did
+    /// not land leaves the routine running on whatever was already there, and
+    /// §5's comparison is then about input nobody chose — a wrong answer that
+    /// looks exactly like an answer, in the path every verdict rests on.
+    ///
+    /// Reading the span back costs a read of the same size: about 0.4 ms for a
+    /// twelve-kilobyte seed, against 79.7 ms for a cycle. That is the price of
+    /// not having to trust a `void`.
+    fn landed(&self, region: &str, offset: usize, bytes: &[u8]) -> Result<(), WriteError> {
+        let back = self
+            .read_span(region, offset, bytes.len())
+            .map_err(|e| WriteError::Backend {
+                why: format!("the write could not be read back to check it: {e}"),
+            })?;
+        if let Some(first) = mismatch(&back, bytes) {
+            return Err(WriteError::Backend {
+                why: format!(
+                    "the backend accepted {} byte(s) at {offset} of `{region}` and did not \
+                     store them: byte {first} reads {:#04X} and was written as {:#04X}. This \
+                     call reports nothing when it fails, so what is checked is the memory",
+                    bytes.len(),
+                    back.get(first).copied().unwrap_or(0),
+                    bytes.get(first).copied().unwrap_or(0),
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// The backend's access record for a span, **exactly as it keeps it**.
     ///
     /// Raw on purpose. §2.4 says not to guess a shape before something has been
@@ -707,7 +745,17 @@ impl Reference {
         let span = u32::try_from(length).map_err(|_| ReadError::Backend {
             why: format!("this backend counts lengths in 32 bits, and {length} does not fit"),
         })?;
-        Ok(self.backend.access_counts(memory_type, at, span))
+        self.backend
+            .access_counts(memory_type, at, span)
+            .ok_or_else(|| ReadError::Backend {
+                why: format!(
+                    "the backend wrote no access record for {span} byte(s) from {offset} of \
+                     `{region}`. This call reports nothing when it fails, so what is checked is \
+                     whether the record was written at all — an unwritten one reads as `nothing \
+                     was ever read, written or executed here`, which is a perfectly ordinary \
+                     answer and would be believed"
+                ),
+            })
     }
 
     /// Throws away every access count the backend holds.
@@ -756,10 +804,15 @@ impl Reference {
     /// know where it is instead of calling something a frame boundary because
     /// that is what was asked for.
     fn frame_position(&self) -> Position {
+        // `None` is the backend having written nothing into the record, and the
+        // honest answer to that is the same as the answer to "it is not at a
+        // frame boundary": this does not know where it is. Saying so is what
+        // `Unclassified` is for, and it is what keeps a failed read from
+        // reporting a frame boundary at frame zero.
         let video = self.backend.video_snapshot();
-        if video.line == 0 && video.dot == 0 {
+        if video.is_some_and(|v| v.line == 0 && v.dot == 0) {
             Position::FrameBoundary {
-                frame: u64::from(video.frames),
+                frame: u64::from(video.expect("just checked").frames),
             }
         } else {
             Position::Unclassified {
@@ -796,6 +849,20 @@ impl Reference {
 ///
 /// Free of the race described in `ffi::Backend::listen_for_breaks`, because
 /// `before` is read before the request is lodged and the count only rises.
+/// Where two readings of the same span first differ, if they do.
+///
+/// Pulled out so that it can be tested without a backend. The guard it serves
+/// can only fire when a `void`-returning call has silently done nothing, and no
+/// test can make a working backend do that — so what is tested is the decision,
+/// and the integration tests beside it check that the decision does not fire
+/// when the write did land.
+fn mismatch(back: &[u8], wanted: &[u8]) -> Option<usize> {
+    if back.len() != wanted.len() {
+        return Some(back.len().min(wanted.len()));
+    }
+    back.iter().zip(wanted).position(|(a, b)| a != b)
+}
+
 fn wait_for_break(backend: &Backend, before: u64, watchdog: Duration) -> bool {
     // The cycle count only goes up, and a wedged backend stops moving it. So
     // the deadline is on *silence*, not on duration: it resets every time the
@@ -943,7 +1010,12 @@ impl Platform for Reference {
         let at = u32::try_from(offset).map_err(|_| ReadError::Backend {
             why: format!("this backend counts addresses in 32 bits, and {offset} does not fit"),
         })?;
-        let counts = self.backend.access_counts(memory_type, at, 1);
+        let counts = self
+            .backend
+            .access_counts(memory_type, at, 1)
+            .ok_or_else(|| ReadError::Backend {
+                why: "the backend wrote no access record for one address".to_string(),
+            })?;
         let Some(count) = counts.first() else {
             return Err(ReadError::Backend {
                 why: "the backend returned no access record for one address".to_string(),
@@ -1057,7 +1129,8 @@ impl Platform for Reference {
         })?;
         self.backend
             .write_memory(memory_type, bytes)
-            .map_err(|e| WriteError::Backend { why: e.to_string() })
+            .map_err(|e| WriteError::Backend { why: e.to_string() })?;
+        self.landed(region, 0, bytes)
     }
 
     fn write_span(
@@ -1076,12 +1149,28 @@ impl Platform for Reference {
         })?;
         self.backend
             .write_memory_span(memory_type, address, bytes)
-            .map_err(|e| WriteError::Backend { why: e.to_string() })
+            .map_err(|e| WriteError::Backend { why: e.to_string() })?;
+        self.landed(region, offset, bytes)
     }
+
 
     fn read_processor(&self) -> Result<Processor, ReadError> {
         self.require_stopped()?;
         let read = self.backend.processor_state();
+        if read.wrote_nothing {
+            // The record came back entirely as the filler it was handed. The
+            // filler was already here to catch a record that GREW; nobody was
+            // looking at the middle for one that never arrived. This call
+            // reports nothing when it fails, so the record itself is what says
+            // whether it ran.
+            return Err(ReadError::Backend {
+                why: format!(
+                    "the backend wrote nothing into the {PROCESSOR_STATE_BYTES} bytes of its \
+                     processor record. This call cannot report a failure, so what is checked \
+                     is whether anything was written at all"
+                ),
+            });
+        }
         if read.wrote_beyond {
             // The backend's record is bigger than this binding reads, so what
             // came back is a truncation. Refusing is the only honest answer:
@@ -1100,7 +1189,20 @@ impl Platform for Reference {
         self.require_stopped_to_write()?;
         self.backend
             .write_processor_state(processor.bytes())
-            .map_err(|e| WriteError::Backend { why: e.to_string() })
+            .map_err(|e| WriteError::Backend { why: e.to_string() })?;
+        // The same reason as `landed`: the call reports nothing, so what is
+        // checked is the record itself. Thirty-two bytes, so the check is free.
+        let back = self.read_processor().map_err(|e| WriteError::Backend {
+            why: format!("the processor write could not be read back to check it: {e}"),
+        })?;
+        if back.bytes() != processor.bytes() {
+            return Err(WriteError::Backend {
+                why: "the backend accepted a processor record and did not store it. This call \
+                      reports nothing when it fails, so what is checked is the record"
+                    .to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn return_to_origin(&mut self) -> Result<(), RunError> {
@@ -1164,6 +1266,12 @@ impl Platform for Reference {
             return Err(StateError::NotStopped);
         }
         let path = self.state_file();
+        // Taken away first, because `SaveStateFile` reports nothing. Without
+        // this, a save that silently did nothing leaves the PREVIOUS save of
+        // this process on disk, the read below succeeds, and the blob is of a
+        // moment that has passed — caught much later by `load_state`'s position
+        // check, which then blames the load for what the save did.
+        let _ = std::fs::remove_file(&path);
         self.backend
             .save_state_to(&path)
             .map_err(|e| StateError::Backend { why: e.to_string() })?;
@@ -1459,6 +1567,35 @@ impl Drop for Reference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decision behind the write guard, with both answers.
+    ///
+    /// Same reason as `untouched`: a write that silently did not land cannot be
+    /// produced by a working backend, so what is tested is where the guard says
+    /// the two readings part.
+    #[test]
+    fn a_write_is_checked_by_where_the_readings_part() {
+        assert_eq!(
+            mismatch(&[1, 2, 3, 4], &[1, 2, 3, 4]),
+            None,
+            "a write that landed has nothing to report"
+        );
+        assert_eq!(
+            mismatch(&[1, 2, 9, 4], &[1, 2, 3, 4]),
+            Some(2),
+            "and one that did not says WHERE, because that is what somebody has to go and look at"
+        );
+        assert_eq!(
+            mismatch(&[0, 0, 0, 0], &[1, 2, 3, 4]),
+            Some(0),
+            "a span the backend left untouched parts at its first byte"
+        );
+
+        // A short read is a different failure and is still a failure.
+        assert_eq!(mismatch(&[1, 2], &[1, 2, 3, 4]), Some(2));
+        assert_eq!(mismatch(&[], &[1]), Some(0));
+        assert_eq!(mismatch(&[], &[]), None, "nothing written, nothing to check");
+    }
 
     /// The watchdog's deadline is on **silence**, not on duration — a run that
     /// is still working is never given up on, however long it takes.

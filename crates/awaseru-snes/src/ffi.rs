@@ -472,8 +472,13 @@ impl Backend {
         // SAFETY: the backend writes its own record into the buffer, which is
         // far larger than the record and correctly aligned.
         unsafe { (self.symbols.GetCpuState)(buffer.as_mut_ptr(), MAIN_CPU) };
+        let head = buffer.head(PROCESSOR_STATE_BYTES);
         ProcessorRead {
-            bytes: buffer.head(PROCESSOR_STATE_BYTES).to_vec(),
+            // The head still entirely filler means the call wrote nothing at
+            // all. The filler was already here to catch a record that GREW;
+            // nobody was looking at the middle for a record that never arrived.
+            wrote_nothing: untouched(head, FILLER),
+            bytes: head.to_vec(),
             wrote_beyond: buffer
                 .tail(PROCESSOR_STATE_BYTES)
                 .iter()
@@ -581,21 +586,38 @@ impl Backend {
     ///
     /// The buffer is sized here and the backend fills it, so a caller cannot
     /// ask for more than it has room for.
-    pub fn access_counts(&self, memory_type: u32, offset: u32, length: u32) -> Vec<AccessCounts> {
-        let mut counts = vec![AccessCounts::default(); length as usize];
-        if length > 0 {
-            // SAFETY: the buffer is exactly `length` records long, which is
-            // what the backend is told to fill.
-            unsafe {
-                (self.symbols.GetMemoryAccessCounts)(
-                    offset,
-                    length,
-                    memory_type,
-                    counts.as_mut_ptr(),
-                )
-            }
+    pub fn access_counts(
+        &self,
+        memory_type: u32,
+        offset: u32,
+        length: u32,
+    ) -> Option<Vec<AccessCounts>> {
+        if length == 0 {
+            return Some(Vec::new());
         }
-        counts
+        // A sentinel for the same reason as the video record: zeros read as
+        // "nothing was ever read, written or executed here", which is a
+        // perfectly ordinary answer and is also what a call that did nothing
+        // produces. §10's coverage and §5.4's cheap filter both rest on this.
+        const FILLER: u64 = u64::MAX;
+        let mark = AccessCounts {
+            read_stamp: FILLER,
+            write_stamp: FILLER,
+            execute_stamp: FILLER,
+            reads: u32::MAX,
+            writes: u32::MAX,
+            executions: u32::MAX,
+        };
+        let mut counts = vec![mark; length as usize];
+        // SAFETY: the buffer is exactly `length` records long, which is what
+        // the backend is told to fill.
+        unsafe {
+            (self.symbols.GetMemoryAccessCounts)(offset, length, memory_type, counts.as_mut_ptr())
+        }
+        if counts.iter().all(|c| *c == mark) {
+            return None;
+        }
+        Some(counts)
     }
 
     /// Starts replaying a recorded input log (§4.7).
@@ -650,15 +672,26 @@ impl Backend {
     }
 
     /// Where the video hardware stands.
-    pub fn video_snapshot(&self) -> VideoSnapshot {
-        let mut buffer = StateBuffer::new();
+    pub fn video_snapshot(&self) -> Option<VideoSnapshot> {
+        // Filled rather than zeroed, and the reason is the whole point. This
+        // call reports nothing, and a zeroed buffer reads as `dot = 0, line =
+        // 0` — which is exactly the condition a caller checks when it asks
+        // whether the machine is at a frame boundary. A read that silently did
+        // nothing would therefore answer **yes** to that question every time,
+        // turning a careful check into a false positive. With a sentinel, a
+        // buffer that still holds it is a call that wrote nothing.
+        const FILLER: u8 = 0xFF;
+        let mut buffer = StateBuffer::filled(FILLER);
         // SAFETY: as `cpu_snapshot`.
         unsafe { (self.symbols.GetPpuState)(buffer.as_mut_ptr(), MAIN_CPU) };
-        VideoSnapshot {
+        if untouched(buffer.head(16), FILLER) {
+            return None;
+        }
+        Some(VideoSnapshot {
             dot: buffer.u16_at(0),
             line: buffer.u16_at(2),
             frames: buffer.u32_at(8),
-        }
+        })
     }
 }
 
@@ -962,9 +995,28 @@ pub struct AccessCounts {
 pub struct ProcessorRead {
     /// Exactly the record, as measured.
     pub bytes: Vec<u8>,
+    /// Whether the backend wrote **nothing**, which this call cannot report
+    /// for itself: it returns `void`, and a record of all-filler is what both
+    /// a failed read and an absurd processor state look like. The first is far
+    /// likelier and is the one worth refusing on.
+    pub wrote_nothing: bool,
     /// Whether the backend wrote past what this binding reads — which would
     /// mean its record has grown and this transcription has gone stale.
     pub wrote_beyond: bool,
+}
+
+/// Whether a buffer handed to the backend came back exactly as it was handed
+/// over — which is what a call that reports nothing and did nothing looks like.
+///
+/// A free function so that it can be tested without a backend: the guards it
+/// serves fire only when a `void` call silently does nothing, and no test can
+/// make a working backend do that. What is testable is the decision.
+///
+/// An empty buffer is **not** untouched. Nothing was handed over, so nothing
+/// can be said about whether anything came back, and answering "untouched"
+/// there would turn a question into an accusation.
+fn untouched(buffer: &[u8], filler: u8) -> bool {
+    !buffer.is_empty() && buffer.iter().all(|&b| b == filler)
 }
 
 /// A path as a C string, refused rather than mangled when it cannot be one.
@@ -1038,6 +1090,38 @@ impl std::fmt::Display for Version {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decision behind three guards, with both answers.
+    ///
+    /// The guards fire when a call that returns `void` has silently done
+    /// nothing, and no test can make a working backend do that — so what is
+    /// tested here is what the guard DECIDES, and the tests beside it check
+    /// that it does not decide so when the call worked.
+    #[test]
+    fn a_buffer_that_came_back_as_it_was_handed_over_is_untouched() {
+        const FILLER: u8 = 0xFF;
+
+        assert!(
+            untouched(&[FILLER; 16], FILLER),
+            "every byte still the filler: the backend wrote nothing"
+        );
+        assert!(
+            !untouched(&[FILLER, FILLER, 0x00, FILLER], FILLER),
+            "one byte written is a call that ran — the guard must not fire on a record that \
+             happens to be mostly filler"
+        );
+        assert!(
+            !untouched(&[0x00; 16], FILLER),
+            "and a record of zeros is a record that was written, which is the whole reason the \
+             buffer is filled rather than zeroed: zeros are a legitimate answer"
+        );
+
+        // An empty buffer is a question nobody asked.
+        assert!(
+            !untouched(&[], FILLER),
+            "nothing was handed over, so nothing can be said about what came back"
+        );
+    }
 
     /// The decomposition is reversible for every byte triple. This covers the
     /// arithmetic and nothing else: it says the three fields are read from the

@@ -40,7 +40,8 @@ on until something was done about it; **slowed** means it cost real time;
 | 18 | a mapping is only visible where a measurement happens to land | annoyed | a note for `doc/`, and probably a verb one day — found in M7 |
 | 19 | the backend says nothing about an input log it could not open | **would have blocked** | **fixed while closing Q14** — the host checks the only observable thing |
 | 20 | the watchdog could not tell a stuck backend from a long run | **blocked** §4.9 on a long anchor | **fixed while closing Q14** — it watches progress now, not duration |
-| 21 | six more calls the host believes although they cannot report failure | **would block** a verdict, invisibly | found by the audit's hunt; the cheap ones fixed in its next unit |
+| 21 | six more calls the host believes although they cannot report failure | **would block** a verdict, invisibly | **all six fixed by the audit**, plus the half-guarded seventh |
+| 22 | a guard against a silent failure cannot be tested end to end | annoyed, and it is a limit rather than a defect | a note for `doc/` — found by the audit, by its own mutation |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -632,6 +633,22 @@ condition being checked for. **The care inverts into a false positive**, and
 every position reported from a frame-bounded run would be a frame boundary at
 frame zero.
 
+### What was done
+
+All six, and the seventh:
+
+| | what the host checks now |
+|---|---|
+| seeding a span, writing a region | the span is read back and compared, and the refusal says **which byte** parted and what each side holds |
+| writing the processor | the record is read back and compared |
+| reading the video record | the buffer is handed over **filled with a sentinel** rather than zeroed, and a buffer that comes back still full of it is a call that wrote nothing. The position then says it does not know, which is what `Unclassified` is for |
+| reading the processor | the same sentinel, looked at in the middle rather than only past the end |
+| reading the access record | the same, with a sentinel record |
+| saving a state | the file is removed before the save, so a save that did nothing cannot be mistaken for the previous one |
+
+The cost is a read the size of each write — about 0.4 ms for a twelve-kilobyte
+seed, against 79.7 ms for a cycle. That is the price of not trusting a `void`.
+
 ### The pattern, which is the point of having hunted
 
 It is not that the backend is poor. It is that **the host checks where it has
@@ -642,3 +659,28 @@ distinguishes them except that nobody has been burned by them yet.
 
 That is not a thing reading finds. It is a thing counting finds, and the count
 only means something with all thirty-one in one table.
+
+## 22. A guard against a silent failure cannot be tested end to end
+
+**Annoyed**, and it is a limit rather than a defect — but it is worth writing
+down because the audit caught itself doing the wrong thing.
+
+The six guards above fire only when a `void`-returning call has silently done
+nothing. **No test can make a working backend do that.** The first attempt at
+testing them asserted that the happy path still works, and all three mutations
+passed — removing a guard broke nothing, which is precisely what the loop
+driving this audit had warned against.
+
+What is testable is the guard's **decision**, so the decisions were pulled out
+as free functions and tested with both answers: a buffer that came back exactly
+as it was handed over, and one that did not; two readings that agree, and two
+that part at a named byte. Both fail under mutation.
+
+The integration tests are kept and their claim was corrected. They do not prove
+a guard fires. They prove it does **not** fire when the call worked, which is
+the other way for a guard to be wrong and is not nothing: a check too strict
+would refuse every honest write.
+
+What would close it properly is a backend that can be told to misbehave — a
+fake implementing the same symbols, returning nothing. That is a real option and
+a day's work, and nobody has needed it enough yet (§2.4).
