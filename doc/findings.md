@@ -263,3 +263,31 @@ was assembled by a user rather than offered by the tool.
 
 A note for `doc/` at least: these three are the first day of using this tool on
 software nobody has mapped, and nothing says so.
+
+## 11. A vacuous verdict cannot say why nothing moved
+
+**Annoyed, and it cost a wrong turn.** The behaviour is right and the report is
+thin.
+
+The first measurement of the chosen routine was bounded by the address the
+routine hands control back to — which turned out to be in the caller's main
+loop, reached constantly. So the measurement stopped before its subject had done
+anything, and the tool answered:
+
+```text
+not-determined / vacuous — the reference changed none of the N bytes compared,
+so agreement here is agreement about data neither side wrote
+```
+
+That is §2.2 working exactly as it should, and it prevented an empty
+reimplementation from passing. What the report cannot say is **which** of two
+very different things happened: a routine that genuinely writes nothing, or a
+measurement that stopped at once because its bound was hit immediately. The
+first is a fact about the software; the second is a mistake in the request.
+
+The tool knows the difference and does not report it. It ran the routine and
+knows how far it got — the second case stops after a handful of instructions and
+the first after hundreds of thousands. Saying how much was run when the verdict
+is vacuous would turn a puzzling answer into an obvious one.
+
+A fix worth making, and small: the vacuous cause carries the distance run.
