@@ -389,13 +389,21 @@ pub fn attend(places: &Where) -> std::process::ExitCode {
         );
     }
     let cache = crate::cache::Cache::at(&places.cache);
+    // §9.3's last check, asked where the region set is in hand (§6.5): a
+    // mapping written for another machine is refused here rather than at the
+    // first measurement that wanted a name from it.
+    if let Err(e) = loaded.mapping.fits(&reference.regions()) {
+        return refuse_and_leave("a mapping this backend's regions can hold", &e.to_string());
+    }
+
     let mut binding = Binding::new(
         &mut *reference,
         &loaded.anchors,
         &cache,
         provenance,
         loaded.configuration.anchors.clone(),
-    );
+    )
+    .naming(loaded.mapping.clone());
 
     let mut input = std::io::stdin().lock();
     loop {

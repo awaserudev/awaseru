@@ -36,6 +36,8 @@ on until something was done about it; **slowed** means it cost real time;
 | 14 | `localise` answers `NothingWrote` on a machine where the routine has not run | annoyed | a fix worth making — found in M6 |
 | 15 | forgetting coverage forgets write recency too | **would have blocked** | a note for `doc/backend.md`, and a shape to watch — found in M6 |
 | 16 | a symbol given as an address cannot be checked against the machine at all | **slowed**, and it is a gap §9.3 does not know it has | a question for §13 — found in M7 |
+| 17 | `measured` hides the distinction its author tabulated: once, or twice by two means | annoyed | a question for §13 — found in M7 |
+| 18 | a mapping is only visible where a measurement happens to land | annoyed | a note for `doc/`, and probably a verb one day — found in M7 |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -468,3 +470,52 @@ unchecked, and a symbol at `0xDEADBEEF` loads happily against a machine with
 That is recorded rather than hidden, and the test asserting it says why. What
 would close it is a backend saying which addresses reach which region — which is
 a capability (§7.3), not a fix, and nobody has needed it yet (§2.4).
+
+## 17. `measured` hides the distinction its author bothered to tabulate
+
+**Annoyed**, and it is the first thing the real mapping did not fit.
+
+§9.2's three values separate a value established by measurement from one
+somebody remembered, and that was the distinction the specification cared about.
+Writing the real mapping out showed a second one underneath it.
+
+The table it came from has a confidence column with three entries that say
+**high — two sources**, and M5's provenance note is explicit about why: of the
+seven values that measurement rested on, six were read twice by two different
+means and one was inferred once. The two sources are not decoration — for the
+output buffer they are the instruction's operand and the span the memory
+actually changed, and the whole argument for trusting that row is that two
+unrelated methods agreed.
+
+In the format, all of that lives in `note`, as prose. `how` says `measured` for a
+value confirmed twice and `measured` for a value seen once, and nothing can tell
+them apart without reading English.
+
+Not fixed, deliberately. A fourth value is additive and can arrive the day
+something wants to branch on it, and inventing one now would be inventing for
+nobody (§2.4) — but it is worth recording that the first real mapping wanted a
+distinction the format flattens, because that is the shape of evidence a later
+decision needs.
+
+## 18. A mapping is only visible where a measurement happens to land
+
+**Annoyed**, and it blunts §9.2's first purpose.
+
+The mapping loaded for M7's turn has seven symbols, one of which is a hypothesis
+— and that one is in it precisely because its author did not trust it. §9.2's
+epistemic purpose is that such an entry is "marked as a hypothesis and not
+treated as fact".
+
+It is marked, and a report naming it says so. But a report names only what a
+measurement *found*, so the hypothesis is visible exactly when a difference
+happens to land on it. In the turn's own measurement no difference did, so the
+one entry the mapping is least sure of went unmentioned.
+
+Nothing lets anybody ask the mapping a question of its own — "which of these
+are hypotheses", "what covers this address", "what is in this group". The graph
+is built, checked and then only ever consulted sideways, by a report that wanted
+a name.
+
+A verb would fix it and none exists, which puts this beside finding 10: the tool
+measures what you already know and does not help you see what you know. A note
+for `doc/` today; a question for whoever decides what comes after §12.

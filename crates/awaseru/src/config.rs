@@ -73,6 +73,22 @@ pub struct Configuration {
     /// is machine-local and is not configuration at all.
     #[serde(default, rename = "anchor")]
     pub anchor_declarations: Vec<AnchorDeclaration>,
+    /// §9's mapping files, in the shared half because a mapping is the thing a
+    /// project most wants to share and §9.2's whole second purpose is making it
+    /// shareable. Paths are relative to the file they are written in (§6.3).
+    #[serde(default)]
+    pub mapping: MappingFiles,
+}
+
+/// Where §9's mapping is written, if it is written anywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MappingFiles {
+    /// Several, because §M7 is about a mapping split across files: a project
+    /// keeps its concepts in one and its addresses in another, or one file per
+    /// area, and they load as one graph.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -232,9 +248,12 @@ pub struct Location {
 
 /// A configuration that has been read, merged, and checked as far as can be
 /// checked without loading anything.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
     pub configuration: Configuration,
+    /// §9's mapping, already one graph. Empty when no files were named, which
+    /// is the ordinary case and changes nothing downstream.
+    pub mapping: crate::mapping::Mapping,
     /// Keyed by emulator name (§6.4).
     pub locations: BTreeMap<String, Location>,
     /// The software's path, already checked to exist and to hash to what the
@@ -361,6 +380,11 @@ pub enum Error {
     /// The anchors do not make sense together — a circle, a parent nobody
     /// declares, or two of one name (§4.7).
     Anchors(AnchorError),
+    /// A mapping file was named and is not a mapping file (§9.1).
+    Mapping { path: PathBuf, why: String },
+    /// The mapping files are each a mapping and together are not one graph
+    /// (§9.3).
+    Graph { why: String },
     /// An input log was named and could not be read.
     InputLogUnreadable {
         anchor: String,
@@ -473,6 +497,12 @@ impl std::fmt::Display for Error {
                  than it says, because those bounds always arrive"
             ),
             Error::Anchors(e) => write!(f, "{e}"),
+            Error::Mapping { path, why } => write!(
+                f,
+                "the mapping file {} is not one: {why}",
+                path.display()
+            ),
+            Error::Graph { why } => write!(f, "the mapping files are not one graph: {why}"),
             Error::InputLogUnreadable { anchor, path, why } => write!(
                 f,
                 "the input log for the anchor `{anchor}` could not be read from {}: {why}",
@@ -576,12 +606,44 @@ pub fn resolve_beside(
     }
 
     let anchors = anchors_from(&configuration.anchor_declarations, beside)?;
+    let mapping = mapping_from(&configuration.mapping.files, beside)?;
 
     Ok(Loaded {
         configuration,
+        mapping,
         locations,
         software,
         anchors,
+    })
+}
+
+/// Reads §9's mapping files and loads them as one graph.
+///
+/// Read here rather than where a report wants a name, for the same reason an
+/// anchor's input log is: a file named and missing is a configuration error,
+/// and a mapping that does not parse is one too. Finding that out at the moment
+/// a difference needs a name would be finding it out in the worst place.
+fn mapping_from(
+    files: &[PathBuf],
+    beside: &Path,
+) -> Result<crate::mapping::Mapping, Error> {
+    let mut read = Vec::with_capacity(files.len());
+    for relative in files {
+        let path = beside.join(relative);
+        let text = std::fs::read_to_string(&path).map_err(|why| Error::Unreadable {
+            path: path.clone(),
+            why,
+        })?;
+        let file = crate::mapping::parse(&text).map_err(|why| Error::Mapping {
+            path: path.clone(),
+            why: why.to_string(),
+        })?;
+        read.push((path.display().to_string(), file));
+    }
+    crate::mapping::load(read.iter().map(|(name, file)| (name.as_str(), file))).map_err(|why| {
+        Error::Graph {
+            why: why.to_string(),
+        }
     })
 }
 
@@ -923,19 +985,24 @@ mod tests {
     // ---- shape and names ----------------------------------------------
 
     /// A key nothing understands is refused. The case that matters is a key for
-    /// a part of the tool that does not exist yet: accepting `[mapping]` and
-    /// not expanding it would be a configuration that reads as if it worked.
+    /// a part of the tool that does not exist yet: accepting it and not
+    /// expanding it would be a configuration that reads as if it worked.
+    ///
+    /// This test used `[mapping]` as its example until M7 made `[mapping]`
+    /// real, at which point it failed — correctly, and for the second time in
+    /// two milestones. M6's protocol test invented a field called `coverage`
+    /// and met the same thing. **An invented name has a way of being built**,
+    /// so a test that needs one should expect to come back and change it, and
+    /// the failure is the test working rather than rotting.
     #[test]
     fn a_key_the_tool_does_not_understand_is_refused() {
         let mut s = shared();
-        s.insert(
-            "mapping".into(),
-            table("files = [\"map/*\"]\n").into(),
-        );
-        let err = resolve(s, table("[rom]\npath = \"/x\"\n")).expect_err("mapping is not a key yet");
+        s.insert("telemetry".into(), table("enabled = true\n").into());
+        let err =
+            resolve(s, table("[rom]\npath = \"/x\"\n")).expect_err("telemetry is not a key");
         assert!(matches!(err, Error::Malformed { .. }), "got {err}");
         assert!(
-            err.to_string().contains("mapping"),
+            err.to_string().contains("telemetry"),
             "and names the key: {err}"
         );
     }
@@ -1067,6 +1134,7 @@ mod tests {
             .expect("the shared half parses");
         let loaded = Loaded {
             configuration,
+            mapping: crate::mapping::Mapping::default(),
             locations: BTreeMap::from([(
                 "ref-a".to_string(),
                 Location { path: PathBuf::from("/wherever/the/library/is.so") },
