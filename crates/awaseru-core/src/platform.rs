@@ -150,10 +150,32 @@ pub struct Beginning {
     /// when none were, which is what the hardware does and is **not**
     /// reproducible between processes on at least one backend.
     pub settled: Vec<String>,
+    /// The input log that brought the machine up, if one did — §4.7, §4.12.
+    ///
+    /// A third answer, because the two booleans above cannot hold it. A log
+    /// carries the settings the console comes up with, including how memory is
+    /// filled, so after a replay **the repetition is the recording's doing**
+    /// and the tool neither chose nor checked which memories were settled.
+    ///
+    /// Reporting `settled: []` there would say "memory was left as the backend
+    /// filled it", which is false. Reporting the tool's own list would credit a
+    /// zeroing the log power-cycled away. Neither is true, and §2.3's habit —
+    /// a third value is never folded into the other two — applies to a
+    /// beginning as much as to a verdict.
+    pub by_input_log: Option<String>,
 }
 
 impl std::fmt::Display for Beginning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(log) = &self.by_input_log {
+            return write!(
+                f,
+                "began by replaying the input log `{log}`, which power-cycled the machine and \
+                 applied the settings recorded with it — so this repeats as far as the \
+                 recording does, and which memories it settles is the recording's to say and \
+                 was not checked here"
+            );
+        }
         match (self.reproducible, self.settled.is_empty()) {
             (true, false) => write!(
                 f,
@@ -186,6 +208,14 @@ impl Beginning {
     /// (§2.5). A report that did not say this would be a report somebody
     /// trusts.
     pub fn repeats(&self) -> bool {
+        // A log brought it up: it repeats as far as the recording does, which
+        // was measured and not assumed — two machines, one of which had run
+        // five hundred frames of its own first, reached one state byte for
+        // byte (`doc/protocol.md`). The recording settles memory by its own
+        // record, so the two fields below say nothing about this case.
+        if self.by_input_log.is_some() {
+            return true;
+        }
         self.reproducible && !self.settled.is_empty()
     }
 }
@@ -695,6 +725,7 @@ mod tests {
         let beginning = |reproducible, settled: &[&str]| Beginning {
             reproducible,
             settled: settled.iter().map(|s| (*s).to_string()).collect(),
+            by_input_log: None,
         };
 
         let good = beginning(true, &["work-ram"]);

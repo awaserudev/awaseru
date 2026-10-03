@@ -885,6 +885,7 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                by_input_log: None,
             },
             caveat,
             reverified: false,

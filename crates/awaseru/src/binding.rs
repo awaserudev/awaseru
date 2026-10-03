@@ -413,6 +413,7 @@ mod tests {
             Beginning {
                 reproducible: true,
                 settled: vec!["work".into()],
+                by_input_log: None,
             }
         }
         fn capabilities(&self) -> Capabilities {

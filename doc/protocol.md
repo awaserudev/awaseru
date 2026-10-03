@@ -728,14 +728,28 @@ it is the request, the break and the wait around it. Anything in §5 that walks
 instructions should ask for the span and not the step. Where a step at a time is
 unavoidable, 10 ms is the unit of the bill.
 
-### What is still missing, which is above this backend
+### How a host asks for it
 
-The capability is **not declared** (§7.3), and the backend's own documentation
-says why: `Platform` has no verb for replaying a log. Declaring it on the
-strength of these measurements would pass §7.3's gate and let an anchor carrying
-an input log be replayed with the log ignored — arriving somewhere else,
-consistently, and caching it as the anchor. `doc/findings.md` holds the two
-decisions that would change that.
+`Platform::replay_input_log`, since §13's Q14 closed. The verb takes the log and
+starts it; it does not run, because a log **is** the origin and the definition's
+own bound is what advances the machine afterwards (§4.2).
+
+Two things the host does around it, and both are there because of what this
+backend does not say.
+
+**It checks that playback is live afterwards.** `MoviePlay` returns void, so a
+path that does not exist, an archive that is not one and a recording for other
+software all come back looking like success — with the machine left at the
+origin the call power-cycled it to, which is a perfectly good-looking position.
+`doc/findings.md`'s nineteenth entry is that, and it was caught by removing the
+replay and watching a test still pass.
+
+**It reports the log in §4.12's beginning.** After a replay the repetition is
+the *recording's* doing: the log carries the settings the console comes up with,
+including how memory is filled, so crediting the tool's own declared divergence
+would credit the wrong thing. `Beginning` has a third answer for it, because the
+two booleans it had could only say "memory was settled by us" or "memory was
+left as the backend filled it" and neither is true here.
 
 ### What it cost to find out, which is a finding of its own
 

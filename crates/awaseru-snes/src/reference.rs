@@ -804,6 +804,7 @@ impl Platform for Reference {
         awaseru_core::Beginning {
             reproducible: self.origin.at_power_on,
             settled: self.origin.memory_zeroed.iter().map(|n| (*n).to_string()).collect(),
+            by_input_log: self.origin.input_log.clone(),
         }
     }
 

@@ -481,6 +481,7 @@ mod tests {
         Beginning {
             reproducible: true,
             settled: vec!["work-ram".into()],
+            by_input_log: None,
         }
     }
 
@@ -587,6 +588,7 @@ mod tests {
             beginning: Beginning {
                 reproducible: true,
                 settled: vec![],
+                by_input_log: None,
             },
             ..parts(agrees())
         });

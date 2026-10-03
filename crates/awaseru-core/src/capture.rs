@@ -274,6 +274,7 @@ mod tests {
             crate::platform::Beginning {
                 reproducible: true,
                 settled: vec!["work".into()],
+                by_input_log: None,
             }
         }
         /// Nothing beyond §7.2's verbs, which is what a fake can honestly
