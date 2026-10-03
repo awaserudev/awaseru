@@ -26,10 +26,17 @@
 //! themselves are wanted, and for exactly the reason §9.1 gives — the routine,
 //! the buffer it reads, the buffer it writes and its hot loop are one concept
 //! scattered across two regions, and naming that concept is the point. What no
-//! mapping has ever wanted is a group *inside* a group. Seven symbols have no
-//! hierarchy. So a group is a name here and nothing more, and nesting can be
-//! added the day something asks for it — which is the safe direction, since a
-//! field added later breaks nobody and a field removed later breaks everybody.
+//! mapping has ever wanted is a group *inside* a group: seven symbols have no
+//! hierarchy.
+//!
+//! It is here anyway, and the reason is §9.3 rather than §9.1. "Group
+//! references resolve to groups that exist" means a group has to be **declared**
+//! somewhere, or a typo in a hand-written file quietly invents a group with one
+//! member and nobody ever notices. Once a group is a declared thing with a
+//! description, nesting is one optional field reusing the resolution that had to
+//! exist anyway — not a second concept. That is a much smaller invention than
+//! the first unit expected, and it is why this is written down rather than
+//! deferred.
 //!
 //! # Every name here is permanent
 //!
@@ -65,7 +72,8 @@ pub struct Symbol {
     pub at: Where,
     /// How many bytes it covers. `None` is a point, which an entry address is.
     pub length: Option<usize>,
-    /// §9.1's groups, flat. See the module's note on nesting.
+    /// The groups this symbol belongs to, by name. Every one of them must be
+    /// declared (§9.3).
     pub groups: Vec<String>,
     /// §9.1: read by the API, "so that a consumer — human or program — obtains
     /// the context without reconstructing it from raw code". Required: a symbol
@@ -75,12 +83,42 @@ pub struct Symbol {
     /// that no symbol may exist without one, so that no example is ever written
     /// that a later unit has to go back and fix.
     pub provenance: toml::Table,
+    /// §9.1's relations to other symbols.
+    pub relations: Vec<Relation>,
+}
+
+/// §9.1's relation from one symbol to another.
+///
+/// `kind` is whatever the person writing the mapping says it is. This project
+/// has no vocabulary of relation kinds and will not invent one (§2.4): the
+/// real mapping's are "reads" and "writes", a different binary's would be
+/// something else, and a closed list would make the format wrong for everybody
+/// it had not thought of. What the tool checks is the half it can: that `to`
+/// names a symbol that exists.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Relation {
+    pub kind: String,
+    pub to: String,
+}
+
+/// §9.1's group: a concept, which the symbols belonging to it are scattered
+/// parts of.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    pub name: String,
+    pub description: String,
+    /// Groups this one is part of — §9.1's nesting. Empty is the ordinary case.
+    #[serde(default)]
+    pub inside: Vec<String>,
 }
 
 /// What a mapping file holds, before any of §9.3's checks.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct File {
     pub symbols: Vec<Symbol>,
+    pub groups: Vec<Group>,
 }
 
 // ------------------------------------------------------------- the parsing --
@@ -101,6 +139,8 @@ struct SymbolForm {
     groups: Vec<String>,
     description: String,
     provenance: toml::Table,
+    #[serde(default, rename = "relation")]
+    relations: Vec<Relation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +148,8 @@ struct SymbolForm {
 struct FileForm {
     #[serde(default, rename = "symbol")]
     symbols: Vec<SymbolForm>,
+    #[serde(default, rename = "group")]
+    groups: Vec<Group>,
 }
 
 /// Why a mapping file was refused — §2.4: never resolved, always named.
@@ -230,14 +272,248 @@ pub fn parse(text: &str) -> Result<File, Error> {
             groups: s.groups,
             description: s.description,
             provenance: s.provenance,
+            relations: s.relations,
         });
     }
-    Ok(File { symbols })
+    for g in &form.groups {
+        if g.name.trim().is_empty() {
+            return Err(Error::Empty {
+                symbol: g.name.clone(),
+                field: "name",
+            });
+        }
+        if g.description.trim().is_empty() {
+            return Err(Error::Empty {
+                symbol: g.name.clone(),
+                field: "description",
+            });
+        }
+    }
+    Ok(File {
+        symbols,
+        groups: form.groups,
+    })
 }
 
-/// The symbols of a file, by name — a convenience the next unit's graph uses.
-pub fn by_name(file: &File) -> BTreeMap<&str, &Symbol> {
-    file.symbols.iter().map(|s| (s.name.as_str(), s)).collect()
+// --------------------------------------------------------------- the graph --
+
+/// §9.1's mapping as one graph, however many files it was written in.
+///
+/// Built by `load`, which is the only way to make one: every check §9.3 names
+/// happens there, so a `Mapping` that exists is one whose names are unique,
+/// whose group references resolve and whose relations point at symbols that are
+/// there. Nothing downstream re-checks, and nothing downstream has to.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Mapping {
+    symbols: BTreeMap<String, Symbol>,
+    groups: BTreeMap<String, Group>,
+}
+
+impl Mapping {
+    pub fn symbol(&self, name: &str) -> Option<&Symbol> {
+        self.symbols.get(name)
+    }
+
+    pub fn group(&self, name: &str) -> Option<&Group> {
+        self.groups.get(name)
+    }
+
+    pub fn symbols(&self) -> impl Iterator<Item = &Symbol> {
+        self.symbols.values()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.symbols.is_empty() && self.groups.is_empty()
+    }
+
+    /// Every symbol in a group, **including** those in groups nested inside it.
+    ///
+    /// This is what §9.1 means by navigating a concept: asking for "the
+    /// decompressor" gives its parts whether they were filed directly under it
+    /// or under something that is part of it.
+    pub fn members(&self, group: &str) -> Vec<&Symbol> {
+        let mut wanted: Vec<&str> = vec![group];
+        let mut seen: Vec<&str> = vec![group];
+        let mut at = 0;
+        while at < wanted.len() {
+            let here = wanted[at];
+            at += 1;
+            for g in self.groups.values() {
+                if g.inside.iter().any(|p| p == here) && !seen.contains(&g.name.as_str()) {
+                    seen.push(&g.name);
+                    wanted.push(&g.name);
+                }
+            }
+        }
+        self.symbols
+            .values()
+            .filter(|s| s.groups.iter().any(|g| wanted.contains(&g.as_str())))
+            .collect()
+    }
+}
+
+/// Why a mapping could not be made one graph — §9.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphError {
+    /// §9.3: no two symbols share a name, **including across files**. The two
+    /// files are named because a mapping split across several is exactly where
+    /// this happens and where it is hardest to see.
+    TwoSymbols {
+        name: String,
+        first: String,
+        second: String,
+    },
+    TwoGroups {
+        name: String,
+        first: String,
+        second: String,
+    },
+    /// §9.3: group references resolve to groups that exist.
+    NoSuchGroup {
+        group: String,
+        wanted_by: String,
+        file: String,
+    },
+    /// The same rule for relations, which §9.1 has and §9.3 does not mention.
+    NoSuchSymbol {
+        symbol: String,
+        wanted_by: String,
+        kind: String,
+        file: String,
+    },
+    /// A group inside itself, however many steps round.
+    GroupCycle { through: Vec<String> },
+}
+
+impl std::fmt::Display for GraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GraphError::TwoSymbols { name, first, second } => write!(
+                f,
+                "the symbol `{name}` is declared in `{first}` and again in `{second}`. A mapping \
+                 is one graph, so one name is one thing (§9.3)"
+            ),
+            GraphError::TwoGroups { name, first, second } => write!(
+                f,
+                "the group `{name}` is declared in `{first}` and again in `{second}` (§9.3)"
+            ),
+            GraphError::NoSuchGroup { group, wanted_by, file } => write!(
+                f,
+                "`{wanted_by}` in `{file}` is in the group `{group}`, which nothing declares. A \
+                 group has to be declared somewhere, or a mistyped name quietly invents one with \
+                 a single member (§9.3)"
+            ),
+            GraphError::NoSuchSymbol { symbol, wanted_by, kind, file } => write!(
+                f,
+                "`{wanted_by}` in `{file}` says it `{kind}` `{symbol}`, which no file declares"
+            ),
+            GraphError::GroupCycle { through } => write!(
+                f,
+                "these groups are inside each other: {}. A concept cannot be part of itself",
+                through.join(" -> ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GraphError {}
+
+/// Loads several files as one graph — §M7's first clause.
+///
+/// Each file arrives with the name it came from, because every refusal below
+/// is one somebody has to go and find in a file, and "a duplicate name" without
+/// the two files is a message that costs an afternoon.
+pub fn load<'a>(files: impl IntoIterator<Item = (&'a str, &'a File)>) -> Result<Mapping, GraphError> {
+    let mut symbols: BTreeMap<String, Symbol> = BTreeMap::new();
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    let mut whence: BTreeMap<String, String> = BTreeMap::new();
+
+    for (file, held) in files {
+        for symbol in &held.symbols {
+            if let Some(first) = whence.get(&symbol.name) {
+                return Err(GraphError::TwoSymbols {
+                    name: symbol.name.clone(),
+                    first: first.clone(),
+                    second: file.to_string(),
+                });
+            }
+            whence.insert(symbol.name.clone(), file.to_string());
+            symbols.insert(symbol.name.clone(), symbol.clone());
+        }
+        for group in &held.groups {
+            if let Some(first) = whence.get(&group.name) {
+                return Err(GraphError::TwoGroups {
+                    name: group.name.clone(),
+                    first: first.clone(),
+                    second: file.to_string(),
+                });
+            }
+            whence.insert(group.name.clone(), file.to_string());
+            groups.insert(group.name.clone(), group.clone());
+        }
+    }
+
+    let found = |name: &str| whence.get(name).cloned().unwrap_or_default();
+
+    for symbol in symbols.values() {
+        for group in &symbol.groups {
+            if !groups.contains_key(group) {
+                return Err(GraphError::NoSuchGroup {
+                    group: group.clone(),
+                    wanted_by: symbol.name.clone(),
+                    file: found(&symbol.name),
+                });
+            }
+        }
+        for relation in &symbol.relations {
+            if !symbols.contains_key(&relation.to) {
+                return Err(GraphError::NoSuchSymbol {
+                    symbol: relation.to.clone(),
+                    wanted_by: symbol.name.clone(),
+                    kind: relation.kind.clone(),
+                    file: found(&symbol.name),
+                });
+            }
+        }
+    }
+
+    for group in groups.values() {
+        for parent in &group.inside {
+            if !groups.contains_key(parent) {
+                return Err(GraphError::NoSuchGroup {
+                    group: parent.clone(),
+                    wanted_by: group.name.clone(),
+                    file: found(&group.name),
+                });
+            }
+        }
+    }
+
+    // A group inside itself, however many steps round. Walked rather than
+    // counted, so that the refusal can print the way round.
+    //
+    // The walk is bounded by the number of groups as well as by the cycle it is
+    // looking for, and the second bound is not redundant: a mapping file is a
+    // stranger's input, and a loader whose termination depends on its own
+    // detection being right is one a malformed file can hang. Found by mutation
+    // — removing the cycle check made the test suite hang rather than fail.
+    for start in groups.keys() {
+        let mut path = vec![start.clone()];
+        let mut at = start.clone();
+        for _ in 0..groups.len() {
+            let Some(next) = groups[&at].inside.first().cloned() else {
+                break;
+            };
+            if path.contains(&next) {
+                path.push(next);
+                return Err(GraphError::GroupCycle { through: path });
+            }
+            path.push(next.clone());
+            at = next;
+        }
+    }
+
+    Ok(Mapping { symbols, groups })
 }
 
 #[cfg(test)]
@@ -256,10 +532,22 @@ length = 18
 groups = ["the-decompressor"]
 description = "Expands each input byte into two output bytes."
 provenance = { how = "measured" }
+
+[[group]]
+name = "the-decompressor"
+description = "Everything that turns the packed stream into bytes."
 "#
         .to_string()
     }
 
+    /// One file, named, as `load` takes them.
+    fn one(text: &str) -> Result<Mapping, GraphError> {
+        let file = parse(text).expect("it parses");
+        load([("a.toml", &file)])
+    }
+
+    /// Everything but the lines beginning with this — used to take exactly one
+    /// field away at a time.
     fn without(line_starting: &str) -> String {
         whole()
             .lines()
@@ -285,7 +573,7 @@ provenance = { how = "measured" }
         assert_eq!(s.groups, vec!["the-decompressor"]);
         assert!(s.description.starts_with("Expands"));
         assert_eq!(s.provenance.get("how").and_then(|v| v.as_str()), Some("measured"));
-        assert_eq!(by_name(&file).get("expand").map(|s| &s.name), Some(&"expand".to_string()));
+        assert!(s.relations.is_empty(), "§9.1 says relations, and none is a number");
     }
 
     /// The other form of a location, and the point case §9.1's wording is about.
@@ -434,12 +722,333 @@ provenance = { how = "measured" }
         let two = format!("{}\n{}", whole(), whole().replace("\"expand\"", "\"expand-2\""));
         let file = parse(&two).expect("two symbols");
         assert_eq!(file.symbols.len(), 2);
-        assert_eq!(by_name(&file).len(), 2);
 
         assert_eq!(
             parse("").expect("an empty file is empty, not wrong"),
             File::default(),
             "a mapping split across files may have a file that holds nothing yet"
         );
+    }
+
+    // ------------------------------------------------------- the graph --
+
+    /// §M7's first clause: several files load as one graph, and a symbol in
+    /// one file may belong to a group declared in another.
+    #[test]
+    fn several_files_become_one_graph() {
+        let concepts = parse(
+            r#"
+[[group]]
+name = "the-decompressor"
+description = "Everything that turns the packed stream into bytes."
+
+[[group]]
+name = "its-inner-loop"
+description = "The part that runs once per byte."
+inside = ["the-decompressor"]
+"#,
+        )
+        .expect("groups parse");
+
+        let code = parse(
+            r#"
+[[symbol]]
+name = "expand"
+address = 0x8040
+groups = ["the-decompressor"]
+description = "Entered once per screen."
+provenance = { how = "measured" }
+[[symbol.relation]]
+kind = "writes"
+to = "out-buffer"
+
+[[symbol]]
+name = "hot-loop"
+address = 0x8044
+groups = ["its-inner-loop"]
+description = "Runs once per byte."
+provenance = { how = "measured" }
+"#,
+        )
+        .expect("symbols parse");
+
+        let data = parse(
+            r#"
+[[symbol]]
+name = "out-buffer"
+region = "work-ram"
+offset = 1024
+length = 64
+groups = ["the-decompressor"]
+description = "Where the expanded bytes land."
+provenance = { how = "measured" }
+"#,
+        )
+        .expect("data parses");
+
+        let map = load([
+            ("concepts.toml", &concepts),
+            ("code.toml", &code),
+            ("data.toml", &data),
+        ])
+        .expect("three files, one graph");
+
+        assert!(map.symbol("expand").is_some());
+        assert!(map.symbol("out-buffer").is_some(), "declared in another file");
+        assert_eq!(map.symbols().count(), 3);
+
+        // The relation crossed a file boundary and resolved.
+        assert_eq!(map.symbol("expand").expect("it").relations[0].to, "out-buffer");
+
+        // §9.1's point: a concept scattered across files is navigable as a
+        // concept — and the nested group's member comes with it.
+        let mut members: Vec<&str> = map
+            .members("the-decompressor")
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        members.sort_unstable();
+        assert_eq!(
+            members,
+            vec!["expand", "hot-loop", "out-buffer"],
+            "including the one filed under a group nested inside it"
+        );
+        assert_eq!(
+            map.members("its-inner-loop")
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hot-loop"],
+            "and asking for the inner one does not drag the outer one in"
+        );
+    }
+
+    /// §M7's second clause, and the whole reason it is stated separately: a
+    /// duplicate within one file is easy to see, and one ACROSS files is not.
+    #[test]
+    fn one_name_is_one_thing_across_files_and_two_names_are_two() {
+        let first = parse(
+            r#"
+[[symbol]]
+name = "expand"
+address = 0x8040
+description = "One."
+provenance = { how = "measured" }
+"#,
+        )
+        .expect("parses");
+        let again = parse(
+            r#"
+[[symbol]]
+name = "expand"
+address = 0x9000
+description = "Another, and somebody is wrong."
+provenance = { how = "measured" }
+"#,
+        )
+        .expect("parses");
+
+        let err = load([("code.toml", &first), ("more.toml", &again)])
+            .expect_err("two files, one name");
+        assert_eq!(
+            err,
+            GraphError::TwoSymbols {
+                name: "expand".into(),
+                first: "code.toml".into(),
+                second: "more.toml".into()
+            }
+        );
+        let said = err.to_string();
+        assert!(
+            said.contains("code.toml") && said.contains("more.toml"),
+            "both files, or somebody spends an afternoon: {said}"
+        );
+
+        // The near miss: the same two files with different names load.
+        let renamed = parse(
+            r#"
+[[symbol]]
+name = "expand-2"
+address = 0x9000
+description = "Another."
+provenance = { how = "measured" }
+"#,
+        )
+        .expect("parses");
+        assert!(load([("code.toml", &first), ("more.toml", &renamed)]).is_ok());
+    }
+
+    /// A group and a symbol share one namespace, because a mapping is one
+    /// graph and a name in it is one thing.
+    #[test]
+    fn a_group_may_not_take_a_name_a_symbol_has() {
+        let a = parse(
+            r#"
+[[symbol]]
+name = "expand"
+address = 0x8040
+description = "One."
+provenance = { how = "measured" }
+"#,
+        )
+        .expect("parses");
+        let b = parse(
+            r#"
+[[group]]
+name = "expand"
+description = "A concept with a symbol's name."
+"#,
+        )
+        .expect("parses");
+        assert!(matches!(
+            load([("code.toml", &a), ("concepts.toml", &b)]),
+            Err(GraphError::TwoGroups { .. })
+        ));
+    }
+
+    /// §9.3: a group reference resolves to a group that exists. This is the
+    /// check that makes a typo in a hand-written file findable.
+    #[test]
+    fn a_group_nothing_declares_is_refused_and_a_declared_one_is_not() {
+        let text = |group: &str| {
+            format!(
+                r#"
+[[group]]
+name = "the-decompressor"
+description = "A concept."
+
+[[symbol]]
+name = "expand"
+address = 0x8040
+groups = ["{group}"]
+description = "One."
+provenance = {{ how = "measured" }}
+"#
+            )
+        };
+
+        let err = one(&text("the-decompressr")).expect_err("a typo invents nothing");
+        assert_eq!(
+            err,
+            GraphError::NoSuchGroup {
+                group: "the-decompressr".into(),
+                wanted_by: "expand".into(),
+                file: "a.toml".into()
+            }
+        );
+        assert!(one(&text("the-decompressor")).is_ok(), "spelled right");
+    }
+
+    /// The same rule for relations, which §9.1 has and §9.3 forgot to mention.
+    #[test]
+    fn a_relation_to_nothing_is_refused_and_one_to_something_is_not() {
+        let text = |to: &str| {
+            format!(
+                r#"
+[[symbol]]
+name = "expand"
+address = 0x8040
+description = "One."
+provenance = {{ how = "measured" }}
+[[symbol.relation]]
+kind = "writes"
+to = "{to}"
+
+[[symbol]]
+name = "out-buffer"
+region = "work-ram"
+offset = 0
+length = 4
+description = "Two."
+provenance = {{ how = "measured" }}
+"#
+            )
+        };
+        let err = one(&text("out-bufer")).expect_err("nothing of that name");
+        assert_eq!(
+            err,
+            GraphError::NoSuchSymbol {
+                symbol: "out-bufer".into(),
+                wanted_by: "expand".into(),
+                kind: "writes".into(),
+                file: "a.toml".into()
+            }
+        );
+        assert!(one(&text("out-buffer")).is_ok());
+    }
+
+    /// A concept cannot be part of itself, however many steps round — and the
+    /// refusal prints the way round, because a cycle through four groups is
+    /// not something anybody finds by reading.
+    #[test]
+    fn a_group_inside_itself_is_refused_at_any_distance() {
+        let direct = one(
+            r#"
+[[group]]
+name = "a"
+description = "One."
+inside = ["a"]
+"#,
+        )
+        .expect_err("itself");
+        assert!(matches!(direct, GraphError::GroupCycle { .. }), "{direct}");
+
+        let round = one(
+            r#"
+[[group]]
+name = "a"
+description = "One."
+inside = ["b"]
+
+[[group]]
+name = "b"
+description = "Two."
+inside = ["c"]
+
+[[group]]
+name = "c"
+description = "Three."
+inside = ["a"]
+"#,
+        )
+        .expect_err("three steps round");
+        match &round {
+            GraphError::GroupCycle { through } => {
+                assert!(through.len() >= 4, "the way round is printed: {through:?}");
+            }
+            other => panic!("got {other}"),
+        }
+
+        // The near miss, and it is NOT a cycle: a chain, and a group two
+        // different groups are both inside.
+        assert!(
+            one(r#"
+[[group]]
+name = "a"
+description = "One."
+
+[[group]]
+name = "b"
+description = "Two."
+inside = ["a"]
+
+[[group]]
+name = "c"
+description = "Three."
+inside = ["a"]
+"#)
+            .is_ok(),
+            "two groups inside one is a shape, not a cycle"
+        );
+    }
+
+    /// An empty mapping is a mapping. A project that has written no files yet
+    /// is not a project with a broken one.
+    #[test]
+    fn no_files_is_an_empty_graph_and_not_a_refusal() {
+        let map = load([]).expect("nothing is not wrong");
+        assert!(map.is_empty());
+        assert!(map.symbol("anything").is_none());
+        assert!(map.members("anything").is_empty());
     }
 }
