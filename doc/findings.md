@@ -194,6 +194,12 @@ and the backend does not say what kind of stop that was" would carry the same
 information without looking like a bug. A note for `doc/`, or a word in the
 printer; not a change to what is measured.
 
+
+**Fixed in M5's last unit.** It now says the address is exact and that what the
+backend does not report is the *kind* of position that is — the same information
+the other way round, which reads as a statement rather than as a defect. The
+diagnosis above is kept because the way a true sentence can read as a bug is
+worth remembering.
 ## 5. The two interfaces key the anchor cache differently, and one keys it by a path
 
 **Blocked.** It stopped §4.9's closing check from running at all.
@@ -227,6 +233,12 @@ different files at one path would silently share a key.
 A fix worth making, and it is one line: the digest, which is what §9 should be
 recording anyway.
 
+
+**Fixed in M5's last unit**, and it is the fix that unblocked §4.9's closing
+check. Both halves now build §9's provenance from one `Loaded::provenance`, with
+a test that fails if a path ever reaches it. The closing check ran on real
+software for the first time immediately afterwards: 6.1 seconds against 42 for
+the demonstration.
 ## 6. A client cannot arrive at an anchor
 
 **Blocked**, and it is what made finding 5 visible.
@@ -258,6 +270,12 @@ It also means §4.8's fourth step — run the same bound onward from a replay an
 from a resume — cannot be asked for from the command line. The tool does it
 inside its own demonstration; a user cannot reproduce it.
 
+
+**Fixed in M5's last unit.** A bound beside an anchor is refused, naming which
+bound and why, with each alone still accepted. What is *not* fixed is the second
+half of this entry: §4.8's fourth step still cannot be asked for from outside,
+because arriving and then running a bound is not a thing the command line can
+express. That remains true.
 ## 8. An ancestor's cached blob never shortens the walk
 
 **Slowed.** With a chained anchor's parent already cached, arriving at the child
@@ -378,6 +396,11 @@ A note for `doc/`, and a better sentence: the comparison cannot discriminate it,
 which is a fault if the routine reads it and depends on it, and the expected
 answer if the routine reads it and does not.
 
+
+**Fixed in M5's last unit.** The sentence now names all three: a fault if the
+routine reads what was changed and depends on it, the expected answer if it does
+not read it — or reads it and is indifferent to it, which is what a control
+chosen to go unnoticed is for.
 ## 13. The keyboard that reached no controller
 
 **Annoyed, and it cost an evening**, which is a strange pair until you notice
