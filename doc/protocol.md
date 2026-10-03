@@ -352,6 +352,41 @@ mutation:
   not, because a write to a dead client is the same `BrokenPipe` the child's
   side already exercises.
 
+## A client in another language
+
+`clients/python/` holds one, in the standard library and nothing else:
+`awaseru.py` is the framing and the transport, `routine.py` is the fixture's
+routine reimplemented from its description plus two ways of getting it wrong,
+and `selftest.py` checks both without needing a backend.
+
+Two things the client deliberately does not offer, and they are the same two
+rules the tool follows:
+
+- **no `is_ok()` and no boolean near a verdict.** §2.3 has three values, and a
+  client that could ask "did it pass?" is a client that reads the third as the
+  first. `verdict_of` hands back the tag as a string and makes the caller say
+  what it means.
+- **no exception for a refusal.** A refusal is a reply carrying what was looked
+  for and what was found (§14.2), and a caller that wants to read one should not
+  have to catch it. The only exceptions are for a server that stopped answering,
+  which is not a reply at all.
+
+Its reads block, and that is safe for a reason worth writing down: the server
+gives its reference process a watchdog and answers a refusal when that process
+goes quiet, so a question always gets an answer or an end of stream. A client in
+a language with a convenient deadline may add one; a client without one is not
+left hanging by this design.
+
+### What a second client would need from this document
+
+Everything above: the frame's four fields and their widths, the two limits, the
+commands and replies, where the bytes are, and the three shapes of a verdict.
+The Python client was written against this document and its self-test asserts the
+same frame vector the tool's own test does — which is how a drift between the
+two would be caught by whichever ran first. Proved by mutation: writing the
+lengths little-endian fails the client's own check before any conversation is
+attempted.
+
 ## The reference in a child process
 
 | | |
