@@ -135,3 +135,84 @@ exact and the *kind* is what is unknown. A sentence saying "at a frame boundary,
 and the backend does not say what kind of stop that was" would carry the same
 information without looking like a bug. A note for `doc/`, or a word in the
 printer; not a change to what is measured.
+
+## 5. The two interfaces key the anchor cache differently, and one keys it by a path
+
+**Blocked.** It stopped §4.9's closing check from running at all.
+
+The command line arrives at an anchor, demonstrates it and caches the blob.
+A client then connects over §8's protocol, points at **the same cache
+directory**, and is told there is no blob:
+
+```text
+the anchor `<name>` cannot be reached: no blob is cached for it, so nothing
+rested on one
+```
+
+The refusal is honest about what it found and wrong about the world. §4.11's key
+is built from §9's provenance, and the two halves of this project build that
+provenance from different things:
+
+| interface | what it calls the software |
+|---|---|
+| the command line | the configuration's digest |
+| the reference process behind the protocol | the software's **path on this machine** |
+
+So the keys differ, the blob is invisible across the boundary, and the
+demonstration is paid twice. That is the cheap half of the damage. The expensive
+half is that a cache key containing an absolute path is wrong on its own terms:
+§6.2 says the location is machine-local and the identity is the invariant, and
+keying a cache by location means moving the file invalidates every blob for a
+reason that has nothing to do with whether the blob is still right — while two
+different files at one path would silently share a key.
+
+A fix worth making, and it is one line: the digest, which is what §9 should be
+recording anyway.
+
+## 6. A client cannot arrive at an anchor
+
+**Blocked**, and it is what made finding 5 visible.
+
+§8's protocol has `run`, `read`, `write`, `examine` and `reverify`. It has no
+verb for *arrive*. An anchor is reached only as a side effect of `examine`'s
+`from`, which needs a routine to measure — so a client that wants §4.9's bracket
+cannot open it. `reverify` before any measurement is refused, correctly, because
+nothing has rested on a blob that does not exist.
+
+§4.9 describes a session bracketed by a demonstration at the start and one
+closing check at the end. A client can ask for the end and not the beginning.
+
+The way round from outside is to arrive with the *other* interface — which is
+finding 5's collision, so there is no way round at all today. Recorded rather
+than worked around, which is what this milestone is for.
+
+## 7. A bound given with an anchor is discarded in silence
+
+**Annoyed.** `--anchor booted --frames 300` runs the anchor and ignores the
+frames, printing the same digest as `--anchor booted` alone and saying nothing.
+
+It is deliberate — an anchor carries its own definition, and the usage text says
+"instead of running a bound" — and silence is still the wrong answer. Everything
+else in this tool refuses rather than guessing which of two instructions was
+meant (§2.4), and this one picks. A refusal naming both would cost a line.
+
+It also means §4.8's fourth step — run the same bound onward from a replay and
+from a resume — cannot be asked for from the command line. The tool does it
+inside its own demonstration; a user cannot reproduce it.
+
+## 8. An ancestor's cached blob never shortens the walk
+
+**Slowed.** With a chained anchor's parent already cached, arriving at the child
+replays the whole chain from the origin rather than resuming the parent and
+running the child's bound:
+
+| cache holds | arriving at the child | how |
+|---|---|---|
+| nothing | 51 s | replayed |
+| the parent's blob | 51 s | replayed |
+| the child's blob | 0.4 s | resumed |
+
+So a chain's cache is all-or-nothing at the leaf. For two anchors it costs a
+replay; for a chain of five it costs four. Whether that is worth fixing depends
+on how deep chains get, which nothing yet knows — a question for §13 rather than
+a fix, and the measurement above is what it needs.
