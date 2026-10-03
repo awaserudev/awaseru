@@ -18,6 +18,7 @@ const USAGE: &str = "\
 awaseru — runs a reference and reports what is in it.
 
     awaseru [options]
+    awaseru serve [options]       speak §8's protocol on stdin and stdout
     awaseru reference [options]   the reference process, which a server spawns
 
 Options
@@ -52,6 +53,7 @@ fn main() -> ExitCode {
             print!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Ok(Command::Serve { places }) => awaseru::serve::serve(&places),
         Ok(Command::Reference { places }) => awaseru::child::attend(&places),
         Ok(Command::Run {
             plan,
@@ -178,6 +180,8 @@ fn report(outcome: &session::Outcome, list_only: bool) {
 #[derive(Debug)]
 enum Command {
     Help,
+    /// The server — `awaseru serve`, which a client spawns (§8.1, §8.2).
+    Serve { places: Box<awaseru::child::Where> },
     /// The reference process — `awaseru reference`, which the server spawns and
     /// nobody runs by hand.
     ///
@@ -219,13 +223,21 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
 
     let mut log: Option<PathBuf> = None;
     let mut as_reference = false;
+    let mut as_server = false;
 
     let mut args = args.peekable();
     // The one bare word this tool takes, and it has to be first: a subcommand
     // after the options would be ambiguous with an option's value.
-    if args.peek().map(String::as_str) == Some("reference") {
-        as_reference = true;
-        args.next();
+    match args.peek().map(String::as_str) {
+        Some("reference") => {
+            as_reference = true;
+            args.next();
+        }
+        Some("serve") => {
+            as_server = true;
+            args.next();
+        }
+        _ => {}
     }
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -256,18 +268,21 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         }
     }
 
-    if as_reference {
-        return Ok(Command::Reference {
-            places: Box::new(awaseru::child::Where {
-                shared,
-                local,
-                home: home.clone(),
-                cache,
-                // Beside the backend's own home by default, because that is
-                // where the emulator's files already are and §6.1 says paths
-                // are machine-local.
-                log: log.unwrap_or_else(|| home.join("reference.log")),
-            }),
+    if as_reference || as_server {
+        let places = Box::new(awaseru::child::Where {
+            shared,
+            local,
+            home: home.clone(),
+            cache,
+            // Beside the backend's own home by default, because that is where
+            // the emulator's files already are and §6.1 says paths are
+            // machine-local.
+            log: log.unwrap_or_else(|| home.join("reference.log")),
+        });
+        return Ok(if as_server {
+            Command::Serve { places }
+        } else {
+            Command::Reference { places }
         });
     }
 

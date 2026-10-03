@@ -18,5 +18,6 @@ pub mod perturb;
 pub mod platform;
 pub mod protocol;
 pub mod routine;
+pub mod serve;
 pub mod session;
 pub mod version;

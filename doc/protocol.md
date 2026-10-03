@@ -279,6 +279,57 @@ something else entirely while looking fine.
 
 ---
 
+## The transport
+
+The client spawns `awaseru serve` (§8.1 — the client drives), writes framed
+commands to its standard input, and reads framed replies from its standard
+output. No ports, no sockets, nothing to allow through a firewall.
+
+```text
+client ──stdin/stdout, framed──▶ awaseru serve ──stdin/stderr, framed──▶ awaseru reference
+                                                                         │
+                                       the emulator's voice ─────────────┘──▶ a log file
+```
+
+**The server decides nothing.** It decodes a frame, hands the command to the
+reference process, and encodes the answer. The handshake, the version check,
+every refusal about a region or a span, and every verdict belong to the binding
+of §8.4 — the same code the in-process binding runs. Proved by mutation: making
+the server answer `hello` itself fails both of its tests, because the handshake
+it is supposed to enforce is the child's.
+
+What the server does own is the transport's own failures, and each is a reply
+rather than a silence: a frame it cannot read, a reference process that will not
+start, one that dies, one that goes quiet.
+
+### One reference per server, never replaced
+
+§13's Q10 gives a server one reference, and the vocabulary has no command that
+asks for a second — structural, rather than a rule being enforced.
+
+A reference that dies is **not** respawned. A fresh process is a fresh machine
+at a fresh position, and handing that to a client mid-conversation would be
+handing it a different machine wearing the same name. So the death is remembered
+and every later command gets the same refusal, until the client closes the stream
+and starts again deliberately.
+
+That assertion needed two attempts. The first version of its test stopped one
+command too early: a mutation that forgot the death still passed, because the
+command right after a death is refused either way — the respawn only shows on the
+command after *that*. The test now sends it, and compares the two refusals
+word for word.
+
+### What the transport's tests do NOT cover
+
+- **A client that sends a frame while an answer is still coming.** The
+  conversation is strictly one command, one answer. Nothing enforces that from
+  the server's side and nothing needs to yet; a client that pipelines would read
+  the answers in order and could not tell which belonged to what.
+- **A server with no client.** Closing the client's end ends the conversation
+  with a success status, which is tested; a client that vanishes mid-command is
+  not, because a write to a dead client is the same `BrokenPipe` the child's
+  side already exercises.
+
 ## The reference in a child process
 
 | | |
