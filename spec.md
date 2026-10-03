@@ -876,6 +876,48 @@ known.
 Checksums and signatures, with the key published through more than one channel.
 A tool whose premise is verification distributes itself verifiably.
 
+### 11.6 BEFORE ANYTHING IS PUBLISHED, RUN THE LEAK CHECK
+
+> ## ⚠ `tools/leak-check.sh` — every push, every release, every crate
+>
+> **Not before the first one. Before each one.** §11.2 is a property of
+> everything that leaves this machine, and it has already been broken once.
+
+What broke it, so that the next person does not have to find out the same way:
+**two compiled Python files were committed, and Python embeds the absolute path
+of the machine that compiled it.** The source named nothing. The build artefact
+named the software *and* a local user, in a repository whose entire posture is
+that neither appears. The check that was supposed to catch it was a `grep -rni`
+read from the top — and `grep` prints no matching line for a binary file, so it
+reported "clean" for two months of commits it had never looked inside.
+
+A check with a hole in it is worse than no check, because it is produced as
+evidence.
+
+So the check is a committed script and these are its rules:
+
+- it searches every **tracked file as binary**, not as text;
+- every **commit message**, across every ref;
+- and **every blob in history**, which is where the bytecode hid;
+- the words it looks for are **not in this repository** — writing them into a
+  committed file would be the leak itself — they come from a local
+  `.private-words`, and **without that file the script fails** rather than
+  passing while checking nothing.
+
+Three things that are true about publishing and are easy to get wrong:
+
+- **A force-push does not remove anything from a hosted repository.** The
+  commits stay reachable by their hash until the host's own collection runs, and
+  the host's event feed keeps the hashes for months. The only reliable removal
+  is deleting the repository and pushing a rewritten history to a fresh one.
+- **crates.io is permanent.** A published version cannot be withdrawn, only
+  yanked, and a yanked version is still downloadable. What goes in a crate is
+  decided *before* `publish`, by `cargo package --list`.
+- **Generated files are the dangerous ones.** Bytecode, object files, coverage
+  data, build logs, editor caches: each one may embed a path, a user name or a
+  hostname. `.gitignore` is the first line and the leak check is the second,
+  because the first one is a list somebody has to remember to add to.
+
 ---
 
 ## 12. Milestones
