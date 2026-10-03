@@ -18,6 +18,7 @@ const USAGE: &str = "\
 awaseru — runs a reference and reports what is in it.
 
     awaseru [options]
+    awaseru reference [options]   the reference process, which a server spawns
 
 Options
     --config PATH       the shared configuration        (default awaseru.toml)
@@ -37,6 +38,9 @@ Options
     --offset N          where in it to start             (default 0)
     --length N          how many bytes                   (default 256)
 
+    --log PATH          where `awaseru reference` sends the emulator's own
+                        output and any panic (default: beside --home)
+
     --regions           list what the backend exposes and stop
     --state-digest      print one line a machine can compare, and nothing else
     -h, --help          this
@@ -48,6 +52,7 @@ fn main() -> ExitCode {
             print!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Ok(Command::Reference { places }) => awaseru::child::attend(&places),
         Ok(Command::Run {
             plan,
             list_only,
@@ -173,6 +178,14 @@ fn report(outcome: &session::Outcome, list_only: bool) {
 #[derive(Debug)]
 enum Command {
     Help,
+    /// The reference process — `awaseru reference`, which the server spawns and
+    /// nobody runs by hand.
+    ///
+    /// It is a subcommand of the same binary rather than a second one, because
+    /// a client installs `awaseru` and the server has to be able to find it:
+    /// `current_exe` is a path that always exists, and a sibling binary is a
+    /// path that may not have been installed.
+    Reference { places: Box<awaseru::child::Where> },
     Run {
         /// Boxed because a `Plan` carries a `Bound`, and a bound can name a
         /// byte by region (§5.4's localisation) — which makes it large enough
@@ -204,7 +217,16 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut anchor = None;
     let mut cache = std::env::temp_dir().join("awaseru-anchor-cache");
 
+    let mut log: Option<PathBuf> = None;
+    let mut as_reference = false;
+
     let mut args = args.peekable();
+    // The one bare word this tool takes, and it has to be first: a subcommand
+    // after the options would be ambiguous with an option's value.
+    if args.peek().map(String::as_str) == Some("reference") {
+        as_reference = true;
+        args.next();
+    }
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
@@ -224,6 +246,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--length" => length = number(&value()?, 10)? as usize,
             "--anchor" => anchor = Some(value()?),
             "--cache" => cache = PathBuf::from(value()?),
+            "--log" => log = Some(PathBuf::from(value()?)),
             "--regions" => list_only = true,
             "--state-digest" => digest_only = true,
             other if other.starts_with('-') => {
@@ -231,6 +254,21 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             }
             other => return Err(format!("awaseru takes options, not `{other}`")),
         }
+    }
+
+    if as_reference {
+        return Ok(Command::Reference {
+            places: Box::new(awaseru::child::Where {
+                shared,
+                local,
+                home: home.clone(),
+                cache,
+                // Beside the backend's own home by default, because that is
+                // where the emulator's files already are and §6.1 says paths
+                // are machine-local.
+                log: log.unwrap_or_else(|| home.join("reference.log")),
+            }),
+        });
     }
 
     // §4.4: an address is the first bound that can fail to arrive, so it
@@ -288,15 +326,58 @@ mod tests {
     fn plan_of(words: &[&str]) -> Plan {
         match parse_args(words).expect("it parses") {
             Command::Run { plan, .. } => *plan,
-            Command::Help => panic!("expected a run"),
+            other => panic!("expected a run, got {other:?}"),
         }
     }
 
     fn digest_only_of(words: &[&str]) -> bool {
         match parse_args(words).expect("it parses") {
             Command::Run { digest_only, .. } => digest_only,
-            Command::Help => panic!("expected a run"),
+            other => panic!("expected a run, got {other:?}"),
         }
+    }
+
+    /// The subcommand is the one bare word this tool takes, and it has to be
+    /// first — after an option it would be ambiguous with that option's value.
+    #[test]
+    fn the_reference_subcommand_takes_the_same_paths_and_a_log() {
+        match parse_args(&[
+            "reference",
+            "--config",
+            "/tmp/shared.toml",
+            "--local",
+            "/tmp/local.toml",
+            "--home",
+            "/tmp/home",
+            "--cache",
+            "/tmp/cache",
+            "--log",
+            "/tmp/talk.log",
+        ])
+        .expect("it parses")
+        {
+            Command::Reference { places } => {
+                assert_eq!(places.shared, PathBuf::from("/tmp/shared.toml"));
+                assert_eq!(places.local, PathBuf::from("/tmp/local.toml"));
+                assert_eq!(places.home, PathBuf::from("/tmp/home"));
+                assert_eq!(places.cache, PathBuf::from("/tmp/cache"));
+                assert_eq!(places.log, PathBuf::from("/tmp/talk.log"));
+            }
+            other => panic!("expected the reference process, got {other:?}"),
+        }
+
+        // The log has a default beside the backend's home, because the
+        // emulator's files are already there (§6.1).
+        match parse_args(&["reference", "--home", "/tmp/elsewhere"]).expect("it parses") {
+            Command::Reference { places } => {
+                assert_eq!(places.log, PathBuf::from("/tmp/elsewhere/reference.log"));
+            }
+            other => panic!("got {other:?}"),
+        }
+
+        // And the word only means a subcommand when it is first: anywhere else
+        // it is refused rather than guessed at.
+        assert!(parse_args(&["--home", "/tmp", "reference"]).is_err());
     }
 
     /// The defaults are the whole of M0's command line: no arguments at all

@@ -8,6 +8,7 @@
 pub mod arrive;
 pub mod binding;
 pub mod cache;
+pub mod child;
 pub mod config;
 pub mod differ;
 pub mod frame;

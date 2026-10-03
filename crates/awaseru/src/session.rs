@@ -161,7 +161,7 @@ impl From<ArriveError> for Error {
 /// Reads the configuration, opens the reference it names, runs, and reads.
 pub fn run(plan: &Plan) -> Result<Outcome, Error> {
     let loaded = config::load(&plan.shared, &plan.local)?;
-    let mut reference = open(&loaded, &plan.home)?;
+    let mut reference = open_reference(&loaded, &plan.home)?;
     let (emulator, _) = loaded.reference();
 
     let regions = reference.regions();
@@ -237,7 +237,12 @@ pub fn run(plan: &Plan) -> Result<Outcome, Error> {
     })
 }
 
-fn open(loaded: &Loaded, home: &Path) -> Result<Box<dyn Platform>, Error> {
+/// Opens the reference the configuration names — §7.1's registry lookup.
+///
+/// Public because the reference process (`child::attend`) opens one too, and a
+/// second copy of this would be a second place for §16's version checks to
+/// live.
+pub fn open_reference(loaded: &Loaded, home: &Path) -> Result<Box<dyn Platform>, Error> {
     let (emulator, location) = loaded.reference();
     let entry = platform::find(&emulator.platform, &emulator.backend).ok_or_else(|| {
         Error::NoSuchBackend {

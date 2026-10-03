@@ -279,6 +279,51 @@ something else entirely while looking fine.
 
 ---
 
+## The reference in a child process
+
+| | |
+|---|---|
+| the child | `awaseru reference`, a subcommand of the same binary — a client installs one program, and `current_exe` is a path that always exists |
+| commands | the child's standard input, framed |
+| answers | the child's standard error, framed |
+| the emulator's voice | the child's standard output, redirected to a log file |
+| a panic | a hook that appends it to the log, so it cannot look like an answer |
+| a refusal before the reference opens | **also framed**, then the child leaves |
+
+Measured on the fixture: **324 lines** of the emulator's own output landed in
+the log across one conversation, and every frame the parent read was a frame.
+
+### Three ways a question goes unanswered, and none is a verdict
+
+| | what the parent reports |
+|---|---|
+| the child died | `Died`, with what `wait` said: an exit status, `101` named as a panic, or a signal |
+| the child is alive and not answering | `Silent`, with how long it waited |
+| the child answered something unparseable | `NotOurs`, with what it said |
+
+A measurement whose reference stopped existing has **no** verdict, and saying it
+agreed or differed would be inventing one. §2.3's third value is for this.
+
+`Silent` exists because of a mutation. With the answers written to the stream the
+emulator owns, the parent did not fail — **it hung**. A tool whose failure mode
+is "no output" is worse than one that says what it waited for, so the parent
+reads frames on a thread of its own and gives the channel a deadline: a read on
+a pipe cannot be given one, and §4.2's "no unbounded run" is just as true of
+waiting for somebody else's.
+
+### What the child's tests do NOT cover
+
+- **A child that is alive with its answer channel closed.** Measured by
+  mutation: the branch that would report it is never reached, because the kernel
+  closes the read end of the command pipe when a process dies, so the *write*
+  fails first with `BrokenPipe`. The branch is kept — a future child, or a
+  library that starts writing to standard error, produces exactly that — and it
+  is recorded as untested rather than counted as covered.
+- **Two children.** One child is one reference, which is all §13's Q10 allows.
+  Two is what §5.5's cross-check would need.
+- **The client's streams.** Nothing here reads the client's standard input or
+  writes its standard output; the server is the next unit.
+
 ## What these measurements do NOT cover
 
 - **Another platform.** All of it was measured on Linux. The public transport of
