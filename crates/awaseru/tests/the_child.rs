@@ -144,7 +144,11 @@ fn a_reference_in_a_child_answers_and_its_voice_goes_to_the_log() {
     match &answered.reply {
         Reply::Capabilities { declared, absent } => {
             assert!(declared.contains(&"writing-position".to_string()), "{declared:?}");
-            assert!(absent.contains(&"input-replay".to_string()), "{absent:?}");
+            assert!(declared.contains(&"input-replay".to_string()), "{declared:?}");
+            assert!(
+                absent.contains(&"stop-on-read".to_string()),
+                "what a backend cannot do crosses the framing too: {absent:?}"
+            );
         }
         other => panic!("got {other:?}"),
     }

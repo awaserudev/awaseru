@@ -56,22 +56,21 @@ fn the_declaration_says_what_was_measured_and_nothing_more() {
             Capability::WritingPosition,
             Capability::WriteRecency,
             Capability::ExecutionCoverage,
+            Capability::InputReplay,
         ]),
-        "M3's four and M6's fifth, and not a sixth: {declared}"
+        "M3's four, M6's fifth and Q14's sixth, and not a seventh: {declared}"
     );
 
     // ---- and what it refuses to claim -----------------------------------
-    // `input-replay` is the odd one: the machine CAN do it — M5 measured a
-    // recorded log replaying — and `Platform` has no verb for asking, so
-    // declaring it would let §7.3's gate pass an anchor whose log then goes
-    // unreplayed (`doc/findings.md`). The other three are routes that exist and
-    // have not been taken, which §7.3 says is not a declaration.
+    // What is left are routes that exist and have not been taken, which §7.3
+    // says is not a declaration.
     //
-    // `execution-coverage` was in this list until M6 and is now declared, which
-    // is why the exercise below exists: a capability moves out of this list by
-    // having something run through it, never by being believed.
+    // Two names have left this list, each the only way a capability may:
+    // `execution-coverage` in M6 and `input-replay` when §13's Q14 closed. The
+    // second was the interesting one — the machine could do it for two
+    // milestones while the host had no verb to ask, and declaring it then would
+    // have let §7.3's gate pass an anchor whose log went unreplayed.
     for absent in [
-        Capability::InputReplay,
         Capability::StopOnRead,
         Capability::CallAndReturnEvents,
         Capability::RegisterWrites,

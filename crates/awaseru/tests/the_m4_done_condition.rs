@@ -195,8 +195,10 @@ fn a_client_in_another_language_drives_seed_run_and_compare() {
             .as_array()
             .expect("a list")
             .iter()
-            .any(|c| c == "input-replay"),
-        "what the backend cannot do is on the wire too (§7.3): {summary}"
+            .any(|c| c == "stop-on-read"),
+        "what the backend cannot do is on the wire too (§7.3) — this named `input-replay` \
+         until Q14 was closed and the backend learned to do it, so it names something the \
+         backend still cannot: {summary}"
     );
 
     eprintln!("the client's summary: {said}");

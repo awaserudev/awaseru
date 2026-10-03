@@ -368,8 +368,26 @@ impl Anchors {
             // configuration does not throw away a cache that is still valid.
             let mut covers = anchor.covers.clone();
             covers.sort();
+            // §4.7's input log goes in by its CONTENTS and never by its path.
+            // Re-recording a log leaves the path alone and changes where the
+            // definition arrives, so a key over the path would keep resuming a
+            // blob for a position that no longer exists — which is the
+            // stale-blob failure §4.11 is for. The digest is of the bytes the
+            // configuration read.
+            let input = match &anchor.definition.input {
+                None => String::new(),
+                Some(log) => {
+                    let digest = Sha256::digest(&log.recorded);
+                    let hex = digest.iter().fold(String::with_capacity(64), |mut s, byte| {
+                        use std::fmt::Write;
+                        let _ = write!(s, "{byte:02x}");
+                        s
+                    });
+                    format!(" input={hex}")
+                }
+            };
             key = format!(
-                "{key} | anchor={} start={} bound={} covers=[{}]",
+                "{key} | anchor={} start={} bound={}{input} covers=[{}]",
                 anchor.name,
                 anchor.definition.start,
                 anchor.definition.bound,
@@ -527,6 +545,75 @@ impl CheapCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §4.11: the key is built from the log's CONTENTS, so re-recording one
+    /// throws away every blob derived from it.
+    ///
+    /// A key over the path would not notice — the file name does not change
+    /// when the recording does — and the blob would go on being resumed for a
+    /// position that no longer exists, which is the stale-blob failure §4.11
+    /// is entirely about.
+    #[test]
+    fn re_recording_an_input_log_invalidates_the_blobs_made_from_it() {
+        let with = |recorded: Vec<u8>| {
+            Anchors::new(vec![Anchor {
+                name: "behind-a-button".into(),
+                definition: Definition {
+                    start: Start::PowerOn,
+                    bound: Bound::Frames(600),
+                    input: Some(InputLog {
+                        name: "opening".into(),
+                        path: std::path::PathBuf::from("/the/same/path.rec"),
+                        recorded,
+                    }),
+                },
+                covers: vec!["work-ram".into()],
+            }])
+            .expect("one anchor")
+        };
+        let provenance = Provenance {
+            reference: "ref-a".into(),
+            backend: "a-backend".into(),
+            version: "1.0.0".into(),
+            software: "00".into(),
+        };
+
+        let first = with(vec![0x10, 0x00, 0x00])
+            .key("behind-a-button", &provenance)
+            .expect("a key");
+        let same = with(vec![0x10, 0x00, 0x00])
+            .key("behind-a-button", &provenance)
+            .expect("a key");
+        let changed = with(vec![0x10, 0x00, 0x01])
+            .key("behind-a-button", &provenance)
+            .expect("a key");
+
+        assert_eq!(
+            first, same,
+            "the same recording at the same path keeps the cache, or every session would \
+             re-derive what it already had"
+        );
+        assert_ne!(
+            first, changed,
+            "ONE BYTE of the recording is a different definition, and the path is identical \
+             in both — a key over the path would have said these were the same"
+        );
+
+        // And an anchor with no log at all is unaffected by any of this.
+        let bare = Anchors::new(vec![Anchor {
+            name: "behind-a-button".into(),
+            definition: Definition {
+                start: Start::PowerOn,
+                bound: Bound::Frames(600),
+                input: None,
+            },
+            covers: vec!["work-ram".into()],
+        }])
+        .expect("one anchor")
+        .key("behind-a-button", &provenance)
+        .expect("a key");
+        assert_ne!(bare, first, "a definition with a log is not one without");
+    }
 
     /// §4.7: a log is an origin, so a definition cannot also begin somewhere
     /// else. Both legal shapes are asserted beside it, or this would pass as a

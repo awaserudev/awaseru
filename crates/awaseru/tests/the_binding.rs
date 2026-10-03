@@ -131,8 +131,13 @@ fn the_vocabulary_drives_a_real_reference() {
                 assert!(declared.contains(&needed.to_string()), "{declared:?}");
             }
             assert!(
-                absent.contains(&"input-replay".to_string()),
-                "measured absent on this backend (§13's Q14): {absent:?}"
+                declared.contains(&"input-replay".to_string()),
+                "declared since §13's Q14 was closed — and the wire carries it: {declared:?}"
+            );
+            assert!(
+                absent.contains(&"stop-on-read".to_string()),
+                "and what the backend does NOT declare is still on the wire (§7.3), which is \
+                 what this half is really testing: {absent:?}"
             );
             assert!(binding.can_localise(), "so §5.4 can be asked for");
         }

@@ -1,23 +1,29 @@
-//! §7.3's gate, with a real reference on the other side of it.
+//! §7.3's gate, and the proof that it reads a declaration rather than a
+//! constant.
 //!
-//! An anchor whose definition needs an input log cannot be replayed by a
-//! reference that cannot press a button. Until this unit, the refusal was
-//! written into `awaseru-core` as a fact about every backend — which was true
-//! of the only backend there was, and not something the platform-independent
-//! half can know. Now the reference is asked (§7.3), and this is the test that
-//! the asking happens where it matters: on the way in to `arrive`, before the
-//! cache, because an anchor nothing can replay is an anchor nothing can ever
-//! demonstrate (§4.8), and a blob for one would be a blob resumed on trust.
+//! This test once asserted that an anchor needing an input log is **refused**,
+//! because the only backend there was could not replay one. §13's Q14 closed
+//! and the backend declares `input-replay`, so that half inverted: the anchor
+//! now passes the gate.
+//!
+//! **What the test is for did not change.** Its point was never that the answer
+//! is "no" — it was that the answer comes from asking the reference. So the
+//! halves have swapped jobs: the real reference now shows the gate letting
+//! something through on the strength of a declaration, and a synthetic
+//! declaration **without** the capability shows the refusal still happening and
+//! still naming both the anchor and what it needs.
+//!
+//! Had both halves asked a backend that says yes, this would have become a test
+//! that passes everything, which is what a gate failing open looks like from
+//! the inside.
 //!
 //! One test, because only one reference may exist per process.
 //!
 //! # What this does NOT cover
 //!
-//! Nothing here exercises an input log being *replayed*: no backend in this
-//! project can, and §13's Q14 has what would change that. What is checked is
-//! that the refusal comes from the declaration rather than from a constant —
-//! which the second half of the test establishes by asking the same question
-//! of a declaration that does contain the capability.
+//! Where the log actually takes the machine. That is the backend's test and the
+//! real anchor's; here the log is three bytes of nothing in particular, and what
+//! matters is that the gate did not stand in the way.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -83,8 +89,8 @@ fn an_anchor_needing_input_is_refused_by_what_the_reference_declares() {
 
     let declared = reference.capabilities();
     assert!(
-        !declared.has(Capability::InputReplay),
-        "this reference exposes no control device (§13's Q14): {declared}"
+        declared.has(Capability::InputReplay),
+        "§13's Q14 is closed and this backend replays a recorded log: {declared}"
     );
 
     let provenance = Provenance {
@@ -101,29 +107,29 @@ fn an_anchor_needing_input_is_refused_by_what_the_reference_declares() {
     };
     let mut arriver = Arriver::new(&mut reference, &anchors, &cache, provenance, policy);
 
-    // ---- the anchor that needs a button ----------------------------------
+    // ---- the anchor that needs a button now gets PAST the gate -----------
+    // The gate's job is to ask the reference, and the reference says yes. This
+    // anchor's log is three bytes of nothing at a path that does not exist, so
+    // the arrival still fails — but it fails at the REPLAY and not at the gate,
+    // which is the whole distinction this test is about.
     let err = arriver
         .arrive("after-the-button")
-        .expect_err("nothing here can press it");
-    match &err {
-        ArriveError::Anchors(AnchorError::NeedsCapability {
-            anchor,
-            capability,
-            needed_for,
-        }) => {
-            assert_eq!(anchor, "after-the-button");
-            assert_eq!(*capability, Capability::InputReplay);
-            assert!(needed_for.contains("press-start"), "said: {needed_for}");
-        }
-        other => panic!("the refusal must name the capability: {other}"),
-    }
+        .expect_err("three bytes of nothing is not a recording");
     assert!(
-        err.to_string().contains("input-replay"),
-        "and say it in words: {err}"
+        !matches!(
+            err,
+            ArriveError::Anchors(AnchorError::NeedsCapability { .. })
+        ),
+        "the gate let it through; what stopped it was the log itself: {err}"
+    );
+    assert!(
+        err.to_string().contains("not playing"),
+        "and the backend says nothing about a log it could not open, so the host checks the \
+         one thing it can see: {err}"
     );
     assert!(
         cache.is_empty(),
-        "a refused anchor must not have gone as far as caching anything"
+        "an arrival that did not arrive must not have cached anything"
     );
 
     // ---- and the anchor that needs nothing still arrives ------------------
@@ -149,6 +155,35 @@ fn an_anchor_needing_input_is_refused_by_what_the_reference_declares() {
             .is_ok(),
         "a reference declaring input replay must not be refused"
     );
+
+    // ---- and the refusal, asked of a declaration that lacks it -----------
+    // This half carried a supporting role until §13's Q14 closed; it is now
+    // the whole of the proof that the gate can say no. Without it, both halves
+    // would ask a backend that says yes, and a gate that failed open would
+    // pass this file from end to end.
+    let err = anchors
+        .chain_for("after-the-button", &Capabilities::of([]))
+        .expect_err("a reference that cannot press a button is still refused");
+    match &err {
+        AnchorError::NeedsCapability {
+            anchor,
+            capability,
+            needed_for,
+        } => {
+            assert_eq!(anchor, "after-the-button");
+            assert_eq!(*capability, Capability::InputReplay);
+            assert!(needed_for.contains("press-start"), "said: {needed_for}");
+        }
+        other => panic!("the refusal must name the capability: {other}"),
+    }
+    assert!(
+        err.to_string().contains("input-replay"),
+        "and say it in words: {err}"
+    );
+
+    // And the anchor that needs nothing is not refused by an empty
+    // declaration, or the line above would be about a blanket refusal.
+    assert!(anchors.chain_for("plain", &Capabilities::of([])).is_ok());
     assert!(
         anchors.chain_for("plain", &declared).is_ok(),
         "and this reference's own declaration is enough for a definition needing nothing"

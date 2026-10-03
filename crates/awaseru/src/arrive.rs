@@ -502,6 +502,14 @@ impl<'a> Arriver<'a> {
     fn replay(&mut self, chain: &[&Anchor]) -> Result<usize, ArriveError> {
         self.platform.return_to_origin()?;
         for anchor in chain {
+            // §4.7's input log, before the bound that measures from it. A log
+            // is an origin — starting one power-cycles — which is why a
+            // definition may only carry one when it begins at power-on, and
+            // why this sits here rather than after the run: the log IS how
+            // this anchor's origin was reached (§4.12).
+            if let Some(log) = &anchor.definition.input {
+                self.platform.replay_input_log(log)?;
+            }
             let stop = self.platform.run(anchor.definition.bound.clone())?;
             if !stop.arrived() {
                 return Err(ArriveError::Refused {

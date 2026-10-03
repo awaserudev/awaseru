@@ -38,6 +38,7 @@ on until something was done about it; **slowed** means it cost real time;
 | 16 | a symbol given as an address cannot be checked against the machine at all | **slowed**, and it is a gap §9.3 does not know it has | a question for §13 — found in M7 |
 | 17 | `measured` hides the distinction its author tabulated: once, or twice by two means | annoyed | a question for §13 — found in M7 |
 | 18 | a mapping is only visible where a measurement happens to land | annoyed | a note for `doc/`, and probably a verb one day — found in M7 |
+| 19 | the backend says nothing about an input log it could not open | **would have blocked** | **fixed while closing Q14** — the host checks the only observable thing |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -519,3 +520,30 @@ a name.
 A verb would fix it and none exists, which puts this beside finding 10: the tool
 measures what you already know and does not help you see what you know. A note
 for `doc/` today; a question for whoever decides what comes after §12.
+
+# Found while closing Q14
+
+## 19. The backend says nothing about an input log it could not open
+
+**Would have blocked**, and was caught by a mutation rather than by a thought.
+
+`MoviePlay` returns void. A path that does not exist, an archive that is not
+one, a recording made for other software — every one of them comes back looking
+like success, and because starting a log power-cycles, the machine is left at
+its origin. A caller would then measure from power-on believing it had arrived
+somewhere, and every comparison downstream would be about the wrong machine and
+would **pass**.
+
+It was found the way this project keeps finding things: by removing the replay
+from `arrive` and watching the test still pass. The test was asserting that the
+call returned, which the specification's own warning says is not enough — an
+arrival is easy to fake, because power-on is a perfectly good-looking position.
+
+The host now checks the one thing it can observe: after starting a log, playback
+is live or the log did not start. A recording with no frames is refused by the
+same check, which is correct — a log that feeds nothing is not a log.
+
+What would close it properly is a backend that reports the open. That is the
+backend's to add, and the check here is honest about being a substitute: the
+refusal says the backend is silent and that what can be seen is that nothing is
+being replayed.

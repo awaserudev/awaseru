@@ -215,7 +215,7 @@ than taken.
 | `writing-position` | yes | the measurement above: the instruction's own program counter at that break is the store |
 | `write-recency` | yes | the measurement above: a per-address write stamp, in the backend's clock — and a debugger write leaves no record, so it reports the software's writes |
 | `execution-coverage` | **yes, since M6** | the access record's execute half, measured byte-exact against a program this project wrote: see "The access record" below. It was the longest-standing of §13's Q15's untaken routes, and taking it is what turned it into a declaration — `Platform::coverage` and `forget_coverage` are the verbs |
-| `input-replay` | **no, and the backend can do it** | M5 measured a recorded log replaying deterministically, power-cycling on start, ending at its own end and surviving eighty thousand single instructions — `doc/protocol.md` has the numbers. It is **not declared** because `Platform` has no verb for replaying one, so a declaration would pass §7.3's gate and let an anchor's log go unreplayed. The earlier entry here said "measured absent — no control device at any of the eight indices": the reading was right and the conclusion was wrong (§13's Q14) |
+| `input-replay` | **yes, since §13's Q14 closed** | M5 measured the machine doing it and the capability waited two milestones for a verb, because declaring it without one would have passed §7.3's gate and let an anchor's log go unreplayed. `Platform::replay_input_log` is the verb. One caution lives with it: **this backend reports nothing about a log it could not open**, so the host checks that playback is live afterwards (`doc/findings.md`, finding 19). The first entry here said "measured absent — no control device at any of the eight indices": the reading was right and the conclusion was wrong |
 | `stop-on-read` | **no** | a route, not taken: the breakpoint record has a read flag and nothing here has used it |
 | `call-and-return-events` | **no** | a route, not taken: `GetCallstack` is exported, and its `StackFrameInfo` is flat enough to transcribe — two address words, three address records of two fields each, and a flag word. Nothing here has read one |
 | `register-writes` | **no** | needs the event viewer, which needs the nested configuration record this project has refused twice |
@@ -223,9 +223,6 @@ than taken.
 The five undeclared rows are three different kinds of absence, and the
 difference is what §7.3 is for:
 
-- `input-replay` is absent **in the host**. The machine does it; nothing above
-  this crate can ask for it. This is the one that changed: until M5 it was
-  recorded as absent in the machine, which was wrong.
 - `stop-on-read` and `call-and-return-events` are absent **in this crate**. A
   route exists for each and nobody has taken it. A route is not a declaration,
   because a host relying on one would be relying on this crate's reading of a

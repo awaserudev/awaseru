@@ -207,10 +207,27 @@ pub struct Origin {
     /// The memories that were zeroed, by the names `ZEROED_AT_POWER_ON` gives
     /// them. Empty when none were.
     pub memory_zeroed: Vec<&'static str>,
+    /// The input log that put the machine here, if one did — §4.7.
+    ///
+    /// **This supersedes the two above rather than joining them.** Starting a
+    /// log power-cycles and applies the settings recorded with it, including how
+    /// memory comes up, so after a replay the reproducibility is the log's doing
+    /// and not this crate's declared divergence. A report that still credited
+    /// `Startup::zero_memory` would be crediting the wrong thing, and §4.12
+    /// exists so that what a result rests on sits next to the result.
+    pub input_log: Option<String>,
 }
 
 impl std::fmt::Display for Origin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(log) = &self.input_log {
+            return write!(
+                f,
+                "by replaying the input log `{log}`, which power-cycled the machine and applied \
+                 the settings recorded with it — so what repeats here is the recording's doing \
+                 and not this tool's"
+            );
+        }
         match (self.at_power_on, self.memory_zeroed.is_empty()) {
             (true, false) => write!(
                 f,
@@ -497,6 +514,7 @@ impl Reference {
             origin: Origin {
                 at_power_on: startup.at_power_on,
                 memory_zeroed,
+                input_log: None,
             },
         })
     }
@@ -850,6 +868,7 @@ impl Platform for Reference {
             Capability::WritingPosition,
             Capability::WriteRecency,
             Capability::ExecutionCoverage,
+            Capability::InputReplay,
         ])
     }
 
@@ -909,6 +928,58 @@ impl Platform for Reference {
         } else {
             Recency::Stamp(count.write_stamp)
         })
+    }
+
+    fn replay_input_log(
+        &mut self,
+        log: &awaseru_core::anchor::InputLog,
+    ) -> Result<(), awaseru_core::RunError> {
+        // The backend opens the archive itself, which is why `InputLog` carries
+        // the path: the bytes are §4.11's business and this call's business is a
+        // filename.
+        self.play_input_log(&log.path)
+            .map_err(|why| awaseru_core::RunError::Backend {
+                why: format!(
+                    "the input log `{}` could not be started from {}: {why}",
+                    log.name,
+                    log.path.display()
+                ),
+            })?;
+
+        // **The backend reports nothing about whether it opened the file.**
+        // `MoviePlay` returns void: a path that does not exist, an archive that
+        // is not one, a recording for other software — all of them come back
+        // looking like success, and the machine is left at the origin the call
+        // power-cycled it to. A caller would then measure from power-on
+        // believing it had arrived somewhere, which is the silent wrong answer
+        // this project refuses everywhere.
+        //
+        // So the host checks the one thing it can observe: playback is live, or
+        // the log did not start. A recording with no frames in it is refused by
+        // the same check, which is correct — a log that feeds nothing is not a
+        // log.
+        if !self.input_log_playing() {
+            return Err(awaseru_core::RunError::Backend {
+                why: format!(
+                    "the input log `{}` was started from {} and is not playing. This backend \
+                     says nothing about a log it could not open, so what can be seen is that \
+                     nothing is being replayed — check that the file is a recording for this \
+                     software",
+                    log.name,
+                    log.path.display()
+                ),
+            });
+        }
+
+        // Starting a log power-cycles (`doc/protocol.md`), so the machine is at
+        // its origin and the origin this reference reports has a second way of
+        // having been reached. §4.12 wants that said rather than inferred.
+        self.origin = Origin {
+            at_power_on: true,
+            memory_zeroed: Vec::new(),
+            input_log: Some(log.name.clone()),
+        };
+        Ok(())
     }
 
     fn coverage(
@@ -1403,6 +1474,7 @@ mod tests {
         let origin = |at_power_on, zeroed: &[&'static str]| Origin {
             at_power_on,
             memory_zeroed: zeroed.to_vec(),
+            input_log: None,
         };
         let good = origin(true, &["work-ram"]).to_string();
         let no_zero = origin(true, &[]).to_string();
