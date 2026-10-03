@@ -30,6 +30,14 @@ made it instant. **Saying is not deciding** — it is how the feature becomes
 discoverable without the tool inferring anything and without coupling one
 session to another.
 
+The line a replay prints says what **this** session held and nothing about
+anywhere else. It is printed on every replay and never above some number of
+seconds, because a threshold would be a guess wearing a constant and because the
+point is that the faster path can be found, not that the tool has advice.
+
+Both halves are in the specification now: §4.11 carries the boundary, §4.12
+carries the obligation to report it, and §6.8 is what a session is.
+
 ## A session
 
 A session is named by the person. The name is mandatory; there is no default

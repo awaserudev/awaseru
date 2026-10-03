@@ -167,6 +167,24 @@ impl std::fmt::Display for Arrived {
             self.how,
             self.took.as_secs_f64()
         )?;
+        // §4.12's other half: a run that replayed says what it could have
+        // cost instead. Said on EVERY replayed arrival and never above some
+        // number of seconds, because a threshold would be a guess wearing a
+        // const (finding 20) and because the point is discoverability rather
+        // than advice.
+        //
+        // It says what this session holds and nothing about anywhere else.
+        // Looking for a blob in another session — or reporting that one exists
+        // there — would be the inference this whole frente refuses: nothing is
+        // shared unless somebody asked for it, and saying "there is one over
+        // there" is already half of deciding.
+        if matches!(self.how, How::Replayed { .. }) {
+            write!(
+                f,
+                " — this session held no blob for it, so it ran; a session \
+                 that holds one resumes in a fraction of that"
+            )?;
+        }
         if self.reverified {
             write!(f, "; re-demonstrated first, which §4.9 had come due")?;
         }
@@ -905,6 +923,47 @@ mod tests {
         let resumed = arrived(How::Resumed, None, true).to_string();
         assert!(resumed.contains("resumed"), "{resumed}");
         assert_ne!(replayed, resumed, "the two ways must not read alike");
+    }
+
+    /// The other half of §4.12: a replay says what it could have cost.
+    ///
+    /// On every replay and not past some number of seconds, because a
+    /// threshold would be a guess wearing a const. And it says what **this
+    /// session** held — looking anywhere else, or reporting that a blob exists
+    /// elsewhere, would be the inference nothing here is allowed to make.
+    #[test]
+    fn a_replay_says_what_a_session_holding_the_blob_would_have_cost() {
+        let replayed = arrived(How::Replayed { anchors_run: 1 }, None, true).to_string();
+        assert!(
+            replayed.contains("this session held no blob for it"),
+            "{replayed}"
+        );
+        // The whole phrase, not a fragment of it: a fragment passed while a
+        // line continuation had left a block of spaces in the middle of the
+        // sentence, so the test could not fail on the thing a reader sees.
+        assert!(
+            replayed.contains("a session that holds one resumes in a fraction of that"),
+            "the line is what makes the feature findable, {replayed}"
+        );
+        assert!(
+            !replayed.contains("  "),
+            "and it must read as one sentence, {replayed}"
+        );
+
+        // Fast or slow, the line is the same line: there is no number deciding
+        // whether it is worth saying.
+        let mut quick = arrived(How::Replayed { anchors_run: 1 }, None, true);
+        quick.took = Duration::from_millis(4);
+        assert!(
+            quick.to_string().contains("this session held no blob"),
+            "said: {quick}"
+        );
+
+        let resumed = arrived(How::Resumed, None, true).to_string();
+        assert!(
+            !resumed.contains("held no blob"),
+            "an arrival that resumed has nothing to suggest, {resumed}"
+        );
     }
 
     /// **Two separate reasons a run may be worth nothing, and both have to be

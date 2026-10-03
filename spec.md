@@ -434,6 +434,23 @@ nothing except how long a run takes. That property is what makes the cache safe
 to be wrong about, and it is worth more than any amount of care in invalidating
 it.
 
+**A cache is never found by inference.** Within one session (§6.8) a blob is
+found by its key and resumed, which is §4.12 and is not sharing. Across
+sessions, a blob moves because somebody asked for it to move, and never because
+the tool went looking: nothing searches a neighbouring directory, matches two
+pieces of work as probably the same, or reports that a blob exists somewhere a
+person did not name. Saying "there is one over there" is already half of
+deciding.
+
+So the default is slow, deliberately: a session that holds no blob for an anchor
+replays it. That is the correct outcome of asking for work nobody has done
+there, and §4.12 requires the run to say so — a replay reports what a session
+holding the blob would have cost instead, which is how the faster path is
+discovered without anything being guessed at. Slow because somebody has not
+found a feature is a better failure than fast because the tool deduced something
+and deduced it wrong: a wrong deduction costs the same hours and leaves nothing
+behind that can be trusted.
+
 ### 4.12 Waiting is reported, not hidden
 
 Every run says how it arrived — replayed or resumed — and how long that took.
@@ -450,6 +467,13 @@ A tool that hides where its time goes cannot be made faster by the person using
 it, because they cannot see what to fix. So: wherever a position can be reached
 by resuming rather than by replaying, the tool is expected to do so, and to say
 which it did.
+
+"Can be reached" means **within the session this run belongs to** — §4.11 draws
+that line, and nothing here is a licence to go looking elsewhere. The two halves
+work together: this section is why a replay also reports what resuming would
+have cost, and §4.11 is why the tool says that instead of acting on it. Saying
+is what lets the person make the run faster; deciding would be the tool guessing
+about the one artefact where being wrong is silent.
 
 ---
 
@@ -622,6 +646,15 @@ not configuration at all — they are a derived artefact keyed by §4.11, and
 configuration that pointed at a shared cache of blobs would be sharing the one
 artefact where a stale copy is invisible.
 
+Where the cache lives is **one place per session** (§6.8), not one place per
+machine. This is still not configuration: no key names it, and nobody writes the
+path down — the session's name is what says where, so naming the work names its
+cache. It was one fixed place per machine until the session existed, which meant
+every run on the machine shared one cache whatever software it was of; that
+obeyed the sentence above, since nobody had configured anything, and broke the
+reason for it. `doc/findings.md`'s twenty-eighth entry is that, and the shape is
+worth keeping: **a principle written here is not a principle the code has.**
+
 The keys, as built:
 
 ```toml
@@ -659,6 +692,55 @@ through a replay: a circle, a parent nobody declares and two anchors of one
 name all stop the load. An anchor naming an input log is the exception — it
 loads, because the configuration is right and the tool cannot replay one yet,
 and asking for *that* anchor is what refuses (§4.7).
+
+### 6.8 A session
+
+A **session** is one named directory holding one piece of work against one piece
+of software. It is named by the person, never derived from a process id: a name
+is what makes the work findable tomorrow, resumable after a machine stopped, and
+able to be handed over at all.
+
+```
+<name>/
+  session.toml        the software's identity, the reference, the backend and its version
+  anchors/<name>/     one directory per anchor, named after the anchor
+  runs/               what was asked, when, and what came back
+  home/               the backend's own files
+  logs/
+```
+
+A session is not configuration. The two files of §6.1 say what the work is of
+and where things are on this machine; a session is where the work **keeps** what
+it derives, which is why no key names it and why §6.7's cache needs no path
+written anywhere.
+
+Four things follow, and each is there because of a defect rather than a
+preference:
+
+- **One session is one piece of software.** `session.toml` records which, and
+  being offered another is refused. §6.6 already says that pointing the tool at
+  a different revision makes every comparison meaningless; a session's anchors
+  are named after positions in one piece of software, so the name would stop
+  meaning anything too.
+- **Two sessions share nothing.** Not the cache, not the backend's home, not the
+  logs. A collision between two pieces of work is therefore not something
+  guarded against — it is not reachable. §4.11 says what crossing between them
+  requires.
+- **One process at a time.** A session says it is open, and a second process is
+  refused and told who holds it and how to take it back. Whether the holder is
+  still alive is **not** guessed at: a machine that stopped never got to say so,
+  there is no portable way to ask, and a time after which a lock is assumed dead
+  would be a guess wearing a constant. The person decides.
+- **A name is a name a directory can have.** An anchor's name becomes a
+  directory inside a session, so a name that is not one path component is
+  refused at the configuration, with the reason, rather than quietly rewritten.
+  Rewriting is how a name stops meaning what the person wrote.
+
+A session is readable on purpose. A person deciding what to keep, or what to
+hand to somebody who has the same software, has to be able to see what they
+have, and a directory named after a digest is correct and unreadable. The digest
+has not gone anywhere — it is inside each entry's key, and the key is still the
+whole of what decides validity (§4.11).
 
 ---
 
