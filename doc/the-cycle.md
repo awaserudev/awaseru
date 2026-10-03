@@ -110,3 +110,45 @@ an interesting way, which `doc/findings.md` records.
 
 The last row is the honest one, and it is the finding this milestone exists to
 produce: the cycle is cheap and getting to it is not.
+
+## Provenance, and the shape of what is missing
+
+§9 wants a measurement to say what it was measured against, where each address
+came from and with what confidence. The full record for this run is in the
+workspace, because every line of it is about software this repository does not
+name (§11.2). What belongs here is its **shape**, and the gap between the two.
+
+A complete provenance for one measurement, as it had to be written by hand:
+
+```text
+software          an identity (a digest), and the declared divergence used to
+                  reach it — here, memory zeroed at power-on, which is not what
+                  the hardware does
+tool              name and version
+backend           name, version, AND build date
+reference         the configured name
+anchor            the definition, and whether the blob was demonstrated
+each address      the value, where it came from, and HOW SURE
+```
+
+The tool records four of those:
+
+```rust
+Provenance { reference, backend, version, software }
+```
+
+So the backend's build date — which the command line prints — is not in it; nor
+is the declared divergence, which is the most important thing to say about what
+machine a measurement was made on; nor is any address at all, nor where one came
+from, nor how sure anybody is.
+
+That the addresses are missing is expected: §9.1–§9.3's mapping system is M7.
+What is worth noting before then is the **confidence** column. Of the seven
+values this measurement rests on, six were read out of the machine twice by two
+different means and one was inferred from a single observation. Those two are
+not the same kind of fact, and nothing in the tool can tell them apart — which
+means a provenance it produced would present the inference exactly as
+confidently as the measurement.
+
+A well-formatted guess is the failure §9 exists to prevent, and the field that
+would prevent it is one word wide.
