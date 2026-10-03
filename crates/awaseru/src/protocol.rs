@@ -761,9 +761,18 @@ impl Control {
                 perturbed,
             } => Control::Ran {
                 perturbation: perturbation.clone(),
-                plain: Box::new(Verdict::of(plain, None)),
-                perturbed: Box::new(Verdict::of(perturbed, None)),
-                noticed: plain != perturbed,
+                // Each verdict with its own region, and not the report's:
+                // a control can be noticed in a region the main comparison
+                // agreed about, and naming the wrong one would be worse than
+                // naming none. `Difference`'s region documents itself as
+                // always present on a difference this tool produced, and until
+                // the control compared region by region it was absent here.
+                plain: Box::new(Verdict::of(&plain.verdict, plain.region.clone())),
+                perturbed: Box::new(Verdict::of(
+                    &perturbed.verdict,
+                    perturbed.region.clone(),
+                )),
+                noticed: plain.verdict != perturbed.verdict,
                 says: c.to_string(),
             },
         }
@@ -1348,19 +1357,66 @@ mod tests {
 
         let ran = Control::of(&crate::perturb::Control::Ran {
             perturbation: "the first input byte".into(),
-            plain: awaseru_core::Verdict::Agrees {
-                compared: 64,
-                moved: 64,
-            },
-            perturbed: awaseru_core::Verdict::Differs(awaseru_core::Difference::new(
-                0, 1, 2, 64, 64,
-            )),
+            plain: crate::perturb::Located::of(
+                awaseru_core::Verdict::Agrees {
+                    compared: 64,
+                    moved: 64,
+                },
+                None,
+            ),
+            perturbed: crate::perturb::Located::of(
+                awaseru_core::Verdict::Differs(awaseru_core::Difference::new(0, 1, 2, 64, 64)),
+                Some("work-ram".into()),
+            ),
         });
         let j = json(&ran);
         assert_eq!(j["control"], "ran");
         assert_eq!(j["noticed"], true);
         assert_eq!(j["plain"]["verdict"], "agrees");
         assert_eq!(j["perturbed"]["verdict"], "differs");
+    }
+
+    /// `Difference`'s region documents itself as always present on a difference
+    /// this tool produced, and a control's difference is one it produced.
+    ///
+    /// It was absent, because the control compared through `compare`, which
+    /// folds several regions into one verdict and keeps the difference while
+    /// losing which region it came from — the same reason `differ::by_region`
+    /// exists for the main verdict. A client reading a control to find out
+    /// **where** the perturbation was noticed got an offset and nothing to
+    /// place it against; with more than one span in `produced`, nothing to
+    /// guess with either.
+    #[test]
+    fn a_control_says_which_region_it_was_noticed_in() {
+        let ran = Control::of(&crate::perturb::Control::Ran {
+            perturbation: "one byte of the span".into(),
+            plain: crate::perturb::Located::of(
+                awaseru_core::Verdict::Agrees {
+                    compared: 544,
+                    moved: 160,
+                },
+                None,
+            ),
+            perturbed: crate::perturb::Located::of(
+                awaseru_core::Verdict::Differs(awaseru_core::Difference::new(
+                    0x200, 0xA5, 0x5A, 1, 544,
+                )),
+                Some("a-region".into()),
+            ),
+        });
+        let j = json(&ran);
+        assert_eq!(
+            j["perturbed"]["difference"]["region"], "a-region",
+            "the offset has to be placeable: {j}"
+        );
+        assert_eq!(j["perturbed"]["difference"]["first"], 0x200);
+
+        // And the agreeing half has none to carry, which is the only case
+        // where absent is right.
+        assert!(
+            j["plain"].get("difference").is_none(),
+            "agreement has no difference to place: {j}"
+        );
     }
 
     /// §4.3's stop carries whether it arrived, because every client would

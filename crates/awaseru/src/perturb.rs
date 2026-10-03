@@ -51,7 +51,7 @@
 //! seconds.
 
 use awaseru_core::snapshot::{NotComparable, Provenance, Snapshot};
-use awaseru_core::{Comparison, Verdict, compare};
+use awaseru_core::Verdict;
 
 use crate::arrive::Arriver;
 use crate::routine::{self, Given, Routine, Span};
@@ -97,6 +97,35 @@ impl Perturbation {
 ///
 /// An enum and not an `Option`, so that the absence has a `Display` of its own.
 /// A report whose control field read "None" would be read as "no problem".
+/// A verdict and the region a difference in it belongs to.
+///
+/// The two travel together because a comparison that folds several regions
+/// keeps the difference and loses which region it came from — the same reason
+/// `differ::by_region` exists for the main verdict. A control reported an
+/// offset with no region to place it against until this type did, and the wire
+/// documents that region as always present on a difference this tool produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Located {
+    pub verdict: Verdict,
+    /// `None` when the verdict is not a difference, which is the only case
+    /// where there is no region to name.
+    pub region: Option<String>,
+}
+
+impl Located {
+    pub fn of(verdict: Verdict, region: Option<String>) -> Located {
+        Located { verdict, region }
+    }
+}
+
+impl std::fmt::Display for Located {
+    /// As its verdict. The region is there for a client placing an offset, not
+    /// for a sentence — §5.4's localisation is what puts a region into prose.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.verdict)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Control {
     /// Nobody ran one. **The tool cannot force a control and records its
@@ -107,9 +136,9 @@ pub enum Control {
         /// Which perturbation, by name.
         perturbation: String,
         /// The verdict with the inputs as given.
-        plain: Verdict,
+        plain: Located,
         /// And with the named input changed.
-        perturbed: Verdict,
+        perturbed: Located,
     },
 }
 
@@ -217,12 +246,14 @@ pub fn control(
     candidate: &Snapshot,
     perturbation: &Perturbation,
 ) -> Result<Control, Error> {
-    let verdict_of = |measured: &routine::Measured| -> Result<Verdict, Error> {
-        Ok(compare(Comparison {
-            seed: &measured.seed,
-            reference: &measured.result,
-            candidate,
-        })?)
+    // Compared region by region rather than through `compare`, for the reason
+    // `differ::by_region`'s comment gives: the fold keeps the difference and
+    // loses which region it came from. A control that reported an offset with
+    // no region left a client unable to place it, and with more than one span
+    // in `produced` unable to guess either.
+    let verdict_of = |measured: &routine::Measured| -> Result<Located, Error> {
+        let (verdict, region) = crate::differ::by_region(measured, candidate, routine)?;
+        Ok(Located::of(verdict, region))
     };
 
     routine::rewind_if_unanchored(arriver, routine)?;
@@ -269,13 +300,13 @@ mod tests {
         let not_run = Control::NotRun;
         let unnoticed = Control::Ran {
             perturbation: "a byte the routine never reads".into(),
-            plain: agrees(),
-            perturbed: agrees(),
+            plain: Located::of(agrees(), None),
+            perturbed: Located::of(agrees(), None),
         };
         let noticed = Control::Ran {
             perturbation: "the first input byte".into(),
-            plain: agrees(),
-            perturbed: differs(),
+            plain: Located::of(agrees(), None),
+            perturbed: Located::of(differs(), Some("work-ram".into())),
         };
 
         assert_eq!(not_run.noticed(), None, "not run is not the same as no");
@@ -324,8 +355,8 @@ mod tests {
     fn a_verdict_that_moved_at_all_counts_as_noticed() {
         let ran = |plain, perturbed| Control::Ran {
             perturbation: "x".into(),
-            plain,
-            perturbed,
+            plain: Located::of(plain, None),
+            perturbed: Located::of(perturbed, None),
         };
         assert_eq!(
             ran(

@@ -149,13 +149,23 @@ fn a_control_that_should_be_noticed_is_and_one_that_should_not_is_not() {
             plain, perturbed, ..
         } => {
             assert!(
-                matches!(plain, Verdict::Agrees { .. }),
+                matches!(plain.verdict, Verdict::Agrees { .. }),
                 "the candidate is the right implementation, so the plain verdict agrees: {plain}"
             );
             assert!(
-                matches!(perturbed, Verdict::Differs(_)),
+                matches!(perturbed.verdict, Verdict::Differs(_)),
                 "and with the input changed the reference must leave the candidate behind: \
                  {perturbed}"
+            );
+            // The region travels with the difference, so a client reading a
+            // control can place the offset it is given.
+            assert!(
+                perturbed.region.is_some(),
+                "a difference this tool produced names its region: {perturbed:?}"
+            );
+            assert!(
+                plain.region.is_none(),
+                "and agreement has none to name: {plain:?}"
             );
         }
         Control::NotRun => panic!("a control was run"),

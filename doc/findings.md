@@ -1039,3 +1039,34 @@ check and belongs with whoever makes §11.4's.
 The pattern is the one this whole frente kept finding, in its sharpest form yet:
 **a check that passes is a statement about what it checks, and reading its
 output is not the same as reading its header.**
+
+## 33. A control reported an offset with no region to place it against
+
+**Found by using the tool from outside, in the first measurement that asked for
+a control.** `Difference`'s `region` documents itself as *always present on a
+difference this tool produced*, and §13's Q16 records that being answered. A
+control's difference is one the tool produced, and it was absent.
+
+The cause is the one the differ's own comment already names. Comparing through
+`compare` folds several regions into one verdict: the fold keeps the difference
+and loses which region it came from, which is exactly why `by_region` exists
+for the main verdict. The control was still going through the fold.
+
+So a client reading a control to find out **where** the perturbation was noticed
+got an offset and nothing to place it against. With one span that is guessable;
+with more than one — and the shape allows a list — there is nothing to guess
+with, and the offset is then a number that looks precise and is not.
+
+**Fixed.** The control compares region by region like the main verdict, and the
+two verdicts it reports each carry their own region rather than the report's.
+That last part matters: a control can be noticed in a region the main comparison
+agreed about, and naming the main one would have been worse than naming none.
+
+Nothing on the wire changed. `region` was already optional and already
+documented as present; this made the documentation true.
+
+The shape of the defect is worth more than the defect. **A field that documents
+itself as always present, with one code path that does not set it, reads as
+correct in every test that uses the other path.** The tests were right about
+what they covered, and nobody had asked a control about a real region until
+somebody outside the project did.

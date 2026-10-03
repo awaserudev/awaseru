@@ -368,7 +368,11 @@ pub fn examine(
                 perturbation,
             )?;
             let repeated = match &control {
-                Control::Ran { plain, .. } => Some(plain.clone()),
+                // §2.5 for free: the control's plain run is the same
+                // measurement a second time, so its verdict is what a repeat
+                // would have given. The region beside it belongs to the
+                // control's report, not to this one.
+                Control::Ran { plain, .. } => Some(plain.verdict.clone()),
                 Control::NotRun => None,
             };
             (control, repeated)
@@ -394,11 +398,17 @@ pub fn examine(
 /// Returns the folded verdict (§2.3's ranking is `fold`'s, not this
 /// function's) and the name of the region whose verdict it is, when that
 /// verdict is a difference.
-fn by_region(
+/// Compares region by region, keeping which region a difference came from.
+///
+/// `NotComparable` rather than this module's `Error`, because that is the only
+/// thing this can fail at — and because `perturb` needs to call it, which a
+/// return type naming the differ's whole error would have made awkward in the
+/// one direction that matters.
+pub(crate) fn by_region(
     measured: &Measured,
     candidate: &awaseru_core::Snapshot,
     routine: &Routine,
-) -> Result<(Verdict, Option<String>), Error> {
+) -> Result<(Verdict, Option<String>), awaseru_core::snapshot::NotComparable> {
     let comparison = Comparison {
         seed: &measured.seed,
         reference: &measured.result,
@@ -474,6 +484,7 @@ pub fn report_of(parts: Parts) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::perturb::Located;
     use awaseru_core::verdict::Difference;
     use awaseru_core::{Position, Wrote};
 
@@ -499,8 +510,8 @@ mod tests {
     fn noticed() -> Control {
         Control::Ran {
             perturbation: "the first input byte".into(),
-            plain: agrees(),
-            perturbed: differs(),
+            plain: Located::of(agrees(), None),
+            perturbed: Located::of(differs(), Some("work-ram".into())),
         }
     }
 
@@ -616,8 +627,8 @@ mod tests {
             None,
             Control::Ran {
                 perturbation: "a byte nothing reads".into(),
-                plain: differs(),
-                perturbed: differs(),
+                plain: Located::of(differs(), Some("work-ram".into())),
+                perturbed: Located::of(differs(), Some("work-ram".into())),
             },
         );
         assert!(!unnoticed.complete());
