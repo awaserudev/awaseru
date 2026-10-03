@@ -237,8 +237,19 @@ pub struct Routine {
     pub entry: u64,
     /// What bounds the measurement (§4.5).
     pub returns_to: u64,
-    /// §4.4's budget, in instructions.
+    /// §4.4's budget for the measurement, in instructions — from the entry to
+    /// the return, and §4.5's rule that it must not run past its subject.
     pub within: u64,
+    /// The budget for **reaching** the entry, when that is a different number.
+    ///
+    /// Absent means `within`, which is what a routine written before this
+    /// field existed meant and is right whenever the routine runs soon after
+    /// its anchor. The two runs have nothing in common — reaching can be a
+    /// whole frame of software, running a routine is as long as the routine —
+    /// and one number cannot bound both without being wrong for one of them
+    /// (`doc/findings.md`'s thirty-sixth entry).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaching: Option<u64>,
     /// The anchor to begin from (§4.7), by name. Absent means wherever the
     /// reference already is, which repeats only if somebody made it so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -990,6 +1001,7 @@ impl Routine {
             entry: self.entry,
             returns_to: self.returns_to,
             within: self.within,
+            reaching: self.reaching,
             from: self.from,
             writes,
         }
@@ -1225,6 +1237,7 @@ mod tests {
                     entry: 0x8020,
                     returns_to: 0x800F,
                     within: 20_000,
+                    reaching: None,
                     from: None,
                 },
                 given: vec![Span {
@@ -1576,6 +1589,7 @@ mod tests {
                     entry: 0,
                     returns_to: 1,
                     within: 1,
+                    reaching: None,
                     from: None,
                 },
                 given: Vec::new(),

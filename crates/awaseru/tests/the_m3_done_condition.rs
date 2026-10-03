@@ -83,6 +83,7 @@ fn routine_writing(span: Span) -> Routine {
         entry: expected::ROUTINE_ENTRY,
         returns_to: expected::ROUTINE_RETURN,
         within: BUDGET,
+        reaching: None,
         from: None,
         writes: vec![span],
     }

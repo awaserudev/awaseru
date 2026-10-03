@@ -94,6 +94,7 @@ fn one_examination_answers_every_part_of_section_five() {
         entry: expected::ROUTINE_ENTRY,
         returns_to: expected::ROUTINE_RETURN,
         within: BUDGET,
+        reaching: None,
         from: None,
         writes: vec![Span::new(
             "work-ram",

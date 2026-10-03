@@ -60,6 +60,7 @@ fn examine(produced: Vec<u8>, localise: bool) -> (Command, Vec<u8>) {
                 entry: expected::ROUTINE_ENTRY,
                 returns_to: expected::ROUTINE_RETURN,
                 within: BUDGET,
+                reaching: None,
                 from: None,
             },
             given: vec![span(expected::ROUTINE_INPUT_AT)],

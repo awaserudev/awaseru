@@ -199,6 +199,7 @@ fn a_client_drives_the_whole_cycle_over_stdin_and_stdout() {
             entry: expected::ROUTINE_ENTRY,
             returns_to: expected::ROUTINE_RETURN,
             within: BUDGET,
+            reaching: None,
             from: None,
         },
         given: vec![span(expected::ROUTINE_INPUT_AT)],
@@ -319,6 +320,7 @@ fn the_wire_carries_every_part_of_section_five_and_cuts_the_payload_by_its_spans
         entry: expected::ROUTINE_ENTRY,
         returns_to: expected::ROUTINE_RETURN,
         within: BUDGET,
+        reaching: None,
         from: None,
     };
 

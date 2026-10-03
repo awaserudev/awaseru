@@ -839,6 +839,7 @@ mod tests {
                             entry: 0x8000,
                             returns_to: 0x8010,
                             within: 100,
+                            reaching: None,
                             from: None,
                         },
                         given: vec![span(0, 4)],

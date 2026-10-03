@@ -40,6 +40,7 @@ fn the_routine() -> Routine {
         entry: expected::ROUTINE_ENTRY,
         returns_to: expected::ROUTINE_RETURN,
         within: BUDGET,
+        reaching: None,
         // No anchor: this fixture reaches its routine in a few hundred
         // instructions, so an anchor would cost more than it saves. §4.10's
         // last piece of guidance, taken.

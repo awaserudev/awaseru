@@ -81,8 +81,32 @@ pub struct Routine {
     /// caller passes per measurement so that it cannot be forgotten once and
     /// remembered thereafter.
     pub returns_to: u64,
-    /// How many instructions reaching each of those may spend (§4.4).
+    /// How many instructions the measurement may spend — from the entry to
+    /// the return, and §4.5's rule that it must not run past its subject.
+    ///
+    /// This is the bound that matters. A routine is as long as a routine, so
+    /// this number is small and knowable: a person can count the instructions
+    /// in the listing and show the arithmetic, which is what keeps it from
+    /// being a guess wearing a number.
     pub within: u64,
+    /// How many instructions **reaching** the entry may spend, when that is a
+    /// different number.
+    ///
+    /// `None` means `within`, which is what this field did before it existed
+    /// and is right whenever the routine runs soon after the anchor.
+    ///
+    /// It exists because the two runs have nothing in common
+    /// (`doc/findings.md`'s thirty-sixth entry). Reaching a routine depends on
+    /// how far the anchor is from it and can be a whole frame of software;
+    /// running one is as long as the routine. A budget large enough to reach a
+    /// distant routine no longer bounds the measurement, and one tight enough
+    /// to bound it cannot reach — **one field cannot be both**, and the first
+    /// use of this tool got away with it only because its subject happened to
+    /// be reached within a tight bound on itself.
+    ///
+    /// Additive on purpose: `within` keeps its name and its meaning, and a
+    /// routine written before this field existed behaves exactly as it did.
+    pub reaching: Option<u64>,
     /// The anchor to begin from, by name (§4.7). `None` means the reference
     /// wherever it already is, which is reproducible only if somebody else
     /// made it so.
@@ -332,7 +356,7 @@ pub(crate) fn enter_and_seed(
 
     let stop = arriver.run(Bound::Address {
         address: routine.entry,
-        within: routine.within,
+        within: reaching_budget(routine),
     })?;
     if stop.reason
         != (Reason::AddressHit {
@@ -353,6 +377,17 @@ pub(crate) fn enter_and_seed(
     }
 
     Ok(arrival)
+}
+
+/// Which budget bounds the run that **reaches** the entry.
+///
+/// A named decision rather than an `unwrap_or` inline, because it is the whole
+/// of finding 36's fix and a decision inline cannot be mutated against. §4.5
+/// bounds the measurement; this bounds the search for its start, and the two
+/// are different numbers. Absent means they are the same, which is right
+/// whenever the routine runs soon after its anchor.
+fn reaching_budget(routine: &Routine) -> u64 {
+    routine.reaching.unwrap_or(routine.within)
 }
 
 /// Runs one routine and brings back what it did — §5.6's five steps.
@@ -403,4 +438,47 @@ pub fn measure(
         stop,
         took: began.elapsed(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Finding 36's fix, both answers.
+    ///
+    /// One field cannot bound two runs that have nothing in common: reaching a
+    /// routine can be a whole frame of software, running one is as long as the
+    /// routine, and §4.5 needs the second bound tight. The mutation this
+    /// catches is using `within` for both, which is what the code did — and
+    /// which the first use of this tool got away with only because its subject
+    /// happened to be reached within a tight bound on itself.
+    #[test]
+    fn reaching_has_its_own_budget_and_falls_back_to_the_measurements() {
+        let mut routine = Routine {
+            name: "r".into(),
+            entry: 0x8000,
+            returns_to: 0x8010,
+            within: 2_000,
+            reaching: None,
+            from: None,
+            writes: Vec::new(),
+        };
+
+        // Absent: the two are the same number, which is what a routine written
+        // before this field existed meant.
+        assert_eq!(reaching_budget(&routine), 2_000);
+
+        // Present: reaching is allowed far more than the measurement, and the
+        // measurement's own bound does not move.
+        routine.reaching = Some(5_000_000);
+        assert_eq!(reaching_budget(&routine), 5_000_000);
+        assert_eq!(
+            routine.within, 2_000,
+            "§4.5's bound on the measurement must not move when reaching is widened"
+        );
+
+        // And the other way round: reached immediately, measured loosely.
+        routine.reaching = Some(1);
+        assert_eq!(reaching_budget(&routine), 1);
+    }
 }

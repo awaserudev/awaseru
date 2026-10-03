@@ -174,6 +174,18 @@ impl Report {
     pub fn moved(&self) -> Option<usize> {
         match &self.compared {
             Verdict::Agrees { moved, .. } => Some(*moved),
+            // Zero, and **said** rather than left absent. §2.2's vacuous
+            // verdict means the reference changed none of the bytes compared,
+            // so the count happened and came to nothing — which is the reason
+            // for the verdict, not a count nobody took.
+            //
+            // `None` and `Some(0)` are different answers to a client: one says
+            // nobody counted and the other says the count was none. A client
+            // deciding whether a measurement was real by asking whether there
+            // is a count got the wrong answer in exactly the case where
+            // counting decided everything (`doc/findings.md`'s thirty-fifth
+            // entry).
+            Verdict::NotDetermined(Undetermined::Vacuous { .. }) => Some(0),
             Verdict::Differs(_) | Verdict::NotDetermined(_) => None,
         }
     }
@@ -709,12 +721,29 @@ mod tests {
     /// than zero where there is not — a report that said "moved 0" for a
     /// difference would be stating something it does not know.
     #[test]
-    fn movement_is_reported_for_agreement_and_absent_elsewhere() {
+    fn movement_is_reported_for_agreement_and_for_a_vacuous_comparison() {
         assert_eq!(report(agrees(), None, noticed()).moved(), Some(64));
         assert_eq!(report(differs(), None, noticed()).moved(), None);
+        // This asserted `None` until finding 35. A vacuous verdict exists
+        // *because* the count was zero, so reporting it as uncounted said the
+        // opposite of what happened — and the test that held that is the
+        // record, so it is rewritten rather than worked around.
         assert_eq!(
             report(
                 Verdict::NotDetermined(Undetermined::Vacuous { compared: 64 }),
+                None,
+                noticed()
+            )
+            .moved(),
+            Some(0)
+        );
+        // Every other reason for not determining a verdict really has no
+        // count, and those stay absent.
+        assert_eq!(
+            report(
+                Verdict::NotDetermined(Undetermined::RegionAbsent {
+                    region: "nowhere".into()
+                }),
                 None,
                 noticed()
             )
@@ -754,4 +783,35 @@ mod tests {
         // §4.12.
         assert!(said.contains("The reference began"), "{said}");
     }
+    /// §5.2's count where it is zero, and the difference between the two ways
+    /// of saying nothing.
+    ///
+    /// `None` means nobody counted; `Some(0)` means the count was none. A
+    /// vacuous verdict exists *because* the count was none, so reporting it as
+    /// uncounted told a client the opposite of what happened — in exactly the
+    /// case where the count decided the verdict.
+    #[test]
+    fn a_vacuous_comparison_reports_a_movement_of_zero_and_not_an_absent_one() {
+        let vacuous = report(
+            Verdict::NotDetermined(Undetermined::Vacuous { compared: 544 }),
+            None,
+            noticed(),
+        );
+        assert_eq!(
+            vacuous.moved(),
+            Some(0),
+            "the count happened and came to nothing, which is why the verdict is vacuous"
+        );
+
+        // And the two kinds of nothing stay apart: a difference carries no
+        // movement count at all, which is a different gap and is recorded as
+        // one.
+        let differing = report(differs(), None, noticed());
+        assert_eq!(differing.moved(), None);
+
+        // Agreement still reports its own.
+        let agreeing = report(agrees(), None, noticed());
+        assert_eq!(agreeing.moved(), Some(64));
+    }
+
 }
