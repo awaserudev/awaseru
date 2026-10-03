@@ -35,6 +35,7 @@ on until something was done about it; **slowed** means it cost real time;
 | 13 | the keyboard that reached no controller | annoyed | a note for `doc/backend.md` |
 | 14 | `localise` answers `NothingWrote` on a machine where the routine has not run | annoyed | a fix worth making — found in M6 |
 | 15 | forgetting coverage forgets write recency too | **would have blocked** | a note for `doc/backend.md`, and a shape to watch — found in M6 |
+| 16 | a symbol given as an address cannot be checked against the machine at all | **slowed**, and it is a gap §9.3 does not know it has | a question for §13 — found in M7 |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -438,3 +439,32 @@ that order on purpose. What is owed is the honest name or the honest refusal:
 either the verb says it clears the whole record, or the backend grows a way to
 clear one third of it. `doc/backend.md` records the behaviour beside the
 measurements.
+
+# Found in M7
+
+## 16. §9.3's location check cannot see an address
+
+**Slowed**, in the sense that half of §9.3's last rule turns out to be
+uncheckable — and §9.3 does not know it.
+
+> "Locations fall inside a region the backend exposes."
+
+§9.1 allows a location to be written two ways: a region and an offset, or an
+address. The first is checkable and is checked, down to the byte: a symbol
+ending exactly at a region's last byte is inside it and one further is not.
+
+**The second cannot be checked at all.** A region set is names, sizes and access
+— there is nothing in it about which addresses reach which region, and §3.1 is
+explicit that on some machines one byte is reachable through more than one
+address. So the host has no address-to-region map to check against, and building
+one would be guessing at something that is the backend's to know.
+
+Refusing every address-form symbol instead would make the format useless for
+what it is most used for: an entry point is an address, and the real mapping's
+entry, return and both buffer bases are all written that way. So they pass
+unchecked, and a symbol at `0xDEADBEEF` loads happily against a machine with
+32 KiB of cartridge.
+
+That is recorded rather than hidden, and the test asserting it says why. What
+would close it is a backend saying which addresses reach which region — which is
+a capability (§7.3), not a fix, and nobody has needed it yet (§2.4).

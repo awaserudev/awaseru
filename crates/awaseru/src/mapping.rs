@@ -498,6 +498,108 @@ impl std::fmt::Display for GraphError {
 
 impl std::error::Error for GraphError {}
 
+/// Why a mapping does not fit the machine it is for — §9.3's last check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FitError {
+    /// A region name no backend here has (§3.1, §8.5 — the names are the
+    /// backend's, and a mapping written for another one will say so here).
+    NoSuchRegion {
+        symbol: String,
+        region: String,
+        /// What the check was made against, because "no such region" without
+        /// the list is a message that sends somebody looking in the wrong file.
+        regions: Vec<String>,
+    },
+    /// Inside a region that exists, and past its end.
+    Outside {
+        symbol: String,
+        region: String,
+        offset: usize,
+        length: usize,
+        size: usize,
+    },
+}
+
+impl std::fmt::Display for FitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FitError::NoSuchRegion {
+                symbol,
+                region,
+                regions,
+            } => write!(
+                f,
+                "the symbol `{symbol}` is in the region `{region}`, which this backend does not \
+                 expose. It exposes: {}",
+                regions.join(", ")
+            ),
+            FitError::Outside {
+                symbol,
+                region,
+                offset,
+                length,
+                size,
+            } => write!(
+                f,
+                "the symbol `{symbol}` covers {length} byte(s) from {offset} of `{region}`, \
+                 which holds {size}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FitError {}
+
+impl Mapping {
+    /// §9.3's last check: locations fall inside a region the backend exposes.
+    ///
+    /// Asked where the region set is in hand (§6.5), so that a mapping written
+    /// for another machine is refused on arrival rather than loaded and left to
+    /// fail at the first measurement that uses it.
+    ///
+    /// # What this cannot check, and says so rather than pretending
+    ///
+    /// **A symbol given as an address is not checked at all.** §9.1 allows both
+    /// forms and §9.3 asks about "a region the backend exposes" — but a region
+    /// set is names and sizes, with nothing about which addresses reach them,
+    /// and §3.1 is explicit that on some machines one byte is reachable through
+    /// more than one address. So the host has no address-to-region map to check
+    /// against, and inventing one would be guessing at a mapping that is the
+    /// backend's to know.
+    ///
+    /// Refusing every address-form symbol instead would make the format useless
+    /// for the thing it is most used for — an entry point is an address — so
+    /// they pass unchecked, and that they pass unchecked is recorded in
+    /// `doc/findings.md` rather than left to be discovered.
+    pub fn fits(&self, regions: &awaseru_core::Regions) -> Result<(), FitError> {
+        for symbol in self.symbols.values() {
+            let Where::In { region, offset } = &symbol.at else {
+                continue;
+            };
+            let Some(found) = regions.get(region) else {
+                return Err(FitError::NoSuchRegion {
+                    symbol: symbol.name.clone(),
+                    region: region.clone(),
+                    regions: regions.names().map(str::to_string).collect(),
+                });
+            };
+            // A point is one byte for this purpose: a symbol at the last byte
+            // of a region is inside it, and one past the end is not.
+            let length = symbol.length.unwrap_or(1);
+            if found.span(*offset, length).is_err() {
+                return Err(FitError::Outside {
+                    symbol: symbol.name.clone(),
+                    region: region.clone(),
+                    offset: *offset,
+                    length,
+                    size: found.size,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Loads several files as one graph — §M7's first clause.
 ///
 /// Each file arrives with the name it came from, because every refusal below
@@ -1197,5 +1299,129 @@ inside = ["a"]
             "`measured` does not say measured HOW, and §9.2 wants an entry whose derivation \
              may be unshareable to be identifiable rather than mixed in"
         );
+    }
+
+    // ------------------------------------------ §9.3 against the machine --
+
+    fn machine() -> awaseru_core::Regions {
+        use awaseru_core::{Access, Region, Regions};
+        Regions::new(vec![
+            Region::bytes("program-rom", 0x8000, Access::ReadOnly),
+            Region::bytes("work-ram", 0x200, Access::ReadWrite),
+        ])
+    }
+
+    fn mapped(region: &str, offset: usize, length: &str) -> Result<Mapping, GraphError> {
+        one(&format!(
+            r#"
+[[symbol]]
+name = "buffer"
+region = "{region}"
+offset = {offset}
+{length}
+description = "Somewhere."
+provenance = {{ how = "measured", note = "seen" }}
+"#
+        ))
+    }
+
+    /// A mapping valid on its own and wrong for THIS backend is refused when
+    /// the region set is in hand, not left to fail at the first measurement.
+    #[test]
+    fn a_region_this_backend_does_not_have_is_refused_and_lists_what_it_has() {
+        let map = mapped("sound-ram", 0, "length = 4").expect("it is a graph");
+        let err = map.fits(&machine()).expect_err("this machine has no such region");
+        match &err {
+            FitError::NoSuchRegion { symbol, region, regions } => {
+                assert_eq!(symbol, "buffer");
+                assert_eq!(region, "sound-ram");
+                assert_eq!(regions, &vec!["program-rom".to_string(), "work-ram".to_string()]);
+            }
+            other => panic!("got {other}"),
+        }
+        assert!(
+            err.to_string().contains("work-ram"),
+            "the refusal lists what IS exposed, or somebody looks in the wrong file: {err}"
+        );
+
+        // The near miss: the same mapping naming a region this machine has.
+        assert!(mapped("work-ram", 0, "length = 4").expect("graph").fits(&machine()).is_ok());
+    }
+
+    /// The boundary, from both sides. A symbol ending exactly at the last byte
+    /// is inside; one byte further is not.
+    #[test]
+    fn the_end_of_a_region_is_inside_it_and_one_past_is_not() {
+        let last = mapped("work-ram", 0x1FC, "length = 4").expect("graph");
+        assert!(last.fits(&machine()).is_ok(), "ending exactly at the end");
+
+        let over = mapped("work-ram", 0x1FD, "length = 4").expect("graph");
+        assert_eq!(
+            over.fits(&machine()),
+            Err(FitError::Outside {
+                symbol: "buffer".into(),
+                region: "work-ram".into(),
+                offset: 0x1FD,
+                length: 4,
+                size: 0x200
+            })
+        );
+
+        // A point with no length is one byte, so the last byte is in and the
+        // one after it is out — the case an `unwrap_or(0)` would get wrong.
+        assert!(mapped("work-ram", 0x1FF, "").expect("graph").fits(&machine()).is_ok());
+        assert!(mapped("work-ram", 0x200, "").expect("graph").fits(&machine()).is_err());
+    }
+
+    /// What this check cannot do, asserted so that nobody later believes it
+    /// does. An address form is not checked, because a region set is names and
+    /// sizes and says nothing about which addresses reach them (§3.1).
+    #[test]
+    fn an_address_is_not_checked_and_that_is_recorded_rather_than_hidden() {
+        let absurd = one(
+            r#"
+[[symbol]]
+name = "entry"
+address = 0xDEAD_BEEF
+description = "An address far outside anything this machine has."
+provenance = { how = "measured", note = "seen" }
+"#,
+        )
+        .expect("it is a graph");
+        assert!(
+            absurd.fits(&machine()).is_ok(),
+            "an address form passes unchecked — the host has no address-to-region map, and \
+             refusing every address would make the format useless for entry points. \
+             doc/findings.md records that this is unchecked"
+        );
+    }
+
+    /// Several symbols, and the one that does not fit is the one named.
+    #[test]
+    fn the_symbol_that_does_not_fit_is_the_one_named() {
+        let map = one(
+            r#"
+[[symbol]]
+name = "fine"
+region = "work-ram"
+offset = 0
+length = 4
+description = "Inside."
+provenance = { how = "measured", note = "seen" }
+
+[[symbol]]
+name = "too-far"
+region = "work-ram"
+offset = 0x1FF
+length = 64
+description = "Past the end."
+provenance = { how = "measured", note = "seen" }
+"#,
+        )
+        .expect("graph");
+        match map.fits(&machine()).expect_err("one of them is wrong") {
+            FitError::Outside { symbol, .. } => assert_eq!(symbol, "too-far"),
+            other => panic!("got {other}"),
+        }
     }
 }
