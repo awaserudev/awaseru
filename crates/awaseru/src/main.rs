@@ -304,6 +304,24 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         (None, None) => bound,
     };
 
+    // §2.4, applied to arguments: an anchor carries its own definition, so a
+    // bound beside one is two instructions and the tool does not pick between
+    // them. It used to discard the bound in silence, which made §4.8's fourth
+    // step — run the same bound onward from a replay and from a resume —
+    // look askable and do nothing.
+    if let (Some(_), Some(bound)) = (&anchor, &bound) {
+        return Err(format!(
+            "`--anchor` carries its own definition (§4.7), so the {} beside it would be a \
+             second instruction about how far to run. One or the other: drop the bound to \
+             arrive at the anchor, or drop `--anchor` to run it",
+            match bound {
+                Bound::Frames(_) => "`--frames`",
+                Bound::Instructions(_) => "`--instructions`",
+                _ => "`--address`",
+            }
+        ));
+    }
+
     Ok(Command::Run {
         plan: Box::new(Plan {
             shared,
@@ -343,6 +361,10 @@ mod tests {
             Command::Run { plan, .. } => *plan,
             other => panic!("expected a run, got {other:?}"),
         }
+    }
+
+    fn parse_of(words: &[&str]) -> Result<Command, String> {
+        parse_args(words)
     }
 
     fn digest_only_of(words: &[&str]) -> bool {
@@ -410,6 +432,34 @@ mod tests {
         assert!(digest_only_of(&["--state-digest"]));
     }
 
+    /// A bound beside an anchor is refused rather than discarded — §2.4.
+    ///
+    /// It used to be ignored in silence, which is how `--anchor X --frames 300`
+    /// came to print the digest of X and say nothing. Everything else in this
+    /// tool refuses rather than choosing between two instructions, and this is
+    /// the one place that chose.
+    #[test]
+    fn a_bound_beside_an_anchor_is_refused_and_not_ignored() {
+        for bound in [
+            vec!["--frames", "300"],
+            vec!["--instructions", "900"],
+            vec!["--address", "C40000", "--within", "1000"],
+        ] {
+            let mut argv = vec!["--anchor", "booted"];
+            argv.extend(bound.iter().copied());
+            let err = parse_of(&argv).expect_err("two instructions, no guessing");
+            assert!(
+                err.contains("--anchor") && err.contains("§4.7"),
+                "the refusal names both halves: {err}"
+            );
+        }
+
+        // And the half that keeps it from being a blanket refusal: each still
+        // works alone.
+        assert_eq!(plan_of(&["--frames", "300"]).bound, Bound::Frames(300));
+        assert_eq!(plan_of(&["--anchor", "booted"]).anchor.as_deref(), Some("booted"));
+    }
+
     /// An anchor replaces the bound rather than adding to it, because an
     /// anchor carries its own definition (§4.7).
     #[test]
@@ -419,8 +469,7 @@ mod tests {
         assert_eq!(
             plan.bound,
             Bound::Frames(1),
-            "the bound keeps its default and is ignored, rather than being made to mean \
-             something next to an anchor"
+            "the bound keeps its default, which is what an anchor's own definition replaces"
         );
         assert!(
             plan.cache.to_string_lossy().contains("awaseru"),

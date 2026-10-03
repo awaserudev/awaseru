@@ -22,16 +22,16 @@ on until something was done about it; **slowed** means it cost real time;
 |---|---|---|---|
 | 1 | a bounded run costs about as much as the request around it | slowed | a note for `doc/` — half of it is already fixed |
 | 2 | input replay is in the machine and not in the host | **blocked** | a design decision, and §13's Q14 records it |
-| 3 | the emulator's chatter lands on the host's own stdout | annoyed | a fix worth making |
-| 4 | a frame bound reports a position it then apologises for | annoyed | a fix worth making, in the printer |
-| 5 | the two interfaces key the anchor cache differently, and one keys it by a path | **blocked** | a fix worth making, and it is one line |
+| 3 | the emulator's chatter lands on the host's own stdout | annoyed | a fix worth making — **not made**: it needs a file-descriptor redirect, which is `unsafe`, and §17.1 keeps that in the backend's `ffi` module. The fix has a home and is not a cheap one |
+| 4 | a frame bound reports a position it then apologises for | annoyed | **fixed in U10** |
+| 5 | the two interfaces key the anchor cache differently, and one keys it by a path | **blocked** | **fixed in U10** — one `Loaded::provenance`, built in one place, with a test |
 | 6 | a client cannot arrive at an anchor | **blocked** | a design decision: a verb §8 does not have |
-| 7 | a bound given with an anchor is discarded in silence | annoyed | a fix worth making |
+| 7 | a bound given with an anchor is discarded in silence | annoyed | **fixed in U10** — refused now, naming both halves |
 | 8 | an ancestor's cached blob never shortens the walk | slowed | a question for §13 |
 | 9 | the wire has no write bound, so §5.4 had to be rebuilt by hand | slowed | a design decision: §8 gains a bound |
 | 10 | nothing in the tool helps you find a routine | slowed | a note for `doc/`, and a question for §13 |
-| 11 | a vacuous verdict cannot say why nothing moved | annoyed | a fix worth making |
-| 12 | a control that is not noticed has a third explanation | annoyed | a fix worth making, in the wording |
+| 11 | a vacuous verdict cannot say why nothing moved | annoyed | a fix worth making — **not made**: the distance is known by the caller and not by `compare`, so saying it means a new field on the wire, which is §8's to decide (§13's Q17) |
+| 12 | a control that is not noticed has a third explanation | annoyed | **fixed in U10** |
 | 13 | the keyboard that reached no controller | annoyed | a note for `doc/backend.md` |
 
 Three blocked the cycle and all three are about the same boundary: what the

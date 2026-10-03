@@ -19,13 +19,26 @@
 //!
 //! # Why an unnoticed control is not a failure
 //!
-//! Because there are two reasons for one, and the tool cannot tell them apart:
-//! the comparison may be blind, or the perturbed input may be one the routine
-//! genuinely does not read. Both are worth knowing and neither is an error. The
-//! honest report is "this comparison does not discriminate this perturbation",
-//! and what that means is the caller's to decide — which is exactly what §5.3
-//! asks for, since a perturbation nobody would notice proves nothing either
-//! way.
+//! Because there are **three** reasons for one and the tool cannot tell them
+//! apart:
+//!
+//! 1. the comparison is blind — it would not notice a difference that is there;
+//! 2. the routine never reads what was changed;
+//! 3. the routine reads it and is **correctly indifferent** to it, because what
+//!    it asks of that input is coarser than the input.
+//!
+//! The third is a confirmation and the first two are faults, and for a while
+//! this module named only the first two — so a user running exactly the pair
+//! §5.3 asks for, one change that should be noticed and one that should not,
+//! was told that the half which behaved as intended might be a problem. That
+//! was measured in M5, on a routine that asks of each input byte only whether
+//! part of it is zero: changing such a byte to another the routine cannot tell
+//! apart is the best control there is, and it reads as unnoticed.
+//!
+//! The honest report is "this comparison does not discriminate this
+//! perturbation", and what that means is the caller's to decide — which is
+//! exactly what §5.3 asks for, since a perturbation nobody would notice proves
+//! nothing either way.
 //!
 //! # Why both verdicts are measured here
 //!
@@ -137,9 +150,11 @@ impl std::fmt::Display for Control {
                 perturbed,
             } if plain == perturbed => write!(
                 f,
-                "the control `{perturbation}` was NOT noticed: changing it left the verdict at \
-                 `{plain}`, so this comparison cannot discriminate it. Either the comparison is \
-                 blind or the routine does not read what was changed"
+                "the control `{perturbation}` was NOT noticed: changing it left the verdict \
+                 at `{plain}`, so this comparison cannot discriminate it. That is a fault if \
+                 the routine reads what was changed and depends on it, and the expected answer \
+                 if the routine does not read it — or reads it and is indifferent to it, which \
+                 is what a control chosen to go unnoticed is for"
             ),
             Control::Ran {
                 perturbation,

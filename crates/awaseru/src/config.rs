@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use toml::Value;
 
+use awaseru_core::snapshot::Provenance;
 use awaseru_core::anchor::{Anchor, AnchorError, Anchors, Definition, InputLog, Start};
 use awaseru_core::run::Bound;
 
@@ -245,6 +246,33 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// §9's provenance for this configuration, which is also §4.11's cache key.
+    ///
+    /// **Here rather than at the two call sites**, which is the whole point of
+    /// it existing. The host builds a provenance in two places — the one-process
+    /// command line and the reference process behind §8's protocol — and for a
+    /// while they built it from different things: one from the software's
+    /// digest and one from its path on the machine. The keys differed, so a blob
+    /// cached through one interface was invisible to the other, and the
+    /// demonstration was paid twice.
+    ///
+    /// The path was also wrong on its own terms. §6.2 says the location is
+    /// machine-local and the identity is the invariant, so keying a cache by
+    /// location means moving a file invalidates every blob for a reason that has
+    /// nothing to do with whether the blob is still right — and two different
+    /// files at one path would silently share a key.
+    pub fn provenance(&self, version: String) -> Provenance {
+        let (emulator, _) = self.reference();
+        Provenance {
+            reference: emulator.name.clone(),
+            backend: emulator.backend.clone(),
+            version,
+            // §6.6's identity, never `self.software`, which is where it happens
+            // to be on this machine.
+            software: self.configuration.rom.sha256.clone(),
+        }
+    }
+
     /// The emulator the reference uses, and where it is.
     ///
     /// Both are known to exist: `load` refuses a configuration where they do
@@ -1024,6 +1052,43 @@ mod tests {
     // ---- anchors, §4.7 and §4.9 ----------------------------------------
 
     /// A shared file with anchors in it, parsed as far as `anchors_from`.
+    /// §9's provenance, and §4.11's key through it, name the software by what
+    /// it IS and never by where it is.
+    ///
+    /// This exists because the two were built separately and drifted: the
+    /// command line used the digest and the reference process used the path, so
+    /// a blob cached through one interface was invisible to the other and the
+    /// demonstration was paid twice. Both now come from `Loaded::provenance`,
+    /// and this is what makes that worth something.
+    #[test]
+    fn the_provenance_names_the_software_by_identity_and_not_by_location() {
+        let configuration: Configuration = Value::Table(shared())
+            .try_into()
+            .expect("the shared half parses");
+        let loaded = Loaded {
+            configuration,
+            locations: BTreeMap::from([(
+                "ref-a".to_string(),
+                Location { path: PathBuf::from("/wherever/the/library/is.so") },
+            )]),
+            // A path that is nothing like the digest, so that a provenance
+            // built from it would be obvious here.
+            software: PathBuf::from("/home/somebody/a/revealing/path/to/software.rom"),
+            anchors: Anchors::new(vec![]).expect("none"),
+        };
+
+        let provenance = loaded.provenance("1.0.0".into());
+        assert_eq!(provenance.software, "00", "§6.6's identity, which is the digest");
+        assert_eq!(provenance.reference, "ref-a");
+        assert_eq!(provenance.backend, "a-backend");
+        assert_eq!(provenance.version, "1.0.0");
+        assert!(
+            !provenance.software.contains('/'),
+            "a cache key holding a path invalidates every blob when a file moves, \
+             and makes two different files at one path share a key: {provenance:?}"
+        );
+    }
+
     fn anchors_of(text: &str) -> Result<Anchors, Error> {
         let table = table(text);
         let configuration: Configuration = {

@@ -381,13 +381,7 @@ pub fn attend(places: &Where) -> std::process::ExitCode {
         Err(e) => return refuse_and_leave("a reference this tool can open", &e.to_string()),
     };
 
-    let (emulator, _) = loaded.reference();
-    let provenance = awaseru_core::snapshot::Provenance {
-        reference: emulator.name.clone(),
-        backend: emulator.backend.clone(),
-        version: reference.version().reported,
-        software: loaded.software.display().to_string(),
-    };
+    let provenance = loaded.provenance(reference.version().reported);
     if let Err(e) = std::fs::create_dir_all(&places.cache) {
         return refuse_and_leave(
             "somewhere to keep the anchor cache",

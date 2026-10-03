@@ -81,6 +81,26 @@ agreement §2.2 refuses.
 Every round reported `complete: false`, because no control had run. The tool says
 so rather than letting an agreement look finished (§5.3).
 
+## The anchor's bracket
+
+§4.9 brackets a session: the demonstration before, one closing check at the end.
+On this software, after the cache-key defect was fixed:
+
+| | |
+|---|---|
+| the demonstration, from nothing | 42 s — three replays from the origin and two onward runs |
+| arriving afterwards | 0.3 s |
+| §4.9's closing check | **6.1 s** — one replay, and the blob still produces what replaying produces |
+
+The closing check is 6.9× cheaper than the demonstration, which is what one
+replay against three plus two onward runs should look like. It is the number
+that says the bracket is affordable: a session pays for assurance twice and not
+on every use.
+
+This did not run until the last unit of the milestone, because the two
+interfaces keyed the cache differently and the blob one wrote was invisible to
+the other. `doc/findings.md` has that as finding 5.
+
 ## The control
 
 Every round above reported `complete: false`, because an agreement means nothing

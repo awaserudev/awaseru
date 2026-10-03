@@ -36,7 +36,12 @@ impl std::fmt::Display for Position {
             Position::FrameBoundary { frame } => write!(f, "frame boundary {frame}"),
             Position::InstructionBoundary { pc } => write!(f, "instruction boundary at {pc:#X}"),
             Position::MidInstruction { pc } => write!(f, "part way through the instruction at {pc:#X}"),
-            Position::Unclassified { pc } => write!(f, "{pc:#X}, of a kind the backend does not say"),
+            // The address is exact; its KIND is what is unknown. Saying it the
+            // other way round made an honest statement read as a defect.
+            Position::Unclassified { pc } => write!(
+                f,
+                "{pc:#X} exactly, though this backend does not say what kind of position that is"
+            ),
         }
     }
 }

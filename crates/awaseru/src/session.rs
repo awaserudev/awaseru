@@ -184,12 +184,7 @@ pub fn run(plan: &Plan) -> Result<Outcome, Error> {
                 config::Error::Unreadable { path: plan.cache.clone(), why: e },
             ))?;
             let cache = Cache::at(&plan.cache);
-            let provenance = awaseru_core::snapshot::Provenance {
-                reference: emulator.name.clone(),
-                backend: emulator.backend.clone(),
-                version: reference.version().reported,
-                software: loaded.configuration.rom.sha256.clone(),
-            };
+            let provenance = loaded.provenance(reference.version().reported);
             let mut arriver = Arriver::new(
                 &mut *reference,
                 &loaded.anchors,
