@@ -1,0 +1,94 @@
+# The cycle, run against real software
+
+§12's M5 asks for the cycle — choose a unit, write it, compare, fix until it
+agrees, record provenance, commit — to run end to end without touching the
+tool's internals. This is what that looked like.
+
+The software is supplied by whoever ran it and is not in this repository, nor is
+anything that identifies it: no name, no path, no address, no mapping and no
+reimplementation (§11.2). What is here is what the **tool** said, which is the
+part that is about the tool.
+
+## Getting to a subject
+
+Nothing in the tool helps choose one. It measures a routine you already know,
+and there is no verb for "what is happening here". Three things had to be
+written from outside, and none of them is exotic:
+
+1. **read a region every frame and report which spans changed.** At the anchor
+   this software writes twenty-four bytes a frame — an idle loop, a bad subject.
+   Earlier in its boot, one span of some thirteen hundred bytes moves forward
+   every frame, which is a buffer being filled and a good one.
+2. **bisect to the instruction that wrote a byte.** The backend declares
+   `stop-on-write` and `writing-position`; §8's protocol exposes neither, so this
+   was rebuilt out of `run` and `read`: twenty replays and eighteen seconds,
+   where one write bound would have cost one run.
+3. **single-step and record the program counters**, which is how a loop's extent,
+   a routine's entry and the address it hands control back to were found.
+
+The third verified itself, and the shape of that is worth keeping: the trace
+measures how long each instruction is by subtracting consecutive program
+counters, knowing nothing about what they are, while an opcode table says how
+long each should be without having seen the machine. When they agree, the read
+is genuinely aligned — two sources, neither of them a comment in somebody's
+disassembly.
+
+## The wrong turn, and what the tool did with it
+
+The first measurement was bounded by the address the routine hands control back
+to. That address is in the caller's main loop and is reached constantly, so the
+measurement stopped before its subject had done anything.
+
+The tool did not call that agreement:
+
+```text
+not determined — vacuous: the reference changed none of the 12288 bytes
+compared, so agreement here is agreement about data neither side wrote
+```
+
+§2.2 caught an empty reimplementation that a cruder comparison would have
+passed. Bounding the measurement by the routine's own last instruction instead
+took it from 4.8 seconds to 333 milliseconds and produced a difference.
+
+What the report could not say is **why** nothing moved: a routine that writes
+nothing and a bound that was hit at once produce the same sentence, and the tool
+knows how far it ran. That is recorded in `doc/findings.md`.
+
+## The rounds
+
+| round | verdict | first differing byte | differing |
+|---|---|---|---|
+| 1 — deliberately empty | differs | 65536 | 7093 of 12288 |
+| 2 — one step wrong | differs | 65704 | 2130 of 12288 |
+| 3 | **agrees** | — | moved 7093 |
+
+Round one is empty on purpose: a comparison that always agrees is passed by a
+reimplementation that does nothing, so the cycle has to start by differing. Its
+value is the instruction it came back with — §5.4's third item named the store,
+and that is what made it possible to read that instruction's own bytes out of
+the machine and write round two from them.
+
+Round two is the useful one. The first differing offset **moved forward** and
+the count fell from seven thousand to two thousand, which is the differ saying
+"the shape is right and one step is wrong". A verdict of pass or fail cannot say
+that. Nothing in the request told it where to look: both numbers came back from
+the comparison.
+
+Round three agrees, and §5.2's movement comes with it — seven thousand bytes
+changed, so this is agreement about data somebody wrote rather than the vacuous
+agreement §2.2 refuses.
+
+Every round reported `complete: false`, because no control had run. The tool says
+so rather than letting an agreement look finished (§5.3).
+
+## What it cost
+
+| | |
+|---|---|
+| the anchor the measurement starts from, first time | 42 s, which is §4.9's three demonstrations |
+| the same anchor afterwards | 0.29 s |
+| one round of the cycle | 0.3 s |
+| finding the routine | three scripts and an evening |
+
+The last row is the honest one, and it is the finding this milestone exists to
+produce: the cycle is cheap and getting to it is not.
