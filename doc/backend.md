@@ -576,9 +576,16 @@ attribution of a write is gone with it. Forget *before* and the run rewrites the
 record, which is the order everything here uses and the order M6's
 done-condition test is written in. `doc/findings.md` has it as finding 15.
 
-Both halves are tested, and the test was checked by mutation: a record forced to
-answer "executed" for every byte fails it, and so does one forced to answer
+Both halves are tested, and the tests were checked by mutation: a record forced
+to answer "executed" for every byte fails them, and so does one forced to answer
 "never".
+
+The hardest of them uses a fixture built for it — two routines, byte for byte
+the same program apart from the constant each applies and the buffer each
+writes, with the program calling one. Nothing but having been reached can tell
+them apart, and the memory is a second witness: the called routine's output
+holds what it should and the other's buffer is untouched. A coverage that lied
+would be contradicted by the bytes.
 
 ## Driving this backend by hand, which you may have to
 

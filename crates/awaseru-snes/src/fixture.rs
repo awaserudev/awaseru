@@ -160,6 +160,41 @@ pub mod expected {
     pub fn routine_without_the_chain(input: &[u8]) -> Vec<u8> {
         input.iter().map(|&byte| byte ^ 0x5A).collect()
     }
+    // ---- the two-routine image, for §10's coverage -------------------
+    //
+    // One routine is called and one is not. Both are real: a loop, an indexed
+    // load, an indexed store, a comparison and a branch. Neither can be told
+    // from the other by looking at its bytes, which is the point — a tool that
+    // confused *present in the image* with *executed* would flag both.
+
+    /// The routine the program calls.
+    pub const TWO_CALLED_ENTRY: u64 = 0x8040;
+    /// The routine nothing calls. It is assembled, reachable by address, and
+    /// never reached by this program.
+    pub const TWO_UNCALLED_ENTRY: u64 = 0x8060;
+    /// Where a measurement of the called routine is bounded (§4.5).
+    pub const TWO_RETURN: u64 = 0x800F;
+
+    /// What the called routine reads, and what it writes.
+    pub const TWO_INPUT_AT: usize = 0x0300;
+    pub const TWO_CALLED_OUTPUT_AT: usize = 0x0400;
+    /// Where the uncalled routine WOULD write. Nothing ever does, so this span
+    /// is a second witness: if coverage claimed that routine ran, the memory
+    /// here would contradict it.
+    pub const TWO_UNCALLED_OUTPUT_AT: usize = 0x0500;
+    pub const TWO_LENGTH: usize = 0x20;
+
+    /// What the called routine leaves in its output, given `two_input`.
+    pub fn two_called(input: &[u8]) -> Vec<u8> {
+        input.iter().map(|b| b ^ 0x5A).collect()
+    }
+
+    /// What the uncalled one would leave, which is different — so a test that
+    /// confused the two buffers would fail rather than pass.
+    pub fn two_uncalled(input: &[u8]) -> Vec<u8> {
+        input.iter().map(|b| b ^ 0xA5).collect()
+    }
+
     /// The palette from here holds the pattern below.
     pub const PALETTE_PATTERN_AT: usize = 0x0000;
 
@@ -425,6 +460,85 @@ pub fn image_with_a_routine() -> Vec<u8> {
     rom
 }
 
+/// An image with two routines, one of which is never called — §10's coverage.
+///
+/// The question coverage answers is "what has **not** been seen", and the
+/// hardest version of it is a routine that exists, is correct, and is never
+/// reached. Padding and dead bytes are easy: they are not code. This one is.
+///
+/// Both routines have the same shape — load indexed, transform, store indexed,
+/// increment, compare, branch, return — and write different buffers, so the
+/// memory is a second witness to what coverage says.
+pub fn image_with_two_routines() -> Vec<u8> {
+    let mut rom = vec![0u8; ROM_BYTES];
+    let code = two_routine_program();
+    rom[..code.len()].copy_from_slice(&code);
+    finish(
+        &mut rom,
+        b"AWASERU COVERAGE     ",
+        ORIGIN + TWO_SPIN as u16,
+    );
+    rom
+}
+
+const TWO_SPIN: usize = 0x15;
+const TWO_CALLED: usize = 0x40;
+const TWO_UNCALLED: usize = 0x60;
+
+fn two_routine_program() -> Vec<u8> {
+    let mut code: Vec<u8> = Vec::new();
+    code.extend([0x78]); // SEI
+    code.extend([0x18, 0xFB]); // CLC : XCE
+    code.extend([0xE2, 0x30]); // SEP #$30
+    code.extend([0xA9, 0x00]); // LDA #$00
+    code.extend([0x48, 0xAB]); // PHA : PLB
+    code.extend([0xA2, 0xFF]); // LDX #$FF
+    code.extend([0x9A]); // TXS
+    code.extend([
+        0x20,
+        (ORIGIN + TWO_CALLED as u16) as u8,
+        ((ORIGIN + TWO_CALLED as u16) >> 8) as u8,
+    ]); // JSR the called routine — and NO call to the other one
+    debug_assert_eq!(code.len(), expected::TWO_RETURN as usize - ORIGIN as usize);
+
+    // The instruction a measurement bounded by the return stops before.
+    code.extend([0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA]); // NOP x6
+    debug_assert_eq!(code.len(), TWO_SPIN);
+    code.extend([0xEE, 0x10, 0x00]); // INC $0010
+    code.extend([0x80, branch_to(code.len() + 2, TWO_SPIN)]); // BRA spin
+
+    while code.len() < TWO_CALLED {
+        code.push(0x00);
+    }
+    // called: out[i] = in[i] ^ 0x5A
+    code.extend([0xA2, 0x00]); // LDX #$00
+    let loop_at = code.len();
+    code.extend([0xBF, 0x00, 0x03, 0x7E]); // LDA $7E0300,X
+    code.extend([0x49, 0x5A]); // EOR #$5A
+    code.extend([0x9F, 0x00, 0x04, 0x7E]); // STA $7E0400,X
+    code.extend([0xE8]); // INX
+    code.extend([0xE0, 0x20]); // CPX #$20
+    code.extend([0xD0, branch_to(code.len() + 2, loop_at)]); // BNE loop
+    code.extend([0x60]); // RTS
+    assert!(code.len() <= TWO_UNCALLED, "the called routine overran the other");
+
+    while code.len() < TWO_UNCALLED {
+        code.push(0x00);
+    }
+    // uncalled: out[i] = in[i] + 1, into a different buffer. Assembled, correct
+    // and never reached.
+    code.extend([0xA2, 0x00]); // LDX #$00
+    let loop_at = code.len();
+    code.extend([0xBF, 0x00, 0x03, 0x7E]); // LDA $7E0300,X
+    code.extend([0x49, 0xA5]); // EOR #$A5 — two bytes, like the other one's
+    code.extend([0x9F, 0x00, 0x05, 0x7E]); // STA $7E0500,X
+    code.extend([0xE8]); // INX
+    code.extend([0xE0, 0x20]); // CPX #$20
+    code.extend([0xD0, branch_to(code.len() + 2, loop_at)]); // BNE loop
+    code.extend([0x60]); // RTS
+    code
+}
+
 /// Offsets within the routine program, from the listing above.
 const ROUTINE_AFTER: usize = 0x0F;
 const ROUTINE_SPIN: usize = 0x15;
@@ -486,6 +600,67 @@ fn write_word(rom: &mut [u8], at: usize, value: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two routines are where the constants say, are the same shape, and
+    /// exactly one of them is called.
+    ///
+    /// Checked against the bytes rather than trusted, because every coverage
+    /// assertion in this project rests on "that one is never reached" — and a
+    /// fixture that quietly called both would make those tests pass for the
+    /// wrong reason.
+    #[test]
+    fn one_of_the_two_routines_is_called_and_the_other_is_not() {
+        let code = two_routine_program();
+        let called = expected::TWO_CALLED_ENTRY as usize - ORIGIN as usize;
+        let uncalled = expected::TWO_UNCALLED_ENTRY as usize - ORIGIN as usize;
+
+        // Both begin by clearing the index, both end in RTS, and both are the
+        // same length — so neither can be told from the other by its shape.
+        assert_eq!(&code[called..called + 2], &[0xA2, 0x00], "the called one");
+        assert_eq!(&code[uncalled..uncalled + 2], &[0xA2, 0x00], "the other one");
+        // Byte for byte the same program, apart from the constant it applies
+        // and the buffer it writes — so nothing but having been reached can
+        // tell them apart.
+        const LENGTH: usize = 18;
+        assert_eq!(code[called + LENGTH - 1], 0x60, "RTS ends the called routine");
+        assert_eq!(code[uncalled + LENGTH - 1], 0x60, "and the uncalled one");
+        let differ: Vec<usize> = (0..LENGTH)
+            .filter(|i| code[called + i] != code[uncalled + i])
+            .collect();
+        assert_eq!(
+            differ,
+            vec![7, 10],
+            "exactly two bytes differ: the constant and the output buffer's page"
+        );
+
+        // Exactly one JSR in the whole program, and it names the called one.
+        let jsrs: Vec<usize> = (0..code.len() - 2)
+            .filter(|i| code[*i] == 0x20)
+            .filter(|i| {
+                let target = u16::from_le_bytes([code[i + 1], code[i + 2]]);
+                target == ORIGIN + called as u16 || target == ORIGIN + uncalled as u16
+            })
+            .collect();
+        assert_eq!(jsrs.len(), 1, "one call, at {jsrs:?}");
+        assert_eq!(
+            u16::from_le_bytes([code[jsrs[0] + 1], code[jsrs[0] + 2]]),
+            ORIGIN + called as u16,
+            "and it is the called routine that is called"
+        );
+
+        // Nothing anywhere names the uncalled one — not a JSR, not a JMP, not
+        // a branch. This is the assertion the coverage tests lean on.
+        let its_address = (ORIGIN + uncalled as u16).to_le_bytes();
+        assert!(
+            !code.windows(2).any(|w| w == its_address),
+            "the uncalled routine's address appears nowhere in the program"
+        );
+
+        // And they write different buffers, so a test that confused the two
+        // would fail rather than pass.
+        let input: Vec<u8> = (0..expected::TWO_LENGTH as u8).collect();
+        assert_ne!(expected::two_called(&input), expected::two_uncalled(&input));
+    }
 
     /// §5.4's answer is a constant written by hand, so it is checked against
     /// the bytes rather than trusted. Both stores are the only ones in their
