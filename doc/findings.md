@@ -1161,7 +1161,7 @@ leak behind it instead of a near miss, and in the kind the check **does** cover.
 Three letters and a digit. Put in a list that `grep -i` applies to every tracked
 file, **binaries included**, it also matches a hexadecimal fragment — and this
 repository is full of digests, addresses and fixtures that contain it by
-coincidence. A list entry that fires on `0x…ff5…` makes the check cry wolf, and
+coincidence. A list entry that fires inside a digest makes the check cry wolf, and
 a check that cries wolf is one somebody turns off.
 
 So the abbreviation is a word a word-list cannot hold. That is not an argument

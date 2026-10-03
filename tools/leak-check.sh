@@ -7,6 +7,18 @@
 # keeps local. Without that file this script says so and fails, rather than
 # passing and meaning nothing.
 #
+# A line in that file is a basic regular expression and not a fixed string, and
+# that is load-bearing. A short name — three letters and a digit, say — matched
+# as a plain substring also matches a fragment of a hexadecimal digest, and this
+# repository is full of those. Such an entry fires on code that leaks nothing,
+# and a check that cries wolf is one somebody turns off. Written with word
+# boundaries, `\bxxx\b`, it catches the name and passes the digest.
+#
+# So: a name too short to be a word of its own belongs in here with boundaries
+# around it. `doc/findings.md`'s thirty-seventh entry is the leak that taught
+# this, and §13's Q27 is the larger question of whether a denylist is the right
+# instrument at all.
+#
 # It searches every TRACKED file and treats binaries as text, which is the hole
 # that let two compiled Python files through: bytecode embeds the absolute path
 # of the machine that compiled it, and this machine's path names the software.
