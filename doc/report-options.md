@@ -81,6 +81,7 @@ field nobody ever reads was the wrong thing to send.
 | when | switch | who turned it on, and what for |
 |---|---|---|
 | M5 | `localise` | every round of the cycle. The first measurement's value was the instruction it named — that is what made it possible to go and read those bytes and write the next round |
+| M6 | `coverage` | once, in the client that drives the whole cycle, and deliberately in only one of its measurements — so that the other reports show the field **absent**, which is what "nobody asked" has to look like. Too early to read anything into: one use by the test that put it there is not evidence about defaults |
 
 ## The rule's first correction, and what forced it
 
