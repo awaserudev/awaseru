@@ -150,6 +150,15 @@ pub struct Arrived {
     /// Set when this arrival re-ran the demonstration because §4.9's
     /// `reverify_after` came due.
     pub reverified: bool,
+    /// Who demonstrated this blob, when it was not this session.
+    ///
+    /// A blob that came in a box carries its packer's demonstration, and that
+    /// belongs to them. Said on the line rather than folded into the caveat,
+    /// because §8.6 makes a new variant in the vocabulary a verdict travels by
+    /// a breaking change — and `AnchorNotDemonstrated` is already the truth
+    /// about this session. Who it was is the part a reader needs and the
+    /// report is where it goes.
+    pub demonstrated_elsewhere: Option<String>,
 }
 
 impl std::fmt::Display for Arrived {
@@ -187,6 +196,14 @@ impl std::fmt::Display for Arrived {
         }
         if self.reverified {
             write!(f, "; re-demonstrated first, which §4.9 had come due")?;
+        }
+        if let Some(whose) = &self.demonstrated_elsewhere {
+            write!(
+                f,
+                ". This blob was demonstrated by {whose} and not here, so it is theirs: nothing \
+                 replayed it to check, and establishing it in this session is what \
+                 would make a verdict from it evidence"
+            )?;
         }
         write!(f, ". It {}", self.beginning)?;
         if let Some(caveat) = &self.caveat {
@@ -678,6 +695,14 @@ impl<'a> Arriver<'a> {
         let reverified = false;
         if let Some(stored) = self.cache.get(&key)
             && stored.demonstrated_with == 0
+            // A blob that arrived in a box had been demonstrated, by whoever
+            // packed it. That is not this session's demonstration and is never
+            // counted as one — every verdict from it stays *not determined*
+            // (§4.8) until somebody establishes it here. What it does mean is
+            // that nothing replays it automatically: forcing the demonstration
+            // would spend exactly the time the box was for, on work the person
+            // did not ask for. They are told whose it is and they decide.
+            && stored.demonstrated_elsewhere.is_none()
             && self.policy.verify_from_origin > 0
         {
             self.demonstrate(name)?;
@@ -694,6 +719,7 @@ impl<'a> Arriver<'a> {
                         beginning: self.platform.beginning(),
                         caveat: caveat_for(name, stored.demonstrated_with),
                         reverified,
+                        demonstrated_elsewhere: stored.demonstrated_elsewhere.clone(),
                     });
                 }
                 Err(_) => {
@@ -728,6 +754,9 @@ impl<'a> Arriver<'a> {
             anchor: name.to_string(),
             how: How::Replayed { anchors_run },
             took: began.elapsed(),
+            // Replayed here, so whatever demonstration there is, is this
+            // session's.
+            demonstrated_elsewhere: None,
             beginning: self.platform.beginning(),
             caveat: caveat_for(name, demonstrated),
             reverified,
@@ -760,6 +789,8 @@ impl<'a> Arriver<'a> {
             blob,
             uses: 0,
             demonstrated_with: 0,
+            // Replayed here, so there is nobody else's demonstration in it.
+            demonstrated_elsewhere: None,
         };
         self.cache.put(key, &stored)?;
         Ok(())
@@ -907,6 +938,7 @@ mod tests {
             },
             caveat,
             reverified: false,
+            demonstrated_elsewhere: None,
         }
     }
 
@@ -963,6 +995,48 @@ mod tests {
         assert!(
             !resumed.contains("held no blob"),
             "an arrival that resumed has nothing to suggest, {resumed}"
+        );
+    }
+
+    /// A blob that came in a box says whose demonstration it carries, and the
+    /// run is still *not determined* — both halves, because either alone is
+    /// the wrong answer.
+    ///
+    /// The §4.8 caveat is reused rather than a new reason being invented: §8.6
+    /// makes a new variant in the vocabulary a verdict travels by a breaking
+    /// change, and "never shown equivalent" is already the truth about **this**
+    /// session.
+    #[test]
+    fn a_blob_demonstrated_elsewhere_says_whose_and_is_still_not_determined() {
+        let mut received = arrived(
+            How::Resumed,
+            Some(Undetermined::AnchorNotDemonstrated {
+                anchor: "later".into(),
+            }),
+            true,
+        );
+        received.demonstrated_elsewhere = Some("a-backend 1.0.0 (as `theirs`)".into());
+
+        let said = received.to_string();
+        assert!(said.contains("demonstrated by a-backend 1.0.0"), "{said}");
+        assert!(said.contains("so it is theirs"), "{said}");
+        assert!(
+            said.contains("NOT DETERMINED"),
+            "whose it is does not make it evidence, {said}"
+        );
+        assert!(
+            !said.contains("  "),
+            "and it reads as sentences, {said}"
+        );
+        assert!(
+            !received.is_evidence(),
+            "a run from somebody else's demonstration is not evidence here"
+        );
+
+        let own = arrived(How::Resumed, None, true);
+        assert!(
+            !own.to_string().contains("so it is theirs"),
+            "an arrival this session demonstrated says nothing about anybody else"
         );
     }
 

@@ -65,6 +65,8 @@ pub enum ParcelError {
     /// The place asked for already has something in it.
     Occupied { at: PathBuf },
     Io { at: PathBuf, why: std::io::Error },
+    /// The cache would not take it.
+    Store(crate::cache::CacheError),
 }
 
 impl fmt::Display for ParcelError {
@@ -87,6 +89,7 @@ impl fmt::Display for ParcelError {
             ParcelError::Io { at, why } => {
                 write!(f, "`{}` could not be used: {why}", at.display())
             }
+            ParcelError::Store(e) => write!(f, "{e}"),
         }
     }
 }
@@ -96,6 +99,12 @@ impl std::error::Error for ParcelError {}
 impl From<AnchorError> for ParcelError {
     fn from(e: AnchorError) -> Self {
         ParcelError::Anchors(e)
+    }
+}
+
+impl From<crate::cache::CacheError> for ParcelError {
+    fn from(e: crate::cache::CacheError) -> Self {
+        ParcelError::Store(e)
     }
 }
 
@@ -343,8 +352,267 @@ fn describe(
     )
 }
 
+// ---------------------------------------------------------------------------
+// Taking a box in
+// ---------------------------------------------------------------------------
+
+/// What happened to one anchor in a box.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Took {
+    /// Written: this session had nothing under that name.
+    Restored,
+    /// The key is the same key. Nothing to do, and said rather than silently
+    /// counted as a success.
+    AlreadyHere,
+    /// This session has something else under that name. **Refused**, with the
+    /// parts that differ.
+    Refused { differs: Vec<String> },
+    /// The box carries this anchor's definition and no blob, so there was
+    /// nothing to take.
+    NoBlob,
+}
+
+impl fmt::Display for Took {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Took::Restored => write!(f, "restored"),
+            Took::AlreadyHere => write!(f, "already here, and the same"),
+            Took::Refused { differs } => {
+                write!(f, "REFUSED, because {}", differs.join("; "))
+            }
+            Took::NoBlob => write!(f, "no blob in the box for it"),
+        }
+    }
+}
+
+/// What a whole box came to, anchor by anchor.
+///
+/// **There is no single verdict for a set** (§2.3). A box of three anchors
+/// where one is refused is not a failure and is not a success; it is three
+/// answers, and folding them into one would lose the only thing the person
+/// needs, which is *which*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restored {
+    pub of: String,
+    pub each: Vec<(String, Took)>,
+}
+
+impl fmt::Display for Restored {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "box of `{}`:", self.of)?;
+        for (anchor, took) in &self.each {
+            writeln!(f, "    {anchor}: {took}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Takes a box into `cache`, refusing anything it cannot place.
+///
+/// The receiver's key is **rebuilt** from the receiver's own anchors and
+/// provenance. The sender's `reference` is the name they wrote in their own
+/// configuration (§6.4) and a wording choice must not decide whether a state
+/// applies, so it is translated rather than compared. Everything that decides
+/// is compared: the software's identity, the backend and its version, each
+/// anchor's bound and start, the input log's digest, and the regions covered.
+///
+/// **Nothing is ever overwritten.** An anchor this session already holds under
+/// a different key is refused and the difference named; work already on the
+/// disk cannot be damaged by a box, because replacing is not something this
+/// function can do.
+pub fn restore(
+    at: &Path,
+    anchors: &Anchors,
+    provenance: &Provenance,
+    cache: &Cache,
+) -> Result<Restored, ParcelError> {
+    let described = at.join(DESCRIPTION);
+    let text = std::fs::read_to_string(&described).map_err(|why| ParcelError::Io {
+        at: described.clone(),
+        why,
+    })?;
+    let of = toml_string(&text, "of").unwrap_or_default();
+    let chain = toml_list(&text, "chain");
+
+    // The box's own anchors directory, read through a cache so that an entry
+    // is parsed by the one piece of code that knows how.
+    let theirs = Cache::at(at.join("anchors"));
+
+    let mut each = Vec::new();
+    for name in &chain {
+        let Ok(mine) = anchors.key(name, provenance) else {
+            each.push((
+                name.clone(),
+                Took::Refused {
+                    differs: vec![format!(
+                        "this session declares no anchor called `{name}`, so there is no                          definition for a blob to be a blob of"
+                    )],
+                },
+            ));
+            continue;
+        };
+
+        let their_key = match std::fs::read_to_string(at.join("anchors").join(name).join("key")) {
+            Err(_) => {
+                each.push((name.clone(), Took::NoBlob));
+                continue;
+            }
+            Ok(text) => text.trim_end().to_string(),
+        };
+
+        let differs = Parts::of(&their_key).differences(&Parts::of(mine.as_str()));
+        if !differs.is_empty() {
+            each.push((name.clone(), Took::Refused { differs }));
+            continue;
+        }
+
+        // Already here? Compared by the key and not by the bytes: §4.11 says
+        // the key is the whole of what decides, and two entries under one key
+        // are the same state.
+        if let Some(have) = cache.get(&mine) {
+            let _ = have;
+            each.push((name.clone(), Took::AlreadyHere));
+            continue;
+        }
+
+        let Some(mut stored) = theirs.entry_keyed(name, &their_key) else {
+            // The box says it has one and the entry will not load. A miss, the
+            // way every unreadable entry is a miss (§4.11), reported so that
+            // nobody waits for a blob that is not coming.
+            each.push((name.clone(), Took::NoBlob));
+            continue;
+        };
+
+        // §4.8 and §4.9. Their demonstration is theirs: it is recorded as
+        // theirs and `demonstrated_with` stays at zero, so every verdict from
+        // this blob is *not determined* in this session until somebody
+        // establishes it here.
+        stored.demonstrated_elsewhere = Some(whose(&text));
+        stored.demonstrated_with = 0;
+        stored.uses = 0;
+        cache.put(&mine, &stored)?;
+        each.push((name.clone(), Took::Restored));
+    }
+
+    Ok(Restored { of, each })
+}
+
+/// Who packed a box, from its description.
+fn whose(described: &str) -> String {
+    format!(
+        "{} {} (as `{}`)",
+        toml_string(described, "backend").unwrap_or_else(|| "an unnamed backend".into()),
+        toml_string(described, "version").unwrap_or_else(|| "of no stated version".into()),
+        toml_string(described, "reference").unwrap_or_else(|| "unnamed".into()),
+    )
+}
+
+/// A key, taken apart far enough to say which part of it differs.
+///
+/// §4.11 builds the key as readable text precisely so that a blob thrown away
+/// can be explained. This is that promise being collected: a refusal that said
+/// only "the key does not match" would make the person compare two long strings
+/// by eye.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Parts {
+    backend: String,
+    version: String,
+    software: String,
+    /// One per anchor in the chain, in order, each as written.
+    segments: Vec<String>,
+}
+
+impl Parts {
+    fn of(key: &str) -> Parts {
+        let mut parts = Parts::default();
+        let mut pieces = key.split(" | ");
+        if let Some(head) = pieces.next() {
+            for field in head.split_whitespace() {
+                if let Some((name, value)) = field.split_once('=') {
+                    match name {
+                        // `reference` is deliberately not read. It is what the
+                        // person called their emulator and decides nothing.
+                        "backend" => parts.backend = value.to_string(),
+                        "version" => parts.version = value.to_string(),
+                        "software" => parts.software = value.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        parts.segments = pieces.map(str::to_string).collect();
+        parts
+    }
+
+    /// What differs, in words, ignoring the reference's name.
+    fn differences(&self, other: &Parts) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.software != other.software {
+            out.push(format!(
+                "it is of other software: the box says {} and this session is of {}",
+                short(&self.software),
+                short(&other.software)
+            ));
+        }
+        if self.backend != other.backend {
+            out.push(format!(
+                "it needs the backend `{}` and this is `{}`",
+                self.backend, other.backend
+            ));
+        }
+        if self.version != other.version {
+            out.push(format!(
+                "it was made with version {} and this is {}",
+                self.version, other.version
+            ));
+        }
+        if self.segments.len() != other.segments.len() {
+            out.push(format!(
+                "its definition is {} anchor(s) deep and this one is {}",
+                self.segments.len(),
+                other.segments.len()
+            ));
+            return out;
+        }
+        for (theirs, mine) in self.segments.iter().zip(&other.segments) {
+            if theirs != mine {
+                out.push(format!(
+                    "a definition differs: the box has `{theirs}` and this session has `{mine}`"
+                ));
+            }
+        }
+        out
+    }
+}
+
+fn short(digest: &str) -> String {
+    digest.chars().take(12).collect()
+}
+
+/// One `key = "value"` out of a description.
+fn toml_string(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .find(|(name, _)| name.trim() == key)
+        .map(|(_, value)| value.trim().trim_matches('"').to_string())
+}
+
+/// One `key = ["a", "b"]` out of a description, in order.
+fn toml_list(text: &str, key: &str) -> Vec<String> {
+    let Some(value) = toml_string(text, key) else {
+        return Vec::new();
+    };
+    value
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|item| item.trim().trim_matches('"').to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use awaseru_core::anchor::{Definition, InputLog};
     use awaseru_core::anchor::{CheapCheck, Coverage};
@@ -352,14 +620,14 @@ mod tests {
 
     use crate::cache::Stored;
 
-    fn scratch(name: &str) -> PathBuf {
+    pub(crate) fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("awaseru-parcel-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a directory");
         dir
     }
 
-    fn provenance() -> Provenance {
+    pub(crate) fn provenance() -> Provenance {
         Provenance {
             reference: "ref-a".into(),
             backend: "a-backend".into(),
@@ -368,7 +636,7 @@ mod tests {
         }
     }
 
-    fn stored() -> Stored {
+    pub(crate) fn stored() -> Stored {
         Stored {
             blob: Blob::new(
                 vec![0xAB; 4096],
@@ -381,10 +649,11 @@ mod tests {
             },
             uses: 0,
             demonstrated_with: 3,
+            demonstrated_elsewhere: None,
         }
     }
 
-    fn plain(name: &str, after: Option<&str>, frames: u64) -> Anchor {
+    pub(crate) fn plain(name: &str, after: Option<&str>, frames: u64) -> Anchor {
         Anchor {
             name: name.into(),
             definition: Definition {
@@ -403,7 +672,7 @@ mod tests {
     ///
     /// The shape the whole unit is about: two pieces of work that share a
     /// trunk.
-    fn branching() -> Anchors {
+    pub(crate) fn branching() -> Anchors {
         Anchors::new(vec![
             plain("opening", None, 10),
             plain("settled", Some("opening"), 20),
@@ -413,7 +682,7 @@ mod tests {
         .expect("four anchors")
     }
 
-    fn fill(cache: &Cache, anchors: &Anchors, names: &[&str]) {
+    pub(crate) fn fill(cache: &Cache, anchors: &Anchors, names: &[&str]) {
         for name in names {
             let key = anchors.key(name, &provenance()).expect("it resolves");
             cache.put(&key, &stored()).expect("written");
@@ -624,5 +893,219 @@ mod tests {
             .expect_err("refused");
         assert!(matches!(err, ParcelError::Anchors(_)), "got {err}");
         assert!(err.to_string().contains("nowhere"), "said: {err}");
+    }
+}
+
+#[cfg(test)]
+mod taking {
+    use super::tests::*;
+    use super::*;
+
+    /// A box packed by one session, offered to another.
+    fn packed_box(name: &str, leaf: &str, keep: &[&str]) -> (PathBuf, Anchors, Cache) {
+        let root = scratch(name);
+        let sender = Cache::at(root.join("sender"));
+        let anchors = branching();
+        fill(&sender, &anchors, keep);
+        let at = root.join("box");
+        pack(&anchors, leaf, &provenance(), &sender, &at).expect("it packs");
+        (at, anchors, Cache::at(root.join("receiver")))
+    }
+
+    #[test]
+    fn a_box_lands_in_a_session_that_has_nothing_and_each_anchor_says_so() {
+        let (at, anchors, mine) =
+            packed_box("land", "branch-b", &["opening", "settled", "branch-b"]);
+
+        let took = restore(&at, &anchors, &provenance(), &mine).expect("it is read");
+        assert_eq!(took.of, "branch-b");
+        assert_eq!(
+            took.each,
+            vec![
+                ("opening".to_string(), Took::Restored),
+                ("settled".to_string(), Took::Restored),
+                ("branch-b".to_string(), Took::Restored),
+            ]
+        );
+        for name in ["opening", "settled", "branch-b"] {
+            let key = anchors.key(name, &provenance()).unwrap();
+            assert!(mine.get(&key).is_some(), "{name} should be here now");
+        }
+    }
+
+    /// §4.8 and §4.9: the sender's demonstration is the sender's.
+    ///
+    /// The blob resumes — that is what the box was for — and every verdict from
+    /// it is *not determined* until this session establishes it. Both halves
+    /// are asserted, because either one alone would be the wrong answer.
+    #[test]
+    fn the_senders_demonstration_arrives_as_theirs_and_counts_for_nothing_here() {
+        let (at, anchors, mine) = packed_box("evidence", "opening", &["opening"]);
+
+        restore(&at, &anchors, &provenance(), &mine).expect("it is read");
+
+        let key = anchors.key("opening", &provenance()).unwrap();
+        let stored = mine.get(&key).expect("it is here");
+        assert_eq!(
+            stored.demonstrated_with, 0,
+            "somebody else's demonstration is not this session's"
+        );
+        let whose = stored
+            .demonstrated_elsewhere
+            .expect("and it is not forgotten either");
+        assert!(whose.contains("a-backend"), "it says whose: {whose}");
+        assert!(whose.contains("1.0.0"), "{whose}");
+        assert_eq!(stored.uses, 0, "and their uses are not this session's either");
+    }
+
+    /// Other software. Refused by identity, which is the mechanism rather than
+    /// a rule anybody had to be told.
+    #[test]
+    fn a_box_of_other_software_is_refused_and_names_the_software() {
+        let (at, anchors, mine) = packed_box("other-software", "opening", &["opening"]);
+
+        let mut theirs = provenance();
+        theirs.software = "0000000000000000".into();
+        let took = restore(&at, &anchors, &theirs, &mine).expect("it is read");
+
+        match &took.each[0].1 {
+            Took::Refused { differs } => {
+                assert!(
+                    differs.iter().any(|d| d.contains("other software")),
+                    "{differs:?}"
+                );
+                assert!(differs.iter().any(|d| d.contains("abcdef012345")), "{differs:?}");
+            }
+            other => panic!("got {other}"),
+        }
+        let key = anchors.key("opening", &theirs).unwrap();
+        assert!(mine.get(&key).is_none(), "and nothing was written");
+    }
+
+    /// The same name, a different definition. Refused, and it says the
+    /// definition — which is what §4.11 keeps the key readable for.
+    #[test]
+    fn an_anchor_of_the_same_name_with_another_bound_is_refused_and_names_it() {
+        let (at, _anchors, mine) = packed_box("other-bound", "opening", &["opening"]);
+
+        // This session's `opening` runs for a different number of frames.
+        let changed = Anchors::new(vec![
+            plain("opening", None, 11),
+            plain("settled", Some("opening"), 20),
+        ])
+        .expect("two anchors");
+
+        let took = restore(&at, &changed, &provenance(), &mine).expect("it is read");
+        match &took.each[0].1 {
+            Took::Refused { differs } => {
+                assert_eq!(differs.len(), 1, "only the definition differs: {differs:?}");
+                assert!(differs[0].contains("a definition differs"), "{differs:?}");
+                assert!(differs[0].contains("bound=10"), "the box's: {differs:?}");
+                assert!(differs[0].contains("bound=11"), "and this session's: {differs:?}");
+            }
+            other => panic!("got {other}"),
+        }
+        let key = changed.key("opening", &provenance()).unwrap();
+        assert!(mine.get(&key).is_none(), "and nothing was written");
+    }
+
+    /// Nothing is overwritten, and what is already here keeps its own
+    /// demonstration.
+    #[test]
+    fn a_restore_leaves_what_is_already_here_and_its_own_demonstration_alone() {
+        let (at, anchors, mine) = packed_box("already", "opening", &["opening"]);
+
+        // This session arrived at it and demonstrated it itself.
+        let key = anchors.key("opening", &provenance()).unwrap();
+        let mut ours = stored();
+        ours.demonstrated_with = 7;
+        ours.uses = 4;
+        mine.put(&key, &ours).expect("written");
+
+        let took = restore(&at, &anchors, &provenance(), &mine).expect("it is read");
+        assert_eq!(took.each[0].1, Took::AlreadyHere);
+
+        let after = mine.get(&key).expect("still here");
+        assert_eq!(
+            after.demonstrated_with, 7,
+            "this session's demonstration must survive a box arriving"
+        );
+        assert_eq!(after.uses, 4, "and so must its uses");
+        assert_eq!(
+            after.demonstrated_elsewhere, None,
+            "and it does not acquire somebody else's"
+        );
+    }
+
+    /// The reference's name is a wording choice and decides nothing.
+    #[test]
+    fn the_name_the_emulator_was_given_does_not_decide_whether_a_blob_applies() {
+        let (at, anchors, mine) = packed_box("naming", "opening", &["opening"]);
+
+        let mut renamed = provenance();
+        renamed.reference = "whatever-i-call-it".into();
+        let took = restore(&at, &anchors, &renamed, &mine).expect("it is read");
+        assert_eq!(
+            took.each[0].1,
+            Took::Restored,
+            "a different name for the same emulator must not refuse a blob"
+        );
+    }
+
+    /// A set has no single verdict (§2.3). One refused among three is three
+    /// answers.
+    #[test]
+    fn a_box_where_one_anchor_is_refused_reports_each_and_not_one_answer() {
+        let (at, _anchors, mine) =
+            packed_box("mixed", "branch-b", &["opening", "settled", "branch-b"]);
+
+        // `settled` has been redefined here; the other two have not.
+        let changed = Anchors::new(vec![
+            plain("opening", None, 10),
+            plain("settled", Some("opening"), 21),
+            plain("branch-b", Some("settled"), 40),
+        ])
+        .expect("three anchors");
+
+        let took = restore(&at, &changed, &provenance(), &mine).expect("it is read");
+        assert_eq!(took.each[0].1, Took::Restored, "opening is untouched");
+        assert!(
+            matches!(took.each[1].1, Took::Refused { .. }),
+            "settled was redefined: {:?}",
+            took.each[1].1
+        );
+        assert!(
+            matches!(took.each[2].1, Took::Refused { .. }),
+            "and branch-b is downstream of it, so its key changed too: {:?}",
+            took.each[2].1
+        );
+
+        let said = took.to_string();
+        assert!(said.contains("opening: restored"), "{said}");
+        assert!(said.contains("REFUSED"), "{said}");
+    }
+
+    #[test]
+    fn an_anchor_this_session_does_not_declare_is_refused_rather_than_invented() {
+        let (at, _anchors, mine) = packed_box("undeclared", "opening", &["opening"]);
+        let only_other = Anchors::new(vec![plain("something-else", None, 1)]).expect("one");
+
+        let took = restore(&at, &only_other, &provenance(), &mine).expect("it is read");
+        match &took.each[0].1 {
+            Took::Refused { differs } => {
+                assert!(differs[0].contains("declares no anchor"), "{differs:?}");
+            }
+            other => panic!("got {other}"),
+        }
+    }
+
+    #[test]
+    fn an_anchor_the_box_carries_only_as_a_definition_says_there_is_no_blob() {
+        let (at, anchors, mine) = packed_box("definition-only", "branch-b", &["branch-b"]);
+
+        let took = restore(&at, &anchors, &provenance(), &mine).expect("it is read");
+        assert_eq!(took.each[0], ("opening".to_string(), Took::NoBlob));
+        assert_eq!(took.each[1], ("settled".to_string(), Took::NoBlob));
+        assert_eq!(took.each[2].1, Took::Restored);
     }
 }

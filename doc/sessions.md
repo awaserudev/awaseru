@@ -230,22 +230,39 @@ than a rule anybody had to be told.
 
 ## Restoring refuses
 
+```
+awaseru restore --session PATH --from PATH
+```
+
 Restore rebuilds the key under the receiver's own names — the reference's name
 is a wording choice in a configuration file and must not decide whether a state
-applies — and then compares part by part.
+applies — and then compares part by part: the software's identity, the backend
+and its version, and each anchor's definition as the key spells it out.
 
 | | |
 |---|---|
-| the key matches | nothing to do, and it **says** nothing was done |
-| the name matches and the key does not | **refused**, naming the part that differs |
-| nothing is there | written |
+| the key matches and nothing is here | **restored** |
+| the key matches and it is already here | nothing to do, and it **says** so |
+| this session holds the name under another key | **refused**, naming the part that differs |
+| the box has the definition and no blob | said, so nobody waits for a blob that is not coming |
 
 Restore never replaces. Work already on the receiver's disk cannot be damaged by
 a box, because replacing is not a thing restore is able to do.
 
 A box of several anchors where one does not apply does not report one answer for
-the set. It reports per anchor, in §2.3's three values; a set has no single
-verdict.
+the set. It reports per anchor; a set has no single verdict (§2.3).
+
+The refusal names the part, which is what §4.11 keeps a key readable for — a
+refusal that said only "the key does not match" would leave somebody comparing
+two long strings by eye. Against a real box whose anchor had been redefined by
+one frame, what came back was `a definition differs: the box has
+bound=17767 frame(s) … and this session has bound=17768 frame(s) …`.
+
+Restore opens the reference for one reason: to ask its version. §4.11 keys a
+blob by it, a fresh session has not recorded one because nothing has run in it,
+and the version **in the box** is the sender's — which is exactly what must not
+be allowed to decide. The backend itself is the only truthful source, and asking
+it costs a process start against the minutes a box is saving.
 
 ### Evidence does not merge
 
@@ -253,6 +270,24 @@ Identical state under an identical key is the same state. A demonstration is
 not. §4.8 and §4.9 make a demonstration the property of the run and the machine
 that performed it, so a sender's demonstration arrives recorded as the sender's
 and never in place of the receiver's.
+
+That has a consequence worth stating plainly, because it is the whole balance of
+this feature. A restored blob **resumes** — the box did its job — and every
+verdict from it is **not determined** until this session establishes it. So:
+
+- `demonstrated_with` stays at zero, and the entry records who demonstrated it;
+- the arrival says whose it is, in words, next to the result;
+- the verdict carries §4.8's caveat, so nothing built on it reads as a pass;
+- and **nothing demonstrates it automatically.** A blob nobody has demonstrated
+  anywhere is demonstrated before use (§4.9); one demonstrated elsewhere is not,
+  because forcing that replay would spend exactly the time the box was for, on
+  work nobody asked for. The person is told whose it is and decides.
+
+The caveat is §4.8's existing one rather than a new reason. §8.6 makes a new
+variant in the vocabulary a verdict travels by a breaking change, and "never
+shown equivalent to replaying its definition" is already the truth about this
+session. Who it was is the part a reader needs, and the report is where that
+goes.
 
 ## What is not claimed
 

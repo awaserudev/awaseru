@@ -30,7 +30,14 @@ Options
                         somebody with the same software. Its ancestry travels;
                         anything branching off beside it does not
 
+  awaseru restore --session PATH --from PATH
+                        takes such a directory in. Nothing is overwritten: an
+                        anchor this session already holds under another
+                        definition is refused and the difference named, and a
+                        demonstration made elsewhere stays the sender's
+
     --into PATH         where `save` puts the box
+    --from PATH         where `restore` finds one
     --session PATH      one named directory holding one piece of work: its
                         backend home, its anchor cache, its runs and its logs.
                         The last part of the path is the session's name. Nothing
@@ -93,6 +100,30 @@ fn main() -> ExitCode {
         }
         Ok(Command::Serve { places }) => awaseru::serve::serve(&places),
         Ok(Command::Reference { places }) => awaseru::child::attend(&places),
+        Ok(Command::Restore {
+            plan,
+            session: named,
+            from,
+        }) => match take_in(&plan, named, &from) {
+            Ok(took) => {
+                print!("{took}");
+                // A set has no single verdict (§2.3), so the status is about
+                // whether anything was refused and the lines above say which.
+                if took
+                    .each
+                    .iter()
+                    .any(|(_, t)| matches!(t, awaseru::parcel::Took::Refused { .. }))
+                {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(e) => {
+                eprintln!("awaseru: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::Save {
             plan,
             session: named,
@@ -164,6 +195,55 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Takes a box into a session, refusing anything it cannot place.
+fn take_in(
+    plan: &Plan,
+    named: Option<PathBuf>,
+    from: &std::path::Path,
+) -> Result<awaseru::parcel::Restored, String> {
+
+    let session = match named {
+        Some(dir) => awaseru::workspace::Session::open(dir).map_err(|e| e.to_string())?,
+        None => {
+            return Err("`restore` puts a box into a session, so it needs `--session PATH`"
+                .to_string())
+        }
+    };
+
+    let loaded = awaseru::config::load(&plan.shared, &plan.local).map_err(|e| e.to_string())?;
+
+    // The receiver's own identity, from the configuration rather than from the
+    // box: the box says what it was made of, and this says what it is being
+    // offered to. A version is asked of the configuration's record of this
+    // session where there is one, and of the configuration otherwise, because
+    // a box is taken in before anything has been run.
+    // The reference is opened for one reason: to be asked its version.
+    //
+    // §4.11 keys a blob by the backend's version, so taking a box in has to
+    // know what version this machine has. A fresh session has not recorded one
+    // yet — nothing has run in it — and the version in the BOX is the sender's,
+    // which is exactly what must not be allowed to decide. The backend itself
+    // is the only truthful source, and asking it costs a process start against
+    // the minutes a box is saving.
+    let reference =
+        awaseru::session::open_reference(&loaded, &plan.home).map_err(|e| e.to_string())?;
+    let provenance = loaded.provenance(reference.version().reported);
+
+    // And the session is now described, so it says what it is of before it
+    // holds anything — §6.6's refusal applies to a box the same as to a run.
+    session
+        .describe(
+            &provenance.software,
+            &provenance.reference,
+            &provenance.backend,
+            &provenance.version,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let cache = awaseru::cache::Cache::at(&plan.cache);
+    awaseru::parcel::restore(from, &loaded.anchors, &provenance, &cache).map_err(|e| e.to_string())
 }
 
 /// Packs an anchor and its ancestry out of a session — §6.8's box.
@@ -406,6 +486,12 @@ enum Command {
     /// `current_exe` is a path that always exists, and a sibling binary is a
     /// path that may not have been installed.
     Reference { places: Box<awaseru::child::Where> },
+    /// `awaseru restore --into PATH` — taking a box in.
+    Restore {
+        plan: Box<Plan>,
+        session: Option<PathBuf>,
+        from: PathBuf,
+    },
     /// `awaseru save <anchor> --into PATH` — §6.8's box.
     Save {
         plan: Box<Plan>,
@@ -464,6 +550,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     // `save <anchor>`: which anchor to pack, and where to.
     let mut packing: Option<String> = None;
     let mut into: Option<PathBuf> = None;
+    let mut taking = false;
+    let mut from: Option<PathBuf> = None;
 
     let mut args = args.peekable();
     // The one bare word this tool takes, and it has to be first: a subcommand
@@ -476,6 +564,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         Some("serve") => {
             as_server = true;
             args.next();
+        }
+        Some("restore") => {
+            args.next();
+            taking = true;
         }
         Some("save") => {
             args.next();
@@ -516,6 +608,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--cache" => cache = Some(PathBuf::from(value()?)),
             "--session" => session = Some(PathBuf::from(value()?)),
             "--into" => into = Some(PathBuf::from(value()?)),
+            "--from" => from = Some(PathBuf::from(value()?)),
             "--log" => log = Some(PathBuf::from(value()?)),
             "--regions" => list_only = true,
             "--state-digest" => digest_only = true,
@@ -582,6 +675,28 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     // instructions and refusing it is the more useful answer, so a missing
     // place must not get in front of it.
     let found = where_things_go(session.clone(), home, cache, log)?;
+
+    if taking {
+        let from = from.ok_or_else(|| {
+            "`restore` needs the box to take in: `--from PATH`, the directory `save` wrote"
+                .to_string()
+        })?;
+        return Ok(Command::Restore {
+            plan: Box::new(Plan {
+                shared,
+                local,
+                home: found.home,
+                bound: Bound::Frames(1),
+                anchor: None,
+                cache: found.cache,
+                region: None,
+                offset: 0,
+                length: 0,
+            }),
+            session,
+            from,
+        });
+    }
 
     if let Some(anchor) = packing {
         let into = into.ok_or_else(|| {

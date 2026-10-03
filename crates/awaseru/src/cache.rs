@@ -51,6 +51,23 @@ pub struct Stored {
     /// demonstrated**, and §4.8 says every comparison from such an anchor is
     /// *not determined* rather than trusted.
     pub demonstrated_with: u32,
+    /// Set when this blob arrived in a box and had been demonstrated by
+    /// whoever packed it — carrying who they were.
+    ///
+    /// Kept **beside** `demonstrated_with` and never folded into it. §4.8's
+    /// demonstration shows that resuming this blob produces what replaying its
+    /// definition produces, and that was shown on somebody else's machine; a
+    /// session that counted it as its own would be reporting evidence it does
+    /// not have. So `demonstrated_with` stays at zero here and every verdict
+    /// from the blob is *not determined* until this session demonstrates it.
+    ///
+    /// What it does change is that nothing demonstrates it **automatically**.
+    /// A blob nobody has ever demonstrated anywhere is demonstrated before use
+    /// (§4.9); one demonstrated elsewhere is resumed, said to be somebody
+    /// else's, and left for the person to establish if they want it as
+    /// evidence. Forcing the replay would cost exactly what the box was for
+    /// and would be the tool deciding something it was not asked to.
+    pub demonstrated_elsewhere: Option<String>,
 }
 
 /// The only thing that can go wrong loudly.
@@ -88,6 +105,11 @@ struct Entry {
     check: CheapCheck,
     uses: u64,
     demonstrated_with: u32,
+    /// Absent in every entry written before boxes existed, which is what
+    /// `default` is for. §4.11 makes a format change safe anyway: a cache that
+    /// will not parse is a miss, and a miss costs only time.
+    #[serde(default)]
+    demonstrated_elsewhere: Option<String>,
 }
 
 /// A machine-local store of anchor blobs.
@@ -130,12 +152,29 @@ impl Cache {
     /// parse, a key that does not match, a blob of the wrong length. See this
     /// module's header for why none of those is an error.
     pub fn get(&self, key: &Key) -> Option<Stored> {
-        let dir = self.dir(key);
+        self.at_dir(&self.dir(key), key.as_str())
+    }
 
+    /// The entry an anchor's directory holds, if its key is the text given.
+    ///
+    /// For a box, whose entries are keyed by the **sender's** key text — a
+    /// string this session cannot build, because it carries the name they gave
+    /// their emulator. The text is still compared against what is stored, so
+    /// this reads an entry and never trusts a directory's name; what decides
+    /// whether that entry *applies* here is `parcel::Parts`, which compares the
+    /// two keys part by part and ignores only the name.
+    ///
+    /// Not a way to open an arbitrary blob: it takes the key it expects and
+    /// returns nothing when the stored one differs, exactly as `get` does.
+    pub fn entry_keyed(&self, anchor: &str, key_text: &str) -> Option<Stored> {
+        self.at_dir(&self.root.join(anchor), key_text)
+    }
+
+    fn at_dir(&self, dir: &Path, key_text: &str) -> Option<Stored> {
         // The key in full, not the directory name. Two keys digesting to one
         // name is not something to rely on not happening.
         let stored_key = std::fs::read_to_string(dir.join("key")).ok()?;
-        if stored_key != key.as_str() {
+        if stored_key != key_text {
             return None;
         }
 
@@ -152,6 +191,7 @@ impl Cache {
             check: entry.check,
             uses: entry.uses,
             demonstrated_with: entry.demonstrated_with,
+            demonstrated_elsewhere: entry.demonstrated_elsewhere,
         })
     }
 
@@ -191,6 +231,7 @@ impl Cache {
             check: stored.check.clone(),
             uses: stored.uses,
             demonstrated_with: stored.demonstrated_with,
+            demonstrated_elsewhere: stored.demonstrated_elsewhere.clone(),
         };
         let text = toml::to_string(&entry).expect("an entry is always serialisable");
 
@@ -402,6 +443,7 @@ mod tests {
             },
             uses: 0,
             demonstrated_with: 3,
+            demonstrated_elsewhere: None,
         }
     }
 
