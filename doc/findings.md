@@ -45,6 +45,8 @@ on until something was done about it; **slowed** means it cost real time;
 | 23 | the parent's deadline on its child is finding 20 again, one level up, and it is live | **will block** the use pass on a cold expensive anchor | a design decision — found by the audit |
 | 24 | two processes creating one anchor shared a staging directory | **would corrupt** a cached blob, silently | **fixed** — the staging name carries the process |
 | 25 | every run erased the previous run's log | annoyed, and it loses the only record of what went wrong | **fixed** — the name carries the moment |
+| 26 | a reference left its scratch state file behind, every time | slowed, and it grows without bound | **fixed** — it goes with the reference |
+| 27 | the backend's own folders are shared between processes | **would overwrite** one run's screenshots with another's | a decision: what `--home` is for |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -820,3 +822,46 @@ file-descriptor redirect. And in the server path, **stderr is the transport** �
 the protocol's answers travel on it — so there is no log of stderr to keep
 there. The emulator writes 130 lines to stdout and none to stderr, measured in
 M4, so what is worth keeping is kept.
+
+## 26. A reference left its scratch state file behind, every time
+
+**Slowed, and it grew without bound.** Found by asking whether each process
+should have a directory of its own.
+
+A blob's bytes pass through a file on their way to and from the backend, which
+only speaks in filenames. The file is named per-process — `awaseru-state-<pid>`
+— which is right, and it was never removed. One afternoon on a small image had
+left **thirty-four of them, five megabytes**. A long session on a large image
+would be measured in gigabytes, and nothing would ever say so.
+
+**Fixed**: the reference takes it when it goes. A failure to remove it is
+ignored on purpose — a scratch file that will not delete is a tidying problem,
+and refusing to finish because of one would make it the caller's.
+
+## 27. The backend's own folders are shared between processes
+
+**Would overwrite one run's screenshots with another's.** The same question
+found it, and it is a decision rather than a fix.
+
+`--home` is described as *where the backend may keep its own files*, and two
+quite different kinds of thing live there:
+
+| | kind |
+|---|---|
+| the scratch state file | one run's working file — already per-process, now removed with it |
+| the log | one run's record — carries the moment since finding 25 |
+| `Screenshots/`, `SaveStates/`, `Saves/`, `RecentGames`, `Debugger` | **the backend's own**, named by the backend, with no idea another process exists |
+
+The backend names a screenshot after the software and a counter, so two
+processes with one home write the same filename. Several processes is how
+anything is done in parallel here (finding 24), so this is reachable the moment
+anybody measures two things at once and looks at a picture afterwards.
+
+The cache is the opposite and is right as it is: sharing it is the whole point,
+because a blob is expensive and reusable.
+
+**So the two directories want opposite policies**, and only one says so. What is
+not decided is whether `--home` should be subdivided per process automatically —
+which makes the safe thing the default and moves where a person looks for a
+screenshot — or whether two processes should simply be given two homes, which
+costs nothing and has to be remembered.

@@ -1560,6 +1560,19 @@ impl Drop for Reference {
         self.backend.release_debugger();
         self.backend.stop();
         self.backend.release();
+
+        // The scratch file a blob passes through, taken away with the reference
+        // that made it. It is only ever a courier — the bytes live in the cache
+        // — and leaving it behind meant one full save state per process, for
+        // ever: thirty-four of them, five megabytes, accumulated in one
+        // afternoon of a small image. A long session on a large one would be
+        // measured in gigabytes.
+        //
+        // Failure is ignored on purpose. A scratch file that could not be
+        // removed is a tidying problem, and refusing to finish because of one
+        // would turn it into the caller's.
+        let _ = std::fs::remove_file(self.state_file());
+
         IN_USE.store(false, Ordering::SeqCst);
     }
 }
@@ -1567,6 +1580,50 @@ impl Drop for Reference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reference takes its scratch file with it.
+    ///
+    /// The file is a courier: a blob's bytes pass through it on the way to and
+    /// from the backend, which only speaks in filenames. Leaving it behind cost
+    /// one full save state per process for ever — thirty-four of them and five
+    /// megabytes accumulated in one afternoon, on a small image.
+    #[test]
+    fn a_reference_takes_its_scratch_file_with_it() {
+        let Some(library) = std::env::var_os("AWASERU_TEST_BACKEND").map(std::path::PathBuf::from)
+        else {
+            eprintln!("SKIPPED: set AWASERU_TEST_BACKEND to a built backend library");
+            return;
+        };
+        let dir = std::env::temp_dir().join("awaseru-scratch-file");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let rom = dir.join("fixture.sfc");
+        std::fs::write(&rom, crate::fixture::image()).expect("write the image");
+
+        let left_behind = {
+            let mut reference = Reference::open_with(
+                &library,
+                &dir,
+                &rom,
+                Startup::default(),
+            )
+            .expect("it comes up");
+            reference.set_watchdog(Duration::from_secs(30));
+
+            // Make one, so there is something to leave behind.
+            let _ = <Reference as awaseru_core::Platform>::save_state(&mut reference)
+                .expect("a state");
+            let path = reference.state_file();
+            assert!(path.exists(), "the courier is there while the reference is");
+            path
+        };
+
+        assert!(
+            !left_behind.exists(),
+            "and gone with it: {}",
+            left_behind.display()
+        );
+    }
 
     /// The decision behind the write guard, with both answers.
     ///
