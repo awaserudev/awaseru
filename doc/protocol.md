@@ -618,6 +618,142 @@ both numbers in it. A client built against this document should expect that
 refusal rather than a fallback, and a second version of this protocol will be
 written when there is a client whose author did not write the tool.
 
+## Replaying a recorded input log
+
+§4.7's input log, which §13's Q14 recorded as unreachable on this backend. It is
+reachable, and the record was wrong about **why** it was not.
+
+### What Q14 got wrong
+
+Q14 said the backend "reports no control device at any of its eight indices, so
+setting an input override stores a state nothing reads". Both halves were
+measured and both were true. The conclusion drawn from them was not: that the
+backend cannot accept input.
+
+It cannot accept input **because nothing had ever told it a controller exists**.
+A control device is created from the emulator's configuration, and this project
+has never set that configuration — the record carrying it is the nested one §13's
+Q13 refused to transcribe twice. So the console came up with no controller and an
+input override had nowhere to land. The backend was not missing an ability; the
+host was missing a sentence.
+
+The lesson is narrower than "measure things", because the measurement was right.
+It is that **an absence is not a cause.** Eight empty device slots were read off
+the machine correctly and then explained by a guess, and the guess went into §13
+wearing the measurement's authority.
+
+### What a recorded log carries, and why that is the way in
+
+A log is a plain zip of two text files.
+
+**`Input.txt`** — one line per frame, one field per device:
+
+```text
+|..|............
+ ^^ ^^^^^^^^^^^^
+ |  the controller: twelve characters in the order ABXYLRSTUDLR,
+ |  `.` for not pressed, any other character for pressed
+ the console's own buttons
+```
+
+**`GameSettings.txt`** — lines of `name value`, lower case with dots, which are
+the emulator's setting names and not the field names of any C++ struct:
+
+```text
+MesenVersion 2.2.1
+MovieFormatVersion 3
+SHA1 <the software's hash>
+emu.consoleType Snes
+snes.ramPowerOnState AllZeros
+snes.enableRandomPowerOnState false
+snes.region Auto
+snes.port1.type SnesController      ← this line is the whole answer to Q14
+snes.port2.type None
+```
+
+Playback applies those settings and then power-cycles. So the controller is
+created by the act of replaying, from one line of a text file, without the host
+touching the configuration record it twice refused to transcribe. The archive is
+a documented container rather than a struct layout, which is why §13 called this
+the most promising of Q14's three routes.
+
+### What was measured
+
+Against supplied software, with a log of 17 767 frames recorded through the
+emulator's own interface by the person who owns the software. Thirty-five of
+those frames have a button pressed; the rest is the software's opening playing
+itself.
+
+| question | answer | how |
+|---|---|---|
+| does `MoviePlay` take a path and nothing else? | yes | one string, accepted headless |
+| does starting a log power-cycle? | **yes** | five hundred frames run first, then the log started: the state after one frame of playback is byte-identical to the same thing done on a freshly loaded machine. A log is a beginning, not an addition |
+| does the recorded input arrive? | **yes** | checked by looking. The screenshot at the log's end shows the software exactly where the person who recorded it said it would be, with the player in control. A frame counter cannot say that and a screenshot can |
+| does playback survive the debugger? | **yes** | eighty thousand single instructions stepped in the middle of playback, and playback still reporting itself live afterwards — with the screen having advanced past the point the recorded presses are at, so the input arrived *while* the host was stepping |
+| do replays agree? | **yes** | three replays of three thousand frames reached one state, byte for byte, over every writable region and the processor |
+| where does a log end? | at its own end | the full 17 767 frames stop exactly at frame boundary 17 767 and playback reports itself finished there, so the log's length is the bound and nothing has to guess |
+
+### What a replay costs
+
+The number that multiplies everything built on top of this.
+
+| route | rate | the full log |
+|---|---|---|
+| one request per frame | 60 a second | 4 m 56 s |
+| one request for the whole run | **165 a second** | **1 m 48 s** |
+| with no debugger attached at all | 365 a second | 49 s |
+
+**One request for many frames is 3.2× one request per frame**, and reaches a
+byte-identical state at the same frame boundary — so the host asks for the whole
+span at once. The cost removed is the host's, not the emulator's: the same frames
+are emulated either way.
+
+**Detaching the debugger is a further 2.2×, and is unusable.** With nothing
+attached there is no break, so the end of the log can only be *noticed*, by
+polling, and the machine runs on while it is being noticed. Three detached
+replays of the same log were asked where they had stopped: three different
+states, at three different positions. A route that is twice as fast and lands
+somewhere else each time cannot reach an anchor, because an anchor is a position
+that can be returned to (§4.7). It is recorded here so that nobody measures it
+again.
+
+So the debugger costs a replay 2.2× and buys the only thing that makes a replay
+worth doing.
+
+**The same lesson, much louder, for instructions.** A run bounded at one
+instruction costs about 10 ms — 99 a second, measured in the test — while eighty
+thousand instructions asked for as a single bound run in about half a second, or
+some 160 000 a second. Three orders of magnitude, and none of it is emulation:
+it is the request, the break and the wait around it. Anything in §5 that walks
+instructions should ask for the span and not the step. Where a step at a time is
+unavoidable, 10 ms is the unit of the bill.
+
+### What is still missing, which is above this backend
+
+The capability is **not declared** (§7.3), and the backend's own documentation
+says why: `Platform` has no verb for replaying a log. Declaring it on the
+strength of these measurements would pass §7.3's gate and let an anchor carrying
+an input log be replayed with the log ignored — arriving somewhere else,
+consistently, and caching it as the anchor. `doc/findings.md` holds the two
+decisions that would change that.
+
+### What it cost to find out, which is a finding of its own
+
+Nothing above required a human to press a button, and that matters, because on
+the machine this was measured on **a human could not**. The emulator's interface
+delivered no keyboard input to the software for an evening. Two gates, both in
+its code and neither in any document:
+
+- the interface swallows every key while its menu bar holds keyboard focus, and
+  a menu opened with the mouse can keep that focus after it has closed;
+- the core discards all input when it believes its window is in the background,
+  which a compositor can report wrongly.
+
+The log was eventually recorded through that interface once the focus was taken
+away from the menu bar. The lesson for this project is that a tool depending on a
+person operating a GUI inherits every bug in that GUI, and that this one is now
+depending on a *recording* instead, which it does not.
+
 ## The reference in a child process
 
 | | |

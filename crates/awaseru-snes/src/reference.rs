@@ -646,6 +646,36 @@ impl Reference {
         })
     }
 
+    /// Asks the backend for a picture of the frame, into its own screenshot
+    /// folder under this reference's home.
+    ///
+    /// Here because a claim about *where* a machine is should be checkable by
+    /// looking rather than by believing a frame count — and on real software
+    /// that is the difference between "it ran 17 767 frames" and "the player
+    /// has control".
+    pub fn screenshot(&self) {
+        self.backend.take_screenshot();
+    }
+
+    /// Replays a recorded input log from power-on — §4.7's input log, at last.
+    ///
+    /// Not a verb of the `Platform` trait, and deliberately not yet: this is a
+    /// measurement of what the backend can do, and §7.6 says not to guess a
+    /// signature before a second platform exists to answer with. What it does
+    /// is what the backend does — apply the settings the log carries, which is
+    /// what creates a control device, then power-cycle and feed the recorded
+    /// frames.
+    pub fn play_input_log(&mut self, path: &Path) -> Result<(), LoadError> {
+        self.backend.play_movie(path)?;
+        self.last_position = self.position_now();
+        Ok(())
+    }
+
+    /// Whether a replayed input log is still feeding frames.
+    pub fn input_log_playing(&self) -> bool {
+        self.backend.movie_playing()
+    }
+
     /// The position after a run bounded by frames — **if** the backend really
     /// is at the start of a frame.
     ///
@@ -749,9 +779,18 @@ impl Platform for Reference {
     /// What is deliberately **not** declared, and why each is a different kind
     /// of absence:
     ///
-    /// - `input-replay` — measured absent. The library exposes no control
-    ///   device for an input to arrive at (§13's Q14). This is the one that is
-    ///   absent in the machine rather than in this crate.
+    /// - `input-replay` — **this backend can do it, and the capability is
+    ///   still not declared.** M5 measured a recorded log replaying
+    ///   deterministically and surviving everything the host does to the
+    ///   machine while it plays; `play_input_log` is the verb, and
+    ///   `doc/protocol.md` holds the five measurements. What is missing is
+    ///   above this crate: `Platform` has no verb for replaying a log, so a
+    ///   declaration here would pass §7.3's gate and let an anchor carrying an
+    ///   input log be replayed with the log *ignored* — arriving somewhere
+    ///   else, consistently, and caching it as the anchor. §7.3's rule is that
+    ///   a capability is declared when it has been measured; the reason this
+    ///   one waits is that a declaration nothing can act on is not merely
+    ///   useless but unsafe. `doc/findings.md` has the two decisions it needs.
     /// - `stop-on-read`, `execution-coverage`, `call-and-return-events` — a
     ///   route exists for each and nothing here has taken it: a read flag in
     ///   the breakpoint record, an execute counter in the access record, and an
@@ -1038,16 +1077,34 @@ impl Platform for Reference {
             }
 
             Bound::Frames(n) => {
-                // One request per frame, because what the backend offers is
-                // "run to the first line of the display" and that is a frame
-                // boundary exactly once per frame. Asking it for n frames'
-                // worth of video cycles in one request also works, but it lands
-                // wherever in the frame it started, which is not a boundary and
-                // would have to be reported as a position nothing can seed from.
-                for _ in 0..n {
-                    if let Err(stop) = self.step_and_wait(0, StepKind::ToLine) {
+                // All but the last frame in **one** request, then one more to
+                // land on a boundary.
+                //
+                // The obvious shape is one request per frame, because what the
+                // backend offers for a boundary is "run to the first line of
+                // the display" and that is a frame boundary exactly once per
+                // frame. It is also three times slower, and on real software
+                // that is the difference between five minutes and ninety
+                // seconds: measured, 600 frames took 10.36 s one at a time and
+                // 3.24 s in one request, because each request is a break and a
+                // resume through the debugger rather than emulation.
+                //
+                // Running them in bulk lands wherever the last frame ends,
+                // which is not a boundary — so the final frame is asked for the
+                // slow way, and the position reported is a real boundary. The
+                // two routes were measured to reach **the same machine**: the
+                // digest over every writable region and the processor record
+                // was identical, and both reported frame boundary 600.
+                let mut remaining = n;
+                while remaining > 1 {
+                    let bulk = u32::try_from(remaining - 1).unwrap_or(u32::MAX);
+                    if let Err(stop) = self.step_and_wait(bulk, StepKind::Frames) {
                         return Ok(stop);
                     }
+                    remaining -= u64::from(bulk);
+                }
+                if let Err(stop) = self.step_and_wait(0, StepKind::ToLine) {
+                    return Ok(stop);
                 }
                 let at = self.frame_position();
                 Ok(self.arrive(at))

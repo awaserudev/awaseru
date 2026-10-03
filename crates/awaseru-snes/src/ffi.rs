@@ -105,6 +105,13 @@ struct Symbols {
     SetMemoryState: unsafe extern "C" fn(memory_type: u32, buffer: *const u8, length: i32),
     /// Four 32-bit numbers by value — see `EmulationConfig`.
     SetEmulationConfig: unsafe extern "C" fn(EmulationConfig),
+    /// Writes a PNG of the current frame into the backend's own screenshot
+    /// folder. No arguments, no return: the path is the backend's to choose.
+    TakeScreenshot: unsafe extern "C" fn(),
+    /// Replays a recorded input log — §4.7. One path and nothing else.
+    MoviePlay: unsafe extern "C" fn(*const c_char),
+    MovieStop: unsafe extern "C" fn(),
+    MoviePlaying: unsafe extern "C" fn() -> bool,
     SetMemoryValues:
         unsafe extern "C" fn(memory_type: u32, address: u32, data: *const u8, length: i32),
     SaveStateFile: unsafe extern "C" fn(path: *const c_char),
@@ -195,6 +202,10 @@ impl Backend {
             SetCpuState: symbol!("SetCpuState"),
             SetMemoryState: symbol!("SetMemoryState"),
             SetEmulationConfig: symbol!("SetEmulationConfig"),
+            TakeScreenshot: symbol!("TakeScreenshot"),
+            MoviePlay: symbol!("MoviePlay"),
+            MovieStop: symbol!("MovieStop"),
+            MoviePlaying: symbol!("MoviePlaying"),
             SetMemoryValues: symbol!("SetMemoryValues"),
             SaveStateFile: symbol!("SaveStateFile"),
             LoadStateFile: symbol!("LoadStateFile"),
@@ -587,6 +598,43 @@ impl Backend {
         counts
     }
 
+    /// Starts replaying a recorded input log (§4.7).
+    ///
+    /// The backend applies the settings the log carries — including which
+    /// controller is in which port, which is what creates a control device at
+    /// all — and then power-cycles. So this is not "press these buttons on the
+    /// machine as it stands": it is "begin again, with these inputs".
+    pub fn play_movie(&self, path: &Path) -> Result<(), LoadError> {
+        let text = CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|_| LoadError::Argument { why: "a path with a zero byte in it" })?;
+        // SAFETY: a pointer to a C string that outlives the call. The backend
+        // copies what it needs — it opens the file before returning.
+        unsafe { (self.symbols.MoviePlay)(text.as_ptr()) }
+        Ok(())
+    }
+
+    /// Whether an input log is still playing.
+    pub fn movie_playing(&self) -> bool {
+        // SAFETY: no arguments, a plain bool back.
+        unsafe { (self.symbols.MoviePlaying)() }
+    }
+
+    /// Stops a replay, leaving the machine where it was.
+    pub fn stop_movie(&self) {
+        // SAFETY: no arguments, no return.
+        unsafe { (self.symbols.MovieStop)() }
+    }
+
+    /// Asks the backend to write a PNG of the current frame.
+    ///
+    /// Where it lands is the backend's business — its screenshot folder, under
+    /// the home directory this crate gives it — so the caller looks for the
+    /// newest file there rather than being told.
+    pub fn take_screenshot(&self) {
+        // SAFETY: no arguments and no return.
+        unsafe { (self.symbols.TakeScreenshot)() }
+    }
+
     /// Sets the emulation settings — used to take the throttle off.
     pub fn set_emulation_config(&self, config: EmulationConfig) {
         // SAFETY: a flat record of four 32-bit numbers, passed by value, as
@@ -660,6 +708,13 @@ const MAIN_CPU: u8 = 0;
 pub enum StepKind {
     /// Count whole instructions. Breaks between instructions.
     Instruction = 0,
+    /// Run whole frames, counted — **one request for all of them**, where
+    /// `ToLine` is one request per frame.
+    ///
+    /// Measured in M5: a replay of an input log is tens of thousands of frames,
+    /// and one request per frame is tens of thousands of break-and-resume round
+    /// trips through the debugger.
+    Frames = 6,
     /// Run until the video hardware reaches the line given as the count.
     ToLine = 7,
 }

@@ -214,17 +214,27 @@ than taken.
 | `stop-on-write` | yes | the measurement above: the break lands during the write, before it commits |
 | `writing-position` | yes | the measurement above: the instruction's own program counter at that break is the store |
 | `write-recency` | yes | the measurement above: a per-address write stamp, in the backend's clock — and a debugger write leaves no record, so it reports the software's writes |
-| `input-replay` | **no** | measured absent — no control device at any of the eight indices (§13's Q14) |
+| `input-replay` | **no, and the backend can do it** | M5 measured a recorded log replaying deterministically, power-cycling on start, ending at its own end and surviving eighty thousand single instructions — `doc/protocol.md` has the numbers. It is **not declared** because `Platform` has no verb for replaying one, so a declaration would pass §7.3's gate and let an anchor's log go unreplayed. The earlier entry here said "measured absent — no control device at any of the eight indices": the reading was right and the conclusion was wrong (§13's Q14) |
 | `stop-on-read` | **no** | a route, not taken: the breakpoint record has a read flag and nothing here has used it |
 | `execution-coverage` | **no** | a route, not taken: the access record has an execute counter and a stamp, measured only for writes |
 | `call-and-return-events` | **no** | a route, not taken: `GetCallstack` is exported, and its `StackFrameInfo` is flat enough to transcribe — two address words, three address records of two fields each, and a flag word. Nothing here has read one |
 | `register-writes` | **no** | needs the event viewer, which needs the nested configuration record this project has refused twice |
 
-The distinction between the last four and `input-replay` is the one worth
-keeping: `input-replay` is absent **in the machine**, and the other four are
-absent **in this crate**. A route that exists and has not been taken is not a
-declaration, because a host relying on one would be relying on this crate's
-reading of a header rather than on anything that has run.
+The five undeclared rows are three different kinds of absence, and the
+difference is what §7.3 is for:
+
+- `input-replay` is absent **in the host**. The machine does it; nothing above
+  this crate can ask for it. This is the one that changed: until M5 it was
+  recorded as absent in the machine, which was wrong.
+- `stop-on-read`, `execution-coverage` and `call-and-return-events` are absent
+  **in this crate**. A route exists for each and nobody has taken it. A route is
+  not a declaration, because a host relying on one would be relying on this
+  crate's reading of a header rather than on anything that has run.
+- `register-writes` is absent **by refusal**: it needs a record this project has
+  decided twice not to transcribe.
+
+The middle group is the cheap one to fix and the first group is the one that
+matters, which is the opposite of how they look from the table.
 
 Three of the four now have a verb behind them: `Bound::Address` for
 `stop-on-execution`, `Bound::Write` and `Platform::write_recency` for the three
