@@ -102,7 +102,7 @@ fn the_vocabulary_drives_a_real_reference() {
         provenance,
         AnchorPolicy {
             verify_from_origin: 0,
-            reverify_after: 0,
+            reverify_at_end: false,
         },
     );
 

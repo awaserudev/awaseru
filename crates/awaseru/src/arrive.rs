@@ -108,6 +108,32 @@ impl std::fmt::Display for How {
     }
 }
 
+/// The closing half of §4.9's bracket.
+///
+/// Read after a session rather than during one: it says whether everything that
+/// rested on this blob rested on something that was still what it claimed to
+/// be.
+#[derive(Debug, Clone)]
+pub struct Reverification {
+    pub anchor: String,
+    /// How many times the blob was resumed since it was demonstrated.
+    pub uses: u64,
+    pub took: Duration,
+}
+
+impl std::fmt::Display for Reverification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` still produces what replaying it produces, after {} use(s) — checked in \
+             {:.3}s, so the comparisons made from it stand",
+            self.anchor,
+            self.uses,
+            self.took.as_secs_f64()
+        )
+    }
+}
+
 /// What happened on the way to an anchor — §4.12.
 #[derive(Debug, Clone)]
 pub struct Arrived {
@@ -403,6 +429,18 @@ impl<'a> Arriver<'a> {
         self.platform.read_span(region, offset, length)
     }
 
+    /// Takes the machine's whole state, opaquely (§4.6).
+    ///
+    /// Here because an `Arriver` borrows the platform, and because §4.9's
+    /// closing check has to be testable: a test that cannot make a blob of its
+    /// own cannot make a *wrong* one, and a check nothing can fail is not a
+    /// check.
+    pub fn save_state(&mut self) -> Result<awaseru_core::Blob, awaseru_core::StateError> {
+        let blob = self.platform.save_state()?;
+        self.at = blob.position().clone();
+        Ok(blob)
+    }
+
     /// A region, through the reference this is driving.
     ///
     /// Here because an `Arriver` borrows the platform for as long as it lives,
@@ -458,6 +496,96 @@ impl<'a> Arriver<'a> {
         Ok(chain.len())
     }
 
+    /// §4.9's closing check: replay the definition **once** and see that the
+    /// cached blob still produces what it produces.
+    ///
+    /// # Why once, and not the demonstration again
+    ///
+    /// §4.8's first step replays three times to establish that the *definition*
+    /// is deterministic. That property cannot change while the key holds —
+    /// anything that could change it changes the key, and a changed key
+    /// discards the blob before it is ever resumed (§4.11). So the closing
+    /// check is about the **blob**, not the definition, and one replay answers
+    /// it: does resuming still land where replaying lands, across every
+    /// writable region.
+    ///
+    /// # What it deliberately does not repeat
+    ///
+    /// The demonstration's fourth step — running onward from a replay and from
+    /// a resume and comparing — needs a second replay, and it asks about the
+    /// backend's save and load rather than about this blob: whether a state
+    /// carries the parts §3's model does not name. That is a property of the
+    /// backend, established once, and buying it again at every session's end
+    /// would double the closing price for a question whose answer cannot have
+    /// changed without the version changing.
+    ///
+    /// A disagreement is an error and not a value, because it means every
+    /// comparison made from this anchor in this session is void. That is not
+    /// something to return beside a result.
+    pub fn reverify(&mut self, name: &str) -> Result<Reverification, ArriveError> {
+        let began = Instant::now();
+        let anchor = self
+            .anchors
+            .get(name)
+            .ok_or_else(|| AnchorError::Unknown {
+                name: name.to_string(),
+                declared: self.anchors.names().map(str::to_string).collect(),
+            })?
+            .clone();
+        let chain = self
+            .anchors
+            .chain_for(name, &self.platform.capabilities())?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let chain_refs: Vec<&Anchor> = chain.iter().collect();
+        let key = self.anchors.key(name, &self.provenance)?;
+
+        let Some(stored) = self.cache.get(&key) else {
+            // Nothing cached is not a failure: an anchor that was replayed
+            // every time was never trusted to a blob, so there is nothing to
+            // check. Saying that is better than inventing a pass.
+            return Err(ArriveError::Refused {
+                anchor: name.to_string(),
+                why: "no blob is cached for it, so nothing rested on one".to_string(),
+            });
+        };
+
+        let watched = self.everything_writable();
+
+        self.replay(&chain_refs)?;
+        // Saving advances the machine, and the stored blob's position is the
+        // one taken *after* its own save — so this throwaway save puts the
+        // replay at the same place before the witness is taken. Thrown away
+        // rather than stored: storing it would replace the thing being
+        // checked, and the check would be of a blob against itself.
+        let throwaway = self.platform.save_state()?;
+        // After the save, never before: saving advances the machine, and a
+        // witness labelled with the position from before it compares the
+        // replay's position against the blob's and always disagrees. Found by
+        // this check failing with "frame boundary 5 against 0x8034" the first
+        // time it ran, which is the right way to find it.
+        self.at = throwaway.position().clone();
+        let replayed = self.witness(&watched)?;
+
+        self.resume(&stored, &anchor)?;
+        let resumed = self.witness(&watched)?;
+
+        let differences = replayed.differences(&resumed);
+        if !differences.is_empty() {
+            return Err(ArriveError::ResumeDisagrees {
+                anchor: name.to_string(),
+                differences,
+            });
+        }
+
+        Ok(Reverification {
+            anchor: name.to_string(),
+            uses: stored.uses,
+            took: began.elapsed(),
+        })
+    }
+
     /// Brings the reference to `name`, the cheap way when that is allowed.
     ///
     /// # Where it leaves the machine, and what `how` therefore means
@@ -492,16 +620,23 @@ impl<'a> Arriver<'a> {
             })?
             .clone();
 
-        // §4.9: a demonstration that has come due is run before the arrival it
-        // is about, of the tool's own accord.
-        let mut reverified = false;
-        if let Some(stored) = self.cache.get(&key) {
-            let due = self.policy.reverify_after > 0 && stored.uses >= self.policy.reverify_after;
-            let never = stored.demonstrated_with == 0 && self.policy.verify_from_origin > 0;
-            if due || never {
-                self.demonstrate(name)?;
-                reverified = due;
-            }
+        // §4.9: an anchor nobody has demonstrated is demonstrated before it is
+        // used, of the tool's own accord.
+        //
+        // **Nothing is re-verified in the middle of a session**, and that is a
+        // deliberate change rather than an omission: the old shape replayed
+        // from the origin every N uses, which is a count spending time it
+        // cannot measure. §4.9 has the arithmetic — fifty hours of verification
+        // against seventeen minutes of work, on an ordinary opening sequence.
+        // What runs on every use instead is §4.11's key and §4.8's cheap
+        // check, and the session is bracketed by a demonstration before and
+        // `reverify` after.
+        let reverified = false;
+        if let Some(stored) = self.cache.get(&key)
+            && stored.demonstrated_with == 0
+            && self.policy.verify_from_origin > 0
+        {
+            self.demonstrate(name)?;
         }
 
         if let Some(stored) = self.cache.get(&key) {

@@ -114,7 +114,7 @@ fn a_difference_is_localised_to_the_instruction_that_wrote_it() {
         provenance.clone(),
         AnchorPolicy {
             verify_from_origin: 0,
-            reverify_after: 0,
+            reverify_at_end: false,
         },
     );
 

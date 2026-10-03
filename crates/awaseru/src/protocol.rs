@@ -77,6 +77,13 @@ pub enum Command {
     Write { region: String, offset: usize },
     /// Advance, bounded (§4.2). There is no unbounded run to ask for.
     Run { bound: Bound },
+    /// §4.9's closing check: replay the anchor's definition once and see that
+    /// the cached blob still produces what replaying produces.
+    ///
+    /// The other half of a session's bracket — the opening half is the
+    /// demonstration, which the tool runs itself before using an anchor nobody
+    /// has demonstrated.
+    Reverify { anchor: String },
     /// §5.6's cycle and all of §5's answers: measure a routine, compare a
     /// reimplementation's output against it, localise a difference, run a
     /// control.
@@ -197,6 +204,13 @@ pub enum Reply {
     /// Boxed because a report carries all of §5 and the other replies carry a
     /// field or two: without it, every reply on the wire would be the size of
     /// the largest one.
+    /// §4.9's closing check passed: everything that rested on this blob stands.
+    Reverified {
+        anchor: String,
+        /// How many times the blob was resumed since it was demonstrated.
+        uses: u64,
+        took_ms: u64,
+    },
     Report {
         report: Box<Report>,
     },

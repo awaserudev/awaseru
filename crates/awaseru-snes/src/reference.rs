@@ -360,6 +360,19 @@ impl Reference {
     ) -> Result<Self, OpenError> {
         backend.init();
         backend.initialize_headless(home)?;
+
+        // The throttle comes off before anything runs. The backend paces itself
+        // to the console's real time by default, which is what somebody
+        // watching wants and the opposite of what a replay wants: measured on
+        // supplied software, 1800 frames took 31.6 s paced and the marginal
+        // rate was 60 frames a second — exactly real time, which is the
+        // signature of a frame delay rather than of a limit.
+        //
+        // Nothing about the emulated machine depends on it: the delay is a
+        // sleep between frames, and §2.5's determinism tests are what say so
+        // rather than this comment.
+        backend.set_emulation_config(crate::ffi::EmulationConfig::unthrottled());
+
         // Before the software is loaded, so that nothing it does is missed.
         backend.listen_for_breaks();
 

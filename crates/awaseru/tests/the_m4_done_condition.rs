@@ -63,7 +63,7 @@ fn configure(dir: &Path, rom: &Path, library: &Path) {
              [[emulator]]\nname = \"ref-a\"\nplatform = \"snes\"\nbackend = \"mesence\"\n\
              version = \"2.2.1\"\n\n\
              [reference]\nuse = \"ref-a\"\n\n\
-             [anchors]\nverify_from_origin = 0\nreverify_after = 0\n"
+             [anchors]\nverify_from_origin = 0\nreverify_at_end = false\n"
         ),
     )
     .expect("the shared half");

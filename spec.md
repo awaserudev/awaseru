@@ -328,21 +328,64 @@ keep paying for assurance depends on how much they trust the ground.
 # from that anchor says so.
 verify_from_origin = 3
 
-# After this many uses, replay from the origin again and check the blob still
-# produces the same state. Zero means never.
-reverify_after = 50
+# Replay once at the end of a session and check the blob still produces the
+# same state. On by default; off is a decision rather than an absence.
+reverify_at_end = true
 ```
 
 **Why re-verify something whose key has not changed.** The cheap check covers
 only what the anchor *declares* it covers. Something outside that set can drift
 and never be noticed — and §4.8's whole point is that this failure passes
-instead of complaining. Periodic re-derivation is the audit of the cheap check,
-and it is the same idea as §16.5 pointing the tool's own comparison machinery at
-its own dependency: the cheap thing is trusted because an expensive thing checks
-it on a schedule, not because it is believed.
+instead of complaining. Re-derivation is the audit of the cheap check, and it is
+the same idea as §16.5 pointing the tool's own comparison machinery at its own
+dependency: the cheap thing is trusted because an expensive thing checks it, not
+because it is believed.
+
+**Why at the end of a session, and not every N uses.** Because *every N uses* is
+a count, and the thing it is spending is **time**, which no count can know.
+
+An earlier version of this section said "after this many uses, replay from the
+origin again", with fifty as the illustration. Fifty was chosen against a
+definition that replayed in four seconds. Against one that replays in five
+minutes — which is an ordinary opening sequence — ten thousand comparisons would
+spend **fifty hours** re-verifying and seventeen minutes comparing. The policy
+was not wrong about what it wanted; it was wrong to express it as a count, and a
+tool whose verification costs three hundred times its work is a tool nobody
+leaves switched on.
+
+Bracketing the session answers the same question for a fixed price:
+
+- **before**: the definition is demonstrated (§4.8's five steps), which
+  establishes that the blob is what a replay produces;
+- **during**: every arrival is checked by the two things that already run on
+  every use — §4.11's key, which discards the blob outright if the reference,
+  the backend, the version, the software or any definition in the chain
+  changed; and §4.8's cheap check, which catches a blob that did not load or
+  loaded wrong;
+- **after**: one replay from the origin, compared against where the resumed
+  machine ends up.
+
+If the closing replay agrees, every comparison in between rested on a blob that
+was equivalent at the start, equivalent at the end, and guarded throughout by
+the key and the cheap check. If it disagrees, **the session is void** — and that
+is the honest result, arrived at for the price of one replay instead of two
+hundred.
+
+What this does not do is tell you *when* a drift began. A count would not either:
+it would tell you which fifty-use window it began in, having paid for that
+resolution with the whole budget. Somebody who needs the window can run shorter
+sessions, which is the same trade made explicitly.
+
+**A re-verification is not a second demonstration.** The demonstration's three
+replays exist to establish that the *definition* is deterministic (§4.8's first
+step), and that property does not change while the key holds — anything that
+could change it changes the key and discards the blob. So re-verifying is **one**
+replay against the resume, not three, which is where two thirds of the closing
+cost goes.
 
 **A verdict records how well verified its anchor was**: the anchor's name, how
-many replays it was demonstrated against, and how many uses ago. Turning the
+many replays it was demonstrated against, and how many times the blob has been
+used since. Turning the
 numbers down is allowed; being quiet about having turned them down is not. A
 result that reads "agrees" from an anchor nobody ever demonstrated is a result
 whose foundation the reader cannot see, which is §2.3's mistake wearing

@@ -77,7 +77,7 @@ fn an_anchor_is_demonstrated_and_then_resumed() {
     let cache = Cache::at(&cache_dir);
     let policy = AnchorPolicy {
         verify_from_origin: 3,
-        reverify_after: 2,
+        reverify_at_end: true,
     };
 
     let mut arriver = Arriver::new(
@@ -133,19 +133,105 @@ fn an_anchor_is_demonstrated_and_then_resumed() {
         "resuming the anchor must put the machine where the program had got to"
     );
 
-    // ---- §4.9's reverify_after fires of its own accord ----------------
-    // `reverify_after` is two, and the uses counter was reset by the
-    // demonstration, so a couple more arrivals bring it due.
-    let mut reverified = false;
-    for _ in 0..4 {
+    // ---- §4.9: nothing is re-verified in the MIDDLE of a session ------
+    // The old policy replayed from the origin every N uses. On a definition
+    // that replays in five minutes, that is fifty hours of verification against
+    // seventeen minutes of work (§4.9 has the arithmetic), so the middle of a
+    // session is now left alone and the session is bracketed instead.
+    for _ in 0..8 {
         let arrived = arriver.arrive("later").expect("it arrives");
-        reverified |= arrived.reverified;
+        assert_eq!(
+            arrived.how,
+            How::Resumed,
+            "every arrival after the first resumes — nothing replays mid-session"
+        );
+        assert!(
+            !arrived.reverified,
+            "and nothing re-verifies of its own accord in the middle (§4.9)"
+        );
     }
+
+    // ---- and the closing half of the bracket does the checking --------
+    // One replay, not three: the definition's determinism was established by
+    // the demonstration and cannot change while the key holds (§4.11).
+    let closed = arriver.reverify("later").expect("the blob still stands");
+    assert_eq!(closed.anchor, "later");
     assert!(
-        reverified,
-        "with reverify_after = 2, the tool must re-demonstrate of its own accord within four \
-         arrivals (§4.9)"
+        closed.uses >= 8,
+        "it says how much rested on the blob: {} use(s)",
+        closed.uses
     );
+    assert!(
+        closed.to_string().contains("still produces"),
+        "said: {closed}"
+    );
+    eprintln!("closing check: {closed}");
+
+    // Cheaper than the arrival that demonstrated it, which is the whole point:
+    // that one replayed the chain three times and ran onward twice; this one
+    // replays once.
+    assert!(
+        closed.took < first.took,
+        "one replay must cost less than a demonstration: {:?} against {:?}",
+        closed.took,
+        first.took
+    );
+
+    // ---- and it CATCHES a blob that is not what replaying gives --------
+    // Without this half the closing check is decoration: one that always passed
+    // would pass every assertion above. The blob under the key is replaced with
+    // a state from further on — the same anchor, the same key, a machine that
+    // ran further — which is exactly the shape of the failure §4.9 is paid to
+    // catch.
+    let key = anchors
+        .key("later", &provenance)
+        .expect("the anchor resolves");
+    let honest = cache.get(&key).expect("a blob is cached");
+
+    // The blob is made wrong in a region the anchor does NOT declare — it
+    // covers `work-ram` and `palette-ram`, so a difference in `video-ram`
+    // sails past §4.8's cheap check and is caught only by a comparison over
+    // every writable region. That is the exact failure the closing check is
+    // paid for; a blob wrong in a declared region would be caught one step
+    // earlier, by the cheap check, which is the correct order and tests
+    // something else.
+    arriver.arrive("later").expect("back to the anchor");
+    arriver
+        .write_span("video-ram", 0x100, &[0xA5; 64])
+        .expect("scribble somewhere the anchor does not watch");
+    let tampered = arriver.save_state().expect("a state with the scribble in it");
+    cache
+        .put(
+            &key,
+            &awaseru::cache::Stored {
+                check: awaseru_core::CheapCheck {
+                    // The blob's own landing place, so the position half of the
+                    // cheap check agrees...
+                    position: tampered.position().clone(),
+                    // ...and the declared regions are untouched, so the digest
+                    // half agrees too.
+                    coverage: honest.check.coverage.clone(),
+                },
+                blob: tampered,
+                ..honest.clone()
+            },
+        )
+        .expect("the cache takes it");
+
+    let err = arriver
+        .reverify("later")
+        .expect_err("that blob is not what replaying gives");
+    match &err {
+        awaseru::arrive::ArriveError::ResumeDisagrees { anchor, differences } => {
+            assert_eq!(anchor, "later");
+            assert!(!differences.is_empty(), "it says where they parted");
+            eprintln!("caught: {err}");
+        }
+        other => panic!("the closing check must catch this: {other}"),
+    }
+
+    // Put the honest one back, so what follows is about what it is about.
+    cache.put(&key, &honest).expect("restored");
 
     // ---- §4.11: deleting the cache costs only time --------------------
     let before = arriver.read("work-ram").expect("it reads");
@@ -168,7 +254,7 @@ fn an_anchor_is_demonstrated_and_then_resumed() {
     // it costs is a verdict, not a warning.
     let lax = AnchorPolicy {
         verify_from_origin: 0,
-        reverify_after: 0,
+        reverify_at_end: false,
     };
     cache.clear();
     let mut lax_arriver = Arriver::new(&mut reference, &anchors, &cache, provenance, lax);

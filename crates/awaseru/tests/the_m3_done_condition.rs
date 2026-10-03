@@ -133,7 +133,7 @@ fn the_differ_catches_a_wrong_reimplementation_reports_the_vacuous_and_notices_a
         provenance.clone(),
         AnchorPolicy {
             verify_from_origin: 0,
-            reverify_after: 0,
+            reverify_at_end: false,
         },
     );
 

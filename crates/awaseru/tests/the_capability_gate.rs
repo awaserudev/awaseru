@@ -96,7 +96,7 @@ fn an_anchor_needing_input_is_refused_by_what_the_reference_declares() {
     let cache = Cache::at(&cache_dir);
     let policy = AnchorPolicy {
         verify_from_origin: 0,
-        reverify_after: 0,
+        reverify_at_end: false,
     };
     let mut arriver = Arriver::new(&mut reference, &anchors, &cache, provenance, policy);
 

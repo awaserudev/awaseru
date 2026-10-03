@@ -103,6 +103,8 @@ struct Symbols {
     GetPpuState: unsafe extern "C" fn(state: *mut u8, cpu_type: u8),
     SetCpuState: unsafe extern "C" fn(state: *const u8, cpu_type: u8),
     SetMemoryState: unsafe extern "C" fn(memory_type: u32, buffer: *const u8, length: i32),
+    /// Four 32-bit numbers by value — see `EmulationConfig`.
+    SetEmulationConfig: unsafe extern "C" fn(EmulationConfig),
     SetMemoryValues:
         unsafe extern "C" fn(memory_type: u32, address: u32, data: *const u8, length: i32),
     SaveStateFile: unsafe extern "C" fn(path: *const c_char),
@@ -192,6 +194,7 @@ impl Backend {
             GetPpuState: symbol!("GetPpuState"),
             SetCpuState: symbol!("SetCpuState"),
             SetMemoryState: symbol!("SetMemoryState"),
+            SetEmulationConfig: symbol!("SetEmulationConfig"),
             SetMemoryValues: symbol!("SetMemoryValues"),
             SaveStateFile: symbol!("SaveStateFile"),
             LoadStateFile: symbol!("LoadStateFile"),
@@ -584,6 +587,13 @@ impl Backend {
         counts
     }
 
+    /// Sets the emulation settings — used to take the throttle off.
+    pub fn set_emulation_config(&self, config: EmulationConfig) {
+        // SAFETY: a flat record of four 32-bit numbers, passed by value, as
+        // both the header and the front end's own declaration describe it.
+        unsafe { (self.symbols.SetEmulationConfig)(config) }
+    }
+
     /// Forgets every access count, so that the next measurement is of one
     /// interval rather than of all history.
     pub fn reset_access_counts(&self) {
@@ -844,8 +854,44 @@ const PROCESSOR_BUS: u32 = 0;
 /// cycle count — at processor cycle 32 a write stamp read 426
 /// (`doc/backend.md`). So a stamp compares with another stamp and with nothing
 /// else: it answers *when, relative to other accesses*, and never *where from*.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The backend's emulation settings — four 32-bit numbers and nothing else.
+///
+/// Transcribed where the configuration record was twice refused, and the
+/// difference is the whole justification: this is a flat 16 bytes with no
+/// nested record, no string and no array, so there is no layout to guess at.
+///
+/// `speed` is a percentage, and **zero means no limit**: the backend's frame
+/// delay is computed as zero and it runs as fast as it can
+/// (`Emulator::GetFrameDelay`). Left at its default of 100, every replay is
+/// paced to the console's real time, which is what a person watching wants and
+/// the opposite of what a replay wants.
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmulationConfig {
+    pub speed: u32,
+    pub turbo_speed: u32,
+    pub rewind_speed: u32,
+    pub run_ahead_frames: u32,
+}
+
+impl EmulationConfig {
+    /// As fast as the machine can, which is what a measurement wants.
+    ///
+    /// `run_ahead_frames` is zero deliberately: run-ahead speculatively
+    /// executes and rewinds, which is a feature for a player and an extra
+    /// source of divergence for a comparison.
+    pub fn unthrottled() -> Self {
+        EmulationConfig {
+            speed: 0,
+            turbo_speed: 300,
+            rewind_speed: 100,
+            run_ahead_frames: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AccessCounts {
     pub read_stamp: u64,
     pub write_stamp: u64,

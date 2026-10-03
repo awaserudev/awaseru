@@ -207,6 +207,21 @@ impl<'a> Binding<'a> {
                 }
             }
 
+            Command::Reverify { anchor } => match self.arriver.reverify(&anchor) {
+                Ok(done) => Answered::of(Reply::Reverified {
+                    anchor: done.anchor,
+                    uses: done.uses,
+                    took_ms: done.took.as_millis() as u64,
+                }),
+                // A disagreement is a refusal and not a verdict: it means every
+                // comparison made from this anchor in this session is void, and
+                // that is not something to hand back beside a result.
+                Err(e) => Answered::refuse(
+                    format!("`{anchor}` to still produce what replaying it produces (§4.9)"),
+                    e.to_string(),
+                ),
+            },
+
             Command::Examine {
                 routine,
                 given,
@@ -470,7 +485,7 @@ mod tests {
             provenance(),
             AnchorPolicy {
                 verify_from_origin: 0,
-                reverify_after: 0,
+                reverify_at_end: false,
             },
         );
         commands
@@ -627,7 +642,7 @@ mod tests {
             provenance(),
             AnchorPolicy {
                 verify_from_origin: 0,
-                reverify_after: 0,
+                reverify_at_end: false,
             },
         );
         assert!(!binding.apply(hello(), &[]).was_refused());

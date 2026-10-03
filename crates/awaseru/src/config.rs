@@ -147,29 +147,31 @@ pub struct AnchorPolicy {
     /// verdict made from that anchor says so.
     #[serde(default = "three")]
     pub verify_from_origin: u32,
-    /// After this many uses, replay from the origin again and check the blob
-    /// still produces the same state. Zero means never.
+    /// Replay once at the end of a session and check the blob still produces
+    /// the same state (§4.9). On by default; off is a decision rather than an
+    /// absence.
     ///
-    /// Fifty is the default, which is the number §4.9 illustrates. The cheap
-    /// check covers only what an anchor declares; this is the audit of the
-    /// cheap check, and switching it off is a decision rather than an absence.
-    #[serde(default = "fifty")]
-    pub reverify_after: u64,
+    /// **This replaced a count**, and the reason is worth keeping where
+    /// somebody will set it. The old shape was "re-verify after this many
+    /// uses", with fifty as the default — a number chosen against a definition
+    /// that replayed in four seconds. Against one that replays in five
+    /// minutes, which is an ordinary opening sequence, ten thousand
+    /// comparisons would have spent fifty hours re-verifying and seventeen
+    /// minutes comparing. A count cannot know what it is spending; bracketing
+    /// the session costs one replay however long the session is.
+    #[serde(default = "yes")]
+    pub reverify_at_end: bool,
 }
 
 fn three() -> u32 {
     3
 }
 
-fn fifty() -> u64 {
-    50
-}
-
 impl Default for AnchorPolicy {
     fn default() -> Self {
         AnchorPolicy {
             verify_from_origin: three(),
-            reverify_after: fifty(),
+            reverify_at_end: yes(),
         }
     }
 }
@@ -1199,7 +1201,7 @@ mod tests {
             AnchorPolicy::default(),
             AnchorPolicy {
                 verify_from_origin: 3,
-                reverify_after: 50
+                reverify_at_end: true
             }
         );
 
@@ -1220,8 +1222,8 @@ mod tests {
             configuration.anchors.verify_from_origin, 0,
             "zero is permitted — §4.9 says so, and the verdict says it"
         );
-        assert_eq!(
-            configuration.anchors.reverify_after, 50,
+        assert!(
+            configuration.anchors.reverify_at_end,
             "and the key not given keeps its default"
         );
     }

@@ -184,6 +184,7 @@ rather than quietly serializing as something else.
 | `write` | a span of one region, written | the bytes go out with the command |
 | `run` | a bounded advance (§4.2) — frames, instructions, an address with its budget (§4.4), or a byte with the end of its subject (§4.5) | — |
 | `examine` | §5.6's cycle and all of §5's answers | the given spans' bytes, then the produced spans' bytes |
+| `reverify` | §4.9's closing check: replay the anchor once and see the cached blob still produces what replaying produces | — |
 
 ### Replies
 
@@ -309,6 +310,23 @@ The reply is a report, and this is all of it:
   and when one was run and went unnoticed.
 - **`took_ms`** is the only field that is not reproducible, and no comparison
   uses it.
+
+**`reverify`** — the closing half of a session (§4.9).
+
+```json
+{"command":"reverify","anchor":"after-the-opening"}
+{"result":"reverified","anchor":"after-the-opening","uses":9,"took_ms":163}
+```
+
+A client brackets its session with this: the tool demonstrates an anchor before
+using one nobody has demonstrated, and the client asks for this at the end. If
+it is **refused**, every comparison made from that anchor in that session is
+void — which is why a disagreement is a refusal and not a field in a result.
+
+Nothing is re-verified in between, and that is deliberate: the policy used to
+replay from the origin every N uses, and a count cannot know what it is
+spending. On a definition that replays in five minutes, ten thousand comparisons
+would have spent fifty hours verifying and seventeen minutes comparing (§4.9).
 
 **`refused`** — the shape every failure takes, and the only one.
 

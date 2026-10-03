@@ -85,7 +85,7 @@ fn one_examination_answers_every_part_of_section_five() {
         provenance.clone(),
         AnchorPolicy {
             verify_from_origin: 0,
-            reverify_after: 0,
+            reverify_at_end: false,
         },
     );
 

@@ -105,7 +105,7 @@ fn a_control_that_should_be_noticed_is_and_one_that_should_not_is_not() {
         provenance.clone(),
         AnchorPolicy {
             verify_from_origin: 0,
-            reverify_after: 0,
+            reverify_at_end: false,
         },
     );
 
