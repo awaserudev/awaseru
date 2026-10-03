@@ -8,8 +8,12 @@ Deciding now would be guessing with ceremony. See §13's Q17 for what stays open
 
 ## The rule that is settled
 
-> A field is a **switch** only if asking for it costs a run of the machine.
-> Everything else is always sent.
+> A field is a **switch** if asking for it costs a run of the machine, **or
+> costs time proportional to the size of a region.** Everything else is always
+> sent.
+
+The second clause was added in M6, by measurement, and the first version of this
+rule did not anticipate it — see the log at the end.
 
 That is the whole criterion, and it is the one part worth fixing early, because
 it decides future cases without another conversation: M6's coverage is a switch
@@ -77,4 +81,25 @@ field nobody ever reads was the wrong thing to send.
 | when | switch | who turned it on, and what for |
 |---|---|---|
 | M5 | `localise` | every round of the cycle. The first measurement's value was the instruction it named — that is what made it possible to go and read those bytes and write the next round |
+
+## The rule's first correction, and what forced it
+
+M6's gate measured what reading execution coverage costs, and it is the first
+answer in this project where **costing a run and costing bytes come apart**.
+
+Coverage needs no extra run at all: the backend counts as it goes, so the
+measurement is already done when the comparison ends. Under the rule as first
+written — a switch only if it costs a run — coverage would therefore be sent
+always.
+
+But reading it costs **34 µs per kilobyte**, measured: 1.1 ms for a 32 KiB
+region, and a 2 MiB cartridge is 72 MiB of record crossing the boundary at about
+70 ms. A routine-level cycle is 79.7 ms (§13's Q1). So sending coverage with
+every report would roughly **double** the cost of a measurement, for an answer
+most measurements do not look at.
+
+The rule now has a second clause. What it keeps from the first is the shape of
+the question — *what does asking cost* — rather than the one it could have
+drifted into, which is *how important is this field*. Importance is an argument;
+cost is a number.
 

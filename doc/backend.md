@@ -538,6 +538,36 @@ Without those, every test that needs a backend prints `SKIPPED` and the suite
 still passes — §11.3's third route, which is how this project tests against
 software it may not redistribute.
 
+## The access record, and what it says about execution
+
+§13's Q15 called this a route nobody had taken: the record this backend keeps
+per byte carries a read count, a write count and an **execute** count, each with
+a stamp, and this project had read only the write half. M6 took the route. The
+measurements are on the generated fixture, whose program this project wrote, so
+what did and did not run is known before the backend is asked.
+
+```c
+struct { uint64 read_stamp, write_stamp, execute_stamp; uint32 reads, writes, executions; }
+```
+
+| question | answer | how it was measured |
+|---|---|---|
+| does it tell executed bytes from unexecuted ones? | **yes, byte-exact** | a measurement bounded by the fixture's routine return: `0x8000`–`0x800E` and `0x8020`–`0x8036` executed, `0x800F`–`0x801F` and `0x8037`–`0x803F` did not. Two of the unexecuted blocks sit **between** executed ones |
+| is it execution, or fetching? | **execution** | the byte after the last one executed reads zero at both boundaries — after a `JSR` and after an `RTS`. A counter incremented by reading the instruction stream would say otherwise |
+| per byte, per instruction, or per access? | **per byte, once per execution of its instruction** | the fixture's loop runs 0x40 times; its first byte and the operand after it both report 0x40 |
+| does the host's own activity pollute it? | **no** | reading the whole region through the API, and a span besides, left `executions` unchanged and `reads` at zero. So the record is about the software and not about the tool |
+| is there a reset? | **yes** | `ResetMemoryAccessCounts` clears the counts **and** the stamps |
+| is the stamp monotonic? | **the clock is; the counts are not** | after a reset the next execution stamped 15850 where the maximum before the reset was 14228. So "what executed in **this** run" is a reset, a run and a reading — not a subtraction of two readings |
+| does it cover memory that is not the cartridge? | **yes** | the record exists for work memory, and the fixture's output span reports every byte written and none executed. §10's "which bytes of the software executed" would otherwise be blind to code running out of the machine's own memory, which real software does |
+| what does it cost? | **34 µs per kilobyte** | 0.009 ms for 64 bytes, 1.1 ms for the whole 32 KiB region. The record is 36 bytes per byte of memory, so a 2 MiB cartridge is 72 MiB crossing the boundary and about **70 ms** — the same order as a whole routine-level cycle, which is 79.7 ms (§13's Q1) |
+
+The last row is the one with a consequence beyond this document; it is in
+`doc/report-options.md`.
+
+Both halves are tested, and the test was checked by mutation: a record forced to
+answer "executed" for every byte fails it, and so does one forced to answer
+"never".
+
 ## Driving this backend by hand, which you may have to
 
 Recording an input log needs a person at the emulator's own interface, and on at

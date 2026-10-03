@@ -646,6 +646,45 @@ impl Reference {
         })
     }
 
+    /// The backend's access record for a span, **exactly as it keeps it**.
+    ///
+    /// Raw on purpose. §2.4 says not to guess a shape before something has been
+    /// measured, and nothing in this project has ever read the execute half of
+    /// this record — §13's Q15 called it a route nobody had taken. So this
+    /// returns the record and interprets none of it: what a platform-independent
+    /// verb should say about execution is decided by what reading this shows,
+    /// not the other way round.
+    ///
+    /// `write_recency` is the one piece already interpreted, and it is built on
+    /// the same call.
+    pub fn access_record(
+        &self,
+        region: &str,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<crate::ffi::AccessCounts>, ReadError> {
+        self.require_stopped()?;
+        check_read(&self.regions, region, Some((offset, length)))?;
+        let memory_type = self.memory_type(region).ok_or_else(|| ReadError::Absent {
+            region: region.to_string(),
+        })?;
+        let at = u32::try_from(offset).map_err(|_| ReadError::Backend {
+            why: format!("this backend counts addresses in 32 bits, and {offset} does not fit"),
+        })?;
+        let span = u32::try_from(length).map_err(|_| ReadError::Backend {
+            why: format!("this backend counts lengths in 32 bits, and {length} does not fit"),
+        })?;
+        Ok(self.backend.access_counts(memory_type, at, span))
+    }
+
+    /// Throws away every access count the backend holds.
+    ///
+    /// Whether this is how "what executed in THIS run" is asked for, or whether
+    /// the stamps make it a subtraction instead, is what M6's gate measures.
+    pub fn forget_access_counts(&self) {
+        self.backend.reset_access_counts();
+    }
+
     /// Asks the backend for a picture of the frame, into its own screenshot
     /// folder under this reference's home.
     ///
