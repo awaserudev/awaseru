@@ -754,6 +754,44 @@ away from the menu bar. The lesson for this project is that a tool depending on 
 person operating a GUI inherits every bug in that GUI, and that this one is now
 depending on a *recording* instead, which it does not.
 
+## Saying what the mapping calls it
+
+Since M7, a report names what it found as well as locating it:
+
+```json
+"difference": {
+  "region": "work-ram", "first": 1064, "expected": 32, "found": 0,
+  "symbol": {"name": "tile-buffer", "into": 40, "hypothesis": false},
+  "wrote": {"wrote": "at", "writes": 1,
+            "position": {"position": "mid-instruction", "pc": 32812},
+            "symbol": {"name": "tile-expand.store", "into": 0, "hypothesis": true}}
+}
+```
+
+Three things about that, each of which has a test.
+
+**The name is in addition, never instead.** A mapping is written by hand and can
+be wrong; the offset and the address are what check it. A report that replaced
+the numbers would make a mistyped mapping unfalsifiable, which is the opposite
+of what this tool is for.
+
+**A name is never invented.** `symbol` is absent when no mapping is loaded, and
+absent when one is and covers nothing at that place. The nearest name is not an
+answer.
+
+**`hypothesis` says the mapping is guessing.** §9.2 marks a symbol whose
+provenance is weaker than measurement, and a client that printed the name
+without this would present a guess as a fact. It is `false` for a symbol
+established by measurement and `true` for one inferred or assumed.
+
+`into` is how far into the symbol the place is, because `tile-buffer` and
+`tile-buffer+40` are different answers. Where symbols overlap — a field inside a
+structure — the **most specific** is named: saying "somewhere in the save data"
+where the mapping could say which field is a worse answer.
+
+It is not a switch. Naming costs a lookup over symbols already in memory, so by
+`doc/report-options.md`'s rule it is sent always.
+
 ## Asking what executed
 
 §10's execution coverage, since M6. **Asking is naming a span**, on the

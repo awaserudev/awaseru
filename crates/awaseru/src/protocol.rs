@@ -364,6 +364,29 @@ pub struct Difference {
     pub compared: usize,
     /// §5.4's third item.
     pub wrote: Wrote,
+    /// What the mapping calls the differing byte — §M7. Absent when no mapping
+    /// is loaded, and absent when one is and covers nothing here: a name is
+    /// never invented to fill the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<Named>,
+}
+
+/// What the mapping calls a place — §M7's third clause.
+///
+/// **In addition to the number, never instead of it.** A mapping is written by
+/// hand and can be wrong; the offset and the address are what check it. A report
+/// that replaced them with a name would make a mistyped mapping unfalsifiable,
+/// which is the opposite of what this tool is for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Named {
+    pub name: String,
+    /// How far into the symbol the place is, so that `tile-buffer` and
+    /// `tile-buffer+40` are different answers.
+    pub into: usize,
+    /// §9.2: this symbol was not established by measurement, so the mapping
+    /// says what it is rather than knows. A client that printed the name
+    /// without this would present a guess as a fact.
+    pub hypothesis: bool,
 }
 
 /// What is known about the write that produced the reference's value — §5.4.
@@ -378,7 +401,14 @@ pub enum Wrote {
     NothingWrote,
     /// The position that last wrote it, and how many times it was written — so
     /// that "the last write" is not read as "the only write".
-    At { position: Position, writes: u64 },
+    At {
+        position: Position,
+        writes: u64,
+        /// What the mapping calls the instruction that wrote it — §M7. Absent
+        /// when nothing covers that address, never invented.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        symbol: Option<Named>,
+    },
 }
 
 /// §5.3's control, or the record that none was run.
@@ -572,6 +602,7 @@ impl From<&awaseru_core::Wrote> for Wrote {
             awaseru_core::Wrote::At { position, writes } => Wrote::At {
                 position: position.into(),
                 writes: *writes,
+                symbol: None,
             },
         }
     }
@@ -592,6 +623,87 @@ impl Difference {
             differing: d.differing,
             compared: d.compared,
             wrote: (&d.wrote).into(),
+            symbol: None,
+        }
+    }
+}
+
+impl Named {
+    fn of(symbol: &crate::mapping::Symbol, into: usize) -> Self {
+        Named {
+            name: symbol.name.clone(),
+            into,
+            hypothesis: symbol.provenance.is_hypothesis(),
+        }
+    }
+}
+
+impl Wrote {
+    /// Fills in what the mapping calls the instruction, where it has one.
+    fn name_with(&mut self, mapping: &crate::mapping::Mapping) {
+        if let Wrote::At {
+            position, symbol, ..
+        } = self
+        {
+            let pc = match position {
+                Position::InstructionBoundary { pc } | Position::MidInstruction { pc } => Some(*pc),
+                Position::Unclassified { pc } => Some(*pc),
+                Position::FrameBoundary { .. } => None,
+            };
+            *symbol = pc.and_then(|pc| {
+                mapping
+                    .at_address(pc)
+                    .map(|s| Named::of(s, (pc - s.address().unwrap_or(pc)) as usize))
+            });
+        }
+    }
+}
+
+impl Difference {
+    /// Fills in what the mapping calls the differing byte and the instruction
+    /// that wrote it.
+    fn name_with(&mut self, mapping: &crate::mapping::Mapping) {
+        if let Some(region) = &self.region {
+            self.symbol = mapping
+                .at(region, self.first)
+                .map(|s| Named::of(s, self.first - s.offset().unwrap_or(self.first)));
+        }
+        self.wrote.name_with(mapping);
+    }
+}
+
+impl Verdict {
+    fn name_with(&mut self, mapping: &crate::mapping::Mapping) {
+        if let Verdict::Differs { difference } = self {
+            difference.name_with(mapping);
+        }
+    }
+}
+
+impl Report {
+    /// §M7's third clause: say the symbol as well as the address.
+    ///
+    /// A pass over a finished report rather than a parameter threaded through
+    /// every conversion, which keeps the conversions pure and means a report
+    /// built without a mapping is exactly a report built with an empty one.
+    ///
+    /// Not a switch (`doc/report-options.md`): naming costs a lookup over the
+    /// symbols already in memory and not a run of the machine, so by the rule
+    /// there it is sent always. Said here explicitly rather than by omission.
+    pub fn name_with(&mut self, mapping: &crate::mapping::Mapping) {
+        self.verdict.name_with(mapping);
+        if let Some(as_compared) = &mut self.as_compared {
+            as_compared.name_with(mapping);
+        }
+        if let Some(localisation) = &mut self.localisation {
+            localisation.wrote.name_with(mapping);
+        }
+        if let Control::Ran {
+            plain, perturbed, ..
+        } = &mut self.control
+        {
+            plain.name_with(mapping);
+            perturbed.name_with(mapping);
         }
     }
 }
@@ -845,6 +957,7 @@ mod tests {
                     Wrote::At {
                         position: Position::MidInstruction { pc: 0xC000 },
                         writes: 1,
+                        symbol: None,
                     },
                     "the nested position survived two unknown fields around it"
                 );

@@ -79,6 +79,10 @@ pub struct Binding<'a> {
     /// a client that has not said which protocol it speaks is a client whose
     /// next message cannot be trusted to mean what it looks like.
     greeted: bool,
+    /// §9's mapping, so a report can say a name as well as a number (§M7).
+    /// Empty is the ordinary case and changes nothing: a project with no
+    /// mapping files gets exactly the report it got before §9 existed.
+    mapping: crate::mapping::Mapping,
 }
 
 impl<'a> Binding<'a> {
@@ -93,7 +97,18 @@ impl<'a> Binding<'a> {
             arriver: Arriver::new(platform, anchors, cache, provenance.clone(), policy),
             provenance,
             greeted: false,
+            mapping: crate::mapping::Mapping::default(),
         }
+    }
+
+    /// The mapping this binding names things with — §M7.
+    ///
+    /// Separate from `new` because a mapping is the user's and optional, and a
+    /// constructor that demanded one would make every test and every caller
+    /// that has none pass an empty value to say so.
+    pub fn naming(mut self, mapping: crate::mapping::Mapping) -> Self {
+        self.mapping = mapping;
+        self
     }
 
     /// One command, one answer. Never fails; a failure is a refusal.
@@ -327,9 +342,13 @@ impl<'a> Binding<'a> {
         );
 
         match report {
-            Ok(report) => Answered::of(Reply::Report {
-                report: Box::new(protocol::Report::of(&report)),
-            }),
+            Ok(report) => {
+                let mut answer = protocol::Report::of(&report);
+                answer.name_with(&self.mapping);
+                Answered::of(Reply::Report {
+                    report: Box::new(answer),
+                })
+            }
             Err(e) => Answered::refuse(
                 format!("a measurement of `{}`", subject.name),
                 e.to_string(),

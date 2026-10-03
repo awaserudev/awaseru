@@ -249,6 +249,7 @@ fn the_vocabulary_drives_a_real_reference() {
                         pc: expected::ROUTINE_STORE
                     },
                     writes: 1,
+                    symbol: None,
                 },
                 "and not {:#X}, the store after the return (§4.5)",
                 expected::ROUTINE_CLOBBER_STORE

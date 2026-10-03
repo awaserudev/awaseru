@@ -154,6 +154,24 @@ pub struct Provenance {
     pub note: String,
 }
 
+impl Symbol {
+    /// The address this symbol is at, when it is written as one.
+    pub fn address(&self) -> Option<u64> {
+        match self.at {
+            Where::At(a) => Some(a),
+            Where::In { .. } => None,
+        }
+    }
+
+    /// Where in its region this symbol begins, when it is written that way.
+    pub fn offset(&self) -> Option<usize> {
+        match &self.at {
+            Where::In { offset, .. } => Some(*offset),
+            Where::At(_) => None,
+        }
+    }
+}
+
 impl Provenance {
     /// §9.2: "Entries with weak provenance are marked as hypotheses and are not
     /// treated as fact."
@@ -404,6 +422,46 @@ impl Mapping {
 
     pub fn is_empty(&self) -> bool {
         self.symbols.is_empty() && self.groups.is_empty()
+    }
+
+    /// The symbol covering a byte of a region, if the mapping has one.
+    ///
+    /// **The most specific wins.** Symbols may overlap and usefully do — a
+    /// buffer inside a structure inside a bank — and naming the outermost would
+    /// answer "somewhere in the save data" where the mapping could say which
+    /// field. Ties go to neither in particular, which is a thing to notice only
+    /// if two symbols cover exactly the same bytes, and that is a mapping with
+    /// two names for one thing.
+    pub fn at(&self, region: &str, offset: usize) -> Option<&Symbol> {
+        self.symbols
+            .values()
+            .filter(|s| match &s.at {
+                Where::In { region: r, offset: o } => {
+                    r == region && *o <= offset && offset < o + s.length.unwrap_or(1)
+                }
+                Where::At(_) => false,
+            })
+            .min_by_key(|s| s.length.unwrap_or(1))
+    }
+
+    /// The symbol covering an address, if the mapping has one.
+    ///
+    /// Only symbols written as addresses are considered, and §9.3's gap is why
+    /// (`doc/findings.md`, finding 16): a region and an offset cannot be turned
+    /// into an address without a map the host does not have. So a mapping that
+    /// writes its routines as addresses — which is how every real one does —
+    /// names them here, and one that writes everything as regions names nothing
+    /// at an address rather than guessing.
+    pub fn at_address(&self, address: u64) -> Option<&Symbol> {
+        self.symbols
+            .values()
+            .filter(|s| match &s.at {
+                Where::At(a) => {
+                    *a <= address && address < a + s.length.unwrap_or(1) as u64
+                }
+                Where::In { .. } => false,
+            })
+            .min_by_key(|s| s.length.unwrap_or(1))
     }
 
     /// Every symbol in a group, **including** those in groups nested inside it.

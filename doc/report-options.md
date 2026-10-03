@@ -41,6 +41,14 @@ Two consequences follow from it, and both are about **not** adding things:
 That is the whole list today. §5.3's control needs no switch: a measurement runs
 one when a perturbation is sent and not otherwise.
 
+**§9's symbol names are not a switch either, and that is said here rather than
+left to be noticed.** M7 made a report say what the mapping calls the byte that
+differs and the instruction that wrote it. Naming costs a lookup over symbols
+already in memory — no run, no region-sized read — so by the rule above it is
+sent always. A project with no mapping files gets exactly the report it got
+before §9 existed, because an empty mapping names nothing and the fields are
+absent rather than empty.
+
 Everything else a report carries — the verdict, all eleven causes for *not
 determined*, §5.2's movement, `complete`, §4.12's beginning, the sentences, the
 time taken — is always sent and is not switchable.

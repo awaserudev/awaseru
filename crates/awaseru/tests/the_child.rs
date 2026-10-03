@@ -184,6 +184,7 @@ fn a_reference_in_a_child_answers_and_its_voice_goes_to_the_log() {
                         pc: expected::ROUTINE_STORE
                     },
                     writes: 1,
+                    symbol: None,
                 },
                 "§5.4's third item survives the boundary"
             );

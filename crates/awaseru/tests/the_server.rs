@@ -226,6 +226,7 @@ fn a_client_drives_the_whole_cycle_over_stdin_and_stdout() {
                             pc: expected::ROUTINE_STORE
                         },
                         writes: 1,
+                        symbol: None,
                     }
                 );
             }
