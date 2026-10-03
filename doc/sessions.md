@@ -336,3 +336,40 @@ reimplementation, so a box cannot carry a verdict — only positions, readings a
 the record of what was asked. Where a verdict does travel, it travels pinned to
 the build that produced it, because a verdict about a build that no longer
 exists is worse than no verdict.
+
+## The proof, at cold
+
+§7.3 says a capability is declared only after something has run through the
+verb. This is what ran.
+
+A receiver was built with nothing but what travels: the shared configuration,
+the mapping, and a box. Its machine-local half was **written from scratch** — it
+never travelled and could not have. No session, no backend home, no cache,
+nothing that had ever run.
+
+```
+$ awaseru restore --session trabalho --from caixa-recebida
+box of `in-control`:
+    in-control: restored
+
+$ awaseru --session trabalho --anchor in-control
+anchor `in-control`: resumed from a cached blob in 0.014s …
+  NOT DETERMINED: …never been shown to be equivalent to replaying its definition
+```
+
+And the same question asked of both sides, by digest:
+
+```
+receiver:  stop=<the same position>  state=d79ea09e…  how=resumed  evidence=no
+sender:    stop=<the same position>  state=d79ea09e…  how=resumed  evidence=yes
+```
+
+(The position is a program counter inside the supplied software, so §11.2 keeps
+it out of here. That the two lines carried the **same** one is the whole claim,
+and the state digest beside it is the stronger half of it.)
+
+**The same state, arrived at the same way, and one word apart.** That pair of
+lines is the whole of this document: the box carries the state, it does not
+carry the proof, and the tool says which of the two it has. A receiver who wants
+evidence rather than speed demonstrates the anchor; nothing pretends they
+already did.

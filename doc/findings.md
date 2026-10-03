@@ -933,3 +933,109 @@ Two things fell out of it that are worth recording separately:
   one that gets replayed. A session pins one reference and one version, which is
   why one slot is the right number. Written down as a test, so that widening it
   again has to be a decision.
+
+## 29. A received blob would have cost the full replay, so a box was worth nothing
+
+**Found by building the thing it breaks, and it is a decision rather than a
+defect.** §4.9 demonstrates an anchor nobody has demonstrated before it is used,
+of the tool's own accord, and the test for that is `demonstrated_with == 0`. A
+blob that arrives in a box has a `demonstrated_with` that belongs to whoever
+packed it, and a session that counted it as its own would be reporting evidence
+it does not have — so it has to be zero here.
+
+Zero means the demonstration runs. The demonstration replays from the origin.
+**So taking a box in would have cost the 754 seconds the box existed to save**,
+and the whole feature would have been a slower way of doing nothing.
+
+The way out is not to relax §4.8 and not to force the replay. Both are recorded
+and they are different facts:
+
+- `demonstrated_with` is zero, because this session has demonstrated nothing;
+- `demonstrated_elsewhere` says who did, and the arrival says so in words;
+- the verdict carries §4.8's caveat, so every comparison from the blob is **not
+  determined** until this session establishes it;
+- and nothing demonstrates it automatically, because that would spend exactly
+  what the box saved on work nobody asked for.
+
+So a received blob resumes in milliseconds and is honestly labelled. The person
+gets the speed and is told what they do not have, which is the three-valued
+verdict of §2.3 doing the job it was put there for.
+
+**§8.6 prevented the obvious mistake.** The first attempt was a new
+`Undetermined` reason — "demonstrated elsewhere". But `Undetermined` maps onto
+`Cause`, which is the vocabulary a verdict travels by, and §8.6 says a new
+variant in a reply is not additive. §4.8's existing caveat is already the truth
+about this session; who it was belongs in the report, not in the vocabulary. The
+specification stopped a breaking change that looked like an improvement.
+
+## 30. Two tests could not fail on what a reader sees
+
+**Both found by running the tool and looking at the output, not by reading.**
+
+A Rust string literal's `\` at the end of a line swallows the newline and the
+next line's indentation. Written through a tool that eats the backslash first,
+it does not — and what shipped was a sentence with twenty spaces in the middle
+of it:
+
+```
+…so it is theirs: nothing                  replayed it to check…
+```
+
+Twice, in two different report lines. Both times a test asserted a **fragment**
+of the sentence, and a fragment matched either way, so the test passed on
+output no person would accept. Both now require the whole sentence and that it
+contains no double space.
+
+The lesson is narrower than "test the output" and more useful: **an assertion on
+a substring of a sentence cannot fail on the sentence's shape.** Where the thing
+under test is prose a human reads, the test has to look at it the way a human
+does.
+
+## 31. A mutation passed, and the mutation was wrong
+
+**Worth recording because the conclusion was nearly the opposite one.** A test
+said the name a person gives their emulator must not decide whether a blob
+applies. Mutating the comparison to include that name left the test passing,
+which looks exactly like a test that cannot fail.
+
+It was not. The mutation assigned the name into the field the next line
+overwrote — `reference` is written before `backend` in a key, so reading one
+into the other's place changed nothing. Done properly, with a field of its own,
+the test failed as it should.
+
+**A mutation that passes is evidence about the mutation first and the test
+second.** The audit's U3 found three real cases of tests that could not fail,
+which makes the reflex to believe the mutation a strong one; this is the case
+where believing it would have led to rewriting a test that was already right.
+
+## 32. The leak check looks for names, and §11.2 forbids more than names
+
+**Found by nearly committing one.** The frente's closing proof was two lines
+pasted out of a real run, and they carried `stop=0x……` — a program counter
+reached inside the supplied software. §11.2 says no **title, path, address,
+mapping or reimplementation** of supplied software reaches the repository.
+`tools/leak-check.sh` ran and said `clean`.
+
+It was right about what it checks. Its own header says it: *"nothing that
+reaches a remote may **name** it"*, and it works by searching every tracked file
+for the words in a local, gitignored list. A word list cannot catch an address,
+because an address is not a word anybody can list in advance — the whole point
+is that it is discovered by running the tool.
+
+So the check covers one of §11.2's five kinds and the other four rest on
+somebody noticing. The addresses already in the repository are invented
+fixtures (`0xC400CF`, `0xDEADBE`), which is why nothing had gone wrong yet; the
+first real one arrived the moment a document quoted a run.
+
+**Not fixed, and the reason is that the obvious fix is wrong.** Refusing every
+`0x` followed by six hexadecimal digits would refuse the fixtures, which are
+there on purpose and are not addresses of anything. Telling a real position from
+an invented one needs to know which software is meant, which is exactly the
+knowledge §11.2 keeps out of the repository. What might work is narrower: refuse
+a hexadecimal literal in `doc/` and `spec.md` — prose has no need of one, while
+test fixtures do — and say so rather than guessing. That is a decision about the
+check and belongs with whoever makes §11.4's.
+
+The pattern is the one this whole frente kept finding, in its sharpest form yet:
+**a check that passes is a statement about what it checks, and reading its
+output is not the same as reading its header.**
