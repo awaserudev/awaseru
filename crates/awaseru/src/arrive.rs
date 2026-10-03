@@ -387,6 +387,22 @@ impl<'a> Arriver<'a> {
         self.platform.write_recency(region, offset)
     }
 
+    /// Everything the reference exposes (§3.1). The host asks; it does not
+    /// assume.
+    pub fn regions(&self) -> awaseru_core::Regions {
+        self.platform.regions()
+    }
+
+    /// A span of one region, checked against that region by the backend.
+    pub fn read_span(
+        &self,
+        region: &str,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<u8>, ReadError> {
+        self.platform.read_span(region, offset, length)
+    }
+
     /// A region, through the reference this is driving.
     ///
     /// Here because an `Arriver` borrows the platform for as long as it lives,

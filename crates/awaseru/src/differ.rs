@@ -117,6 +117,19 @@ impl Report {
                 ),
             });
         }
+
+        // §5.4 is part of a difference, not a field beside it: "on *differs*,
+        // the report carries ... the position that last wrote that byte". The
+        // comparison cannot fill it — naming a writer takes a replay — so it is
+        // folded in here, where both are in hand.
+        //
+        // Found by a test rather than by reading: the wire form carried the
+        // answer in its localisation and `not-looked` inside the difference,
+        // which is the same fact in two places with one of them stale.
+        if let (Verdict::Differs(difference), Some(located)) = (&self.compared, &self.located) {
+            return Verdict::Differs(difference.clone().localised(located.wrote.clone()));
+        }
+
         self.compared.clone()
     }
 
@@ -543,6 +556,64 @@ mod tests {
         let good = report(differs(), None, noticed());
         assert!(good.complete());
         assert!(!good.to_string().contains("incomplete"), "{good}");
+    }
+
+    /// §5.4's third item belongs **inside** the difference, because that is
+    /// what §5.4 says a report carries on *differs*. A report with the answer
+    /// beside the difference and `not-looked` within it would be the same fact
+    /// twice with one copy wrong — which is what the wire form showed before
+    /// this was fixed.
+    #[test]
+    fn a_localisation_is_folded_into_the_difference_the_verdict_carries() {
+        let located = Localised {
+            region: "work-ram".into(),
+            offset: 0x400,
+            wrote: Wrote::At {
+                position: Position::MidInstruction { pc: 0x80_2C },
+                writes: 1,
+            },
+            replayed: true,
+            from: None,
+        };
+        let r = report_of(
+            "running-total",
+            differs(),
+            None,
+            None,
+            repeats(),
+            Some(located.clone()),
+            noticed(),
+            Duration::ZERO,
+        );
+
+        match r.verdict() {
+            Verdict::Differs(d) => assert_eq!(
+                d.wrote,
+                located.wrote,
+                "the verdict's difference must carry what was localised"
+            ),
+            other => panic!("got {other}"),
+        }
+
+        // What the comparison alone said is still the comparison alone: it
+        // never looked, and saying it did would be the stale copy in reverse.
+        match r.as_compared() {
+            Verdict::Differs(d) => assert_eq!(d.wrote, Wrote::NotLooked),
+            other => panic!("got {other}"),
+        }
+
+        // And a report with no localisation is left exactly as compared.
+        let unlocalised = report_of(
+            "running-total",
+            differs(),
+            None,
+            None,
+            repeats(),
+            None,
+            noticed(),
+            Duration::ZERO,
+        );
+        assert_eq!(unlocalised.verdict(), differs());
     }
 
     /// §5.2. The movement is reported where there is one, and absent rather

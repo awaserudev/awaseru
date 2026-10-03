@@ -81,8 +81,9 @@ pub enum Command {
     /// reimplementation's output against it, localise a difference, run a
     /// control.
     ///
-    /// The payload is the `given` spans' bytes followed by the `produced`
-    /// spans' bytes, in order.
+    /// The payload is the `given` spans' bytes, then the `produced` spans'
+    /// bytes, then the control's span if there is one — each as long as its
+    /// span says.
     Examine {
         routine: Routine,
         given: Vec<Span>,
@@ -568,6 +569,33 @@ impl Control {
                 noticed: plain != perturbed,
                 says: c.to_string(),
             },
+        }
+    }
+}
+
+impl Report {
+    /// A report, as the wire carries it — all four parts of §5.
+    ///
+    /// `verdict` is the one with everything applied (§4.8's caveat, §4.12's
+    /// beginning), because that is the field a client should read.
+    /// `as_compared` is present only when the two differ, so a client that
+    /// never looks at it is never misled by it.
+    pub fn of(r: &crate::differ::Report) -> Self {
+        let verdict = r.verdict();
+        // §13's Q16: the core's difference does not name its region, and the
+        // region is recoverable here only where §5.4's localisation ran.
+        let region = r.localisation().map(|l| l.region.clone());
+        Report {
+            routine: r.routine().to_string(),
+            verdict: Verdict::of(&verdict, region.clone()),
+            as_compared: (&verdict != r.as_compared())
+                .then(|| Verdict::of(r.as_compared(), region)),
+            moved: r.moved(),
+            localisation: r.localisation().map(Localised::from),
+            control: Control::of(r.control()),
+            complete: r.complete(),
+            beginning: r.beginning().into(),
+            took_ms: r.took().as_millis() as u64,
         }
     }
 }

@@ -6,6 +6,7 @@
 //! See `spec.md`, which is normative.
 
 pub mod arrive;
+pub mod binding;
 pub mod cache;
 pub mod config;
 pub mod differ;

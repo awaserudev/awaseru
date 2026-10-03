@@ -223,6 +223,38 @@ naming both numbers. Negotiation is **not** invented here: §8.6 and §13's Q3 s
 the first client written by someone who did not write the tool is what settles
 how it should work.
 
+## The two bindings, and why there is one implementation
+
+§8.4 asks for a crate for clients in the host's language and the subprocess for
+every other. Both go through **one** `apply`: a `Command` and the payload in, a
+`Reply` and a payload out. The server decodes a frame, calls it, and encodes the
+answer; it decides nothing.
+
+`apply` has **no error type**. Every failure is a `refused` reply carrying both
+halves (§14.2). A binding that returned a `Result` would make the server decide
+how to turn an error into a reply, which is a second place for the protocol's
+behaviour to live and the place the two bindings would drift apart.
+
+What that buys, measured by deleting it: with the payload-length check removed,
+a client whose arithmetic is off does not get a refusal — **it panics the
+process**, inside a slice. The check is what turns a client's mistake into a
+sentence naming the number needed and the number sent.
+
+### Where the bytes are, exactly
+
+For `examine`, the payload is:
+
+```text
+payload := given[0].length … given[n].length
+           produced[0].length … produced[m].length
+           control.span.length          (only when a control is named)
+```
+
+Nothing else, and nothing less: a payload that is not exactly that long is
+refused with both numbers. A client whose spans and bytes disagree would
+otherwise seed a routine with bytes nobody chose, and the comparison would be of
+something else entirely while looking fine.
+
 ### What the vocabulary's tests do NOT cover
 
 - **A client that sends nonsense that parses.** Every command round-trips and
