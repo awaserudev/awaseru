@@ -291,3 +291,31 @@ the first after hundreds of thousands. Saying how much was run when the verdict
 is vacuous would turn a puzzling answer into an obvious one.
 
 A fix worth making, and small: the vacuous cause carries the distance run.
+
+## 12. A control that is not noticed has a third explanation, and §5.3 offers two
+
+**Merely annoyed**, and it is about wording rather than measurement.
+
+§5.3's pair ran on the real routine. The one that should be noticed was noticed,
+and changed **exactly one** of twelve thousand bytes — the single byte it should
+have. The one that should not be noticed was not, and the tool said:
+
+```text
+... so this comparison cannot discriminate it. Either the comparison is blind
+or the routine does not read what was changed
+```
+
+Both explanations are wrong here, and that is why the control was worth running.
+The routine **did** read the changed byte and legitimately cannot tell the new
+value from the old one, because what it asks of that byte is coarser than the
+byte. That is the third explanation: the routine read it and is correctly
+indifferent to it.
+
+The distinction matters because the two the sentence offers are both faults and
+the third is a confirmation. A user running the pair §5.3 asks for — one change
+that should be noticed and one that should not — is told that the half which
+behaved as intended is a sign something may be wrong.
+
+A note for `doc/`, and a better sentence: the comparison cannot discriminate it,
+which is a fault if the routine reads it and depends on it, and the expected
+answer if the routine reads it and does not.

@@ -81,6 +81,24 @@ agreement §2.2 refuses.
 Every round reported `complete: false`, because no control had run. The tool says
 so rather than letting an agreement look finished (§5.3).
 
+## The control
+
+Every round above reported `complete: false`, because an agreement means nothing
+until something has been shown to make it disagree. §5.3's pair, both inside the
+input buffer and one byte each:
+
+| | should be | was |
+|---|---|---|
+| a change the routine distinguishes | noticed | **noticed**, and `complete` became true |
+| a change it cannot tell apart | not noticed | **not noticed**, and `complete` stayed false |
+
+The first one changed **exactly one** of the twelve thousand bytes compared. Not
+"something moved" — that byte and no other, at an offset the request never
+mentioned.
+
+The second is the half worth having, and the tool's wording about it is wrong in
+an interesting way, which `doc/findings.md` records.
+
 ## What it cost
 
 | | |
