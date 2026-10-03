@@ -212,13 +212,7 @@ impl Session {
     /// opened today was described on whatever day it was first opened and the
     /// file is where that lives.
     pub fn described(&self) -> Option<Described> {
-        let text = std::fs::read_to_string(self.dir.join(DESCRIPTION)).ok()?;
-        Some(Described {
-            software: field(&text, "software")?.to_string(),
-            reference: field(&text, "reference").unwrap_or_default().to_string(),
-            backend: field(&text, "backend").unwrap_or_default().to_string(),
-            version: field(&text, "version").unwrap_or_default().to_string(),
-        })
+        description_of(&self.dir)
     }
 
     /// Records what this session is of, or refuses if it is already of
@@ -273,6 +267,30 @@ impl Drop for Session {
             let _ = std::fs::remove_file(self.dir.join(LOCK));
         }
     }
+}
+
+/// What the session at `dir` is of, without opening it.
+///
+/// Without opening it on purpose. Opening takes the lock, and the lock is there
+/// to stop two processes **writing** one session; refusing to read somebody's
+/// description because they are using it would be the lock doing a job it was
+/// not for. A blob is written to a staging name and renamed, so a reader never
+/// sees half of one, and an entry that will not parse is a miss (§4.11) — so
+/// reading a session in use is safe by the same design that makes the cache
+/// safe to be wrong about.
+pub fn description_of(dir: &Path) -> Option<Described> {
+    let text = std::fs::read_to_string(dir.join(DESCRIPTION)).ok()?;
+    Some(Described {
+        software: field(&text, "software")?.to_string(),
+        reference: field(&text, "reference").unwrap_or_default().to_string(),
+        backend: field(&text, "backend").unwrap_or_default().to_string(),
+        version: field(&text, "version").unwrap_or_default().to_string(),
+    })
+}
+
+/// Where a session keeps its blobs, without opening it.
+pub fn anchors_of(dir: &Path) -> PathBuf {
+    dir.join("anchors")
 }
 
 /// The moment, as `YYYYMMDD-HHMMSS-mmm`.

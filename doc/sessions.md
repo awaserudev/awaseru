@@ -289,6 +289,46 @@ shown equivalent to replaying its definition" is already the truth about this
 session. Who it was is the part a reader needs, and the report is where that
 goes.
 
+## Between two of the person's own sessions
+
+```
+awaseru take <anchor> --session MINE --from-session THEIRS
+```
+
+One act, and **the same mechanism**: it is `save` into a directory nobody has to
+name followed by `restore` out of it, through a real directory, so the refusals
+above are exactly the refusals here. A second way of moving a blob between two
+sessions would be a second way for the two to disagree. The directory is made
+inside the receiving session and removed afterwards, including its parent when
+that is left empty.
+
+Nothing is inferred: both sessions are named, by the person. There is no setting
+that could be left on by mistake, because there is no setting — either the verb
+was run or no blob moved.
+
+The source session is **read and not opened.** Its lock exists to stop two
+processes writing it, and refusing to read a session somebody is using would be
+that lock doing a job it was not for. Reading one in use is safe by the same
+design that makes a cache safe to be wrong about: a blob is written to a staging
+name and renamed, so a reader never sees half of one, and an entry that will not
+parse is a miss (§4.11).
+
+### Why a box from your own other session is still "somebody else's"
+
+A blob taken from another of the person's own sessions arrives with its
+demonstration recorded as that session's, exactly as one from a stranger does,
+and the receiving session treats every verdict from it as not determined until
+it establishes the anchor itself.
+
+That can look overcautious — same machine, same backend, same software, and §4.8's
+demonstration depends on none of the things that differ. It is right anyway, and
+for a reason that is not about caution: **the tool cannot tell whose box it is.**
+A box is a directory with a description in it. Distinguishing "mine" from
+"somebody's" would mean inferring an identity from what is written inside, which
+is the one thing nothing here is allowed to do. Treating every box the same is
+the only answer that does not guess, and the cost is bounded and visible — one
+demonstration, when the person decides they want evidence rather than speed.
+
 ## What is not claimed
 
 A verdict compares the reference against a reimplementation. A box contains no

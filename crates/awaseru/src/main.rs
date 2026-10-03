@@ -30,6 +30,12 @@ Options
                         somebody with the same software. Its ancestry travels;
                         anything branching off beside it does not
 
+  awaseru take ANCHOR --session PATH --from-session PATH
+                        moves one anchor from one of your own sessions into
+                        another. It is `save` and `restore` in one act, with the
+                        same refusals: nothing is shared between two sessions
+                        unless you say so, and there is no setting for it
+
   awaseru restore --session PATH --from PATH
                         takes such a directory in. Nothing is overwritten: an
                         anchor this session already holds under another
@@ -38,6 +44,7 @@ Options
 
     --into PATH         where `save` puts the box
     --from PATH         where `restore` finds one
+    --from-session PATH which of your own sessions `take` takes from
     --session PATH      one named directory holding one piece of work: its
                         backend home, its anchor cache, its runs and its logs.
                         The last part of the path is the session's name. Nothing
@@ -100,6 +107,25 @@ fn main() -> ExitCode {
         }
         Ok(Command::Serve { places }) => awaseru::serve::serve(&places),
         Ok(Command::Reference { places }) => awaseru::child::attend(&places),
+        Ok(Command::Take {
+            plan,
+            session: named,
+            anchor,
+            source,
+        }) => match take_from(&plan, named, &anchor, &source) {
+            Ok(took) => {
+                print!("{took}");
+                if refused(&took) {
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(e) => {
+                eprintln!("awaseru: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::Restore {
             plan,
             session: named,
@@ -109,11 +135,7 @@ fn main() -> ExitCode {
                 print!("{took}");
                 // A set has no single verdict (§2.3), so the status is about
                 // whether anything was refused and the lines above say which.
-                if took
-                    .each
-                    .iter()
-                    .any(|(_, t)| matches!(t, awaseru::parcel::Took::Refused { .. }))
-                {
+                if refused(&took) {
                     ExitCode::FAILURE
                 } else {
                     ExitCode::SUCCESS
@@ -195,6 +217,80 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether anything in a box was refused — §2.3, since a set has no one answer.
+fn refused(took: &awaseru::parcel::Restored) -> bool {
+    took.each
+        .iter()
+        .any(|(_, t)| matches!(t, awaseru::parcel::Took::Refused { .. }))
+}
+
+/// Moves one anchor from one of the person's own sessions into another.
+///
+/// Literally `save` followed by `restore`, through a real directory, and that
+/// is the design rather than an implementation detail: a second way of moving a
+/// blob between two sessions would be a second way for the two to disagree, and
+/// the refusals in `restore` are the whole value here. The directory is made
+/// inside the receiving session and removed afterwards, so the person does not
+/// have to invent a place for something they are not keeping.
+///
+/// Nothing is inferred. Both sessions are named, by them. There is no setting
+/// that could be left on, because there is no setting: either this verb was run
+/// or no blob moved.
+///
+/// The source session is **read and not opened**. Its lock is there to stop two
+/// processes writing it, and refusing to read a session somebody is using would
+/// be that lock doing a job it was not for.
+fn take_from(
+    plan: &Plan,
+    named: Option<PathBuf>,
+    anchor: &str,
+    source: &std::path::Path,
+) -> Result<awaseru::parcel::Restored, String> {
+    use awaseru_core::snapshot::Provenance;
+
+    let described = awaseru::workspace::description_of(source).ok_or_else(|| {
+        format!(
+            "`{}` does not say what it is of, so nothing in it can be identified. A session says              that once something has run in it",
+            source.display()
+        )
+    })?;
+    let loaded = awaseru::config::load(&plan.shared, &plan.local).map_err(|e| e.to_string())?;
+
+    // The SOURCE's provenance, because its blobs were made under what it
+    // recorded. The receiver's is rebuilt inside `restore`, which is where the
+    // two are compared part by part.
+    let theirs = Provenance {
+        reference: described.reference,
+        backend: described.backend,
+        version: described.version,
+        software: described.software,
+    };
+    let from = awaseru::cache::Cache::at(awaseru::workspace::anchors_of(source));
+
+    // Inside the receiving session, because that is the directory this run
+    // already owns, and named by the moment so two of these cannot collide.
+    let staging = plan
+        .home
+        .parent()
+        .unwrap_or(&plan.cache)
+        .join("incoming")
+        .join(format!("{anchor}-{}", awaseru::workspace::stamp()));
+
+    awaseru::parcel::pack(&loaded.anchors, anchor, &theirs, &from, &staging)
+        .map_err(|e| e.to_string())?;
+    let took = take_in(plan, named, &staging);
+    // Removed whether it worked or not: it was never something to keep. Its
+    // parent goes too **when it is empty** — `remove_dir` and not
+    // `remove_dir_all`, so a second `take` running beside this one keeps its
+    // own staging directory. A leftover empty directory is small and is the
+    // family findings 24 and 26 belong to, which is reason enough.
+    let _ = std::fs::remove_dir_all(&staging);
+    if let Some(parent) = staging.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+    took
 }
 
 /// Takes a box into a session, refusing anything it cannot place.
@@ -486,7 +582,15 @@ enum Command {
     /// `current_exe` is a path that always exists, and a sibling binary is a
     /// path that may not have been installed.
     Reference { places: Box<awaseru::child::Where> },
-    /// `awaseru restore --into PATH` — taking a box in.
+    /// `awaseru take <anchor> --from-session PATH` — one of the person's own
+    /// sessions to another, which is `save` and `restore` composed.
+    Take {
+        plan: Box<Plan>,
+        session: Option<PathBuf>,
+        anchor: String,
+        source: PathBuf,
+    },
+    /// `awaseru restore --from PATH` — taking a box in.
     Restore {
         plan: Box<Plan>,
         session: Option<PathBuf>,
@@ -552,6 +656,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut into: Option<PathBuf> = None;
     let mut taking = false;
     let mut from: Option<PathBuf> = None;
+    let mut from_session: Option<PathBuf> = None;
 
     let mut args = args.peekable();
     // The one bare word this tool takes, and it has to be first: a subcommand
@@ -567,6 +672,20 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         }
         Some("restore") => {
             args.next();
+            taking = true;
+        }
+        Some("take") => {
+            args.next();
+            // The same bare-word shape as `save`, and refused before anything
+            // is opened if it is missing.
+            packing = match args.peek() {
+                Some(word) if !word.starts_with('-') => args.next(),
+                _ => {
+                    return Err("`take` needs the anchor to take, as in \
+                                `awaseru take settled --session mine --from-session theirs`"
+                        .to_string())
+                }
+            };
             taking = true;
         }
         Some("save") => {
@@ -609,6 +728,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--session" => session = Some(PathBuf::from(value()?)),
             "--into" => into = Some(PathBuf::from(value()?)),
             "--from" => from = Some(PathBuf::from(value()?)),
+            "--from-session" => from_session = Some(PathBuf::from(value()?)),
             "--log" => log = Some(PathBuf::from(value()?)),
             "--regions" => list_only = true,
             "--state-digest" => digest_only = true,
@@ -677,6 +797,33 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let found = where_things_go(session.clone(), home, cache, log)?;
 
     if taking {
+        // `take <anchor> --from-session` is `save` into a place nobody has to
+        // name followed by `restore` out of it. One act for the person, and
+        // **the same mechanism**: a second way of moving a blob between two
+        // sessions is a second way for the two to disagree.
+        if let Some(anchor) = packing.clone() {
+            let source = from_session.ok_or_else(|| {
+                format!(
+                    "`take {anchor}` needs the session to take it from: `--from-session PATH`.                      Nothing is looked for: both sessions are named, by you"
+                )
+            })?;
+            return Ok(Command::Take {
+                plan: Box::new(Plan {
+                    shared,
+                    local,
+                    home: found.home,
+                    bound: Bound::Frames(1),
+                    anchor: Some(anchor.clone()),
+                    cache: found.cache,
+                    region: None,
+                    offset: 0,
+                    length: 0,
+                }),
+                session,
+                anchor,
+                source,
+            });
+        }
         let from = from.ok_or_else(|| {
             "`restore` needs the box to take in: `--from PATH`, the directory `save` wrote"
                 .to_string()
@@ -1013,6 +1160,81 @@ mod tests {
             PathBuf::from("/tmp/awaseru-parse-test/home"),
             "and the one not given still comes from the session"
         );
+    }
+
+    /// Both halves of `take` are refused before anything is opened, and each
+    /// refusal says which half is missing.
+    #[test]
+    fn take_needs_an_anchor_and_a_session_to_take_it_from() {
+        let err = parse(["take"].iter().map(|w| w.to_string())).expect_err("no anchor");
+        assert!(err.contains("needs the anchor"), "said: {err}");
+
+        let err = parse(
+            ["take", "--session", "/tmp/b"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect_err("an option is not an anchor");
+        assert!(err.contains("needs the anchor"), "said: {err}");
+
+        let err = parse(
+            ["take", "settled", "--session", "/tmp/b"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect_err("nowhere to take it from");
+        assert!(err.contains("--from-session"), "said: {err}");
+        assert!(
+            err.contains("Nothing is looked for"),
+            "the refusal says why there is no default, said: {err}"
+        );
+
+        match parse(
+            ["take", "settled", "--session", "/tmp/b", "--from-session", "/tmp/a"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect("it parses")
+        {
+            Command::Take {
+                anchor,
+                source,
+                session,
+                plan,
+            } => {
+                assert_eq!(anchor, "settled");
+                assert_eq!(source, PathBuf::from("/tmp/a"));
+                assert_eq!(session, Some(PathBuf::from("/tmp/b")));
+                assert_eq!(
+                    plan.cache,
+                    PathBuf::from("/tmp/b/anchors"),
+                    "it writes into the receiving session and nowhere else"
+                );
+            }
+            other => panic!("expected a take, got {other:?}"),
+        }
+    }
+
+    /// `save` and `restore` each need their own place said, and neither has a
+    /// default — a box is something about to be handed over and where it lands
+    /// is not a thing to guess.
+    #[test]
+    fn save_and_restore_each_refuse_without_somewhere_to_put_or_find_a_box() {
+        let err = parse(
+            ["save", "settled", "--session", "/tmp/s"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect_err("nowhere to put it");
+        assert!(err.contains("--into"), "said: {err}");
+
+        let err = parse(
+            ["restore", "--session", "/tmp/s"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect_err("nothing to take in");
+        assert!(err.contains("--from"), "said: {err}");
     }
 
     /// A bound beside an anchor is refused rather than discarded — §2.4.
