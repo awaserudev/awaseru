@@ -61,13 +61,28 @@ use crate::memory::{MAPPINGS, ZEROED_AT_POWER_ON};
 /// one global object (see this module's header).
 static IN_USE: AtomicBool = AtomicBool::new(false);
 
-/// How long to wait for a break before giving up on one.
+/// How long the backend may make **no progress at all** before it is given up
+/// on.
 ///
 /// **This is not the budget of §4.4.** A budget is a count, so that the same
 /// run stops the same way every time (§2.5); this is a wall clock, and a run
-/// that ends on it is not reproducible. That is exactly why hitting it is
-/// reported as the backend being unable to continue rather than as a budget
+/// that ended on one would not be reproducible. That is exactly why hitting it
+/// is reported as the backend being unable to continue rather than as a budget
 /// running out: the two mean different things to whoever reads the result.
+///
+/// # Why it watches progress and not duration
+///
+/// It used to be a deadline on the whole wait, and that could not tell a stuck
+/// backend from a long run. Ten seconds is generous for a routine and absurd
+/// for a seventeen-thousand-frame replay, which takes two minutes of honest
+/// work — so §4.9's closing check on such an anchor came back saying the
+/// backend could not continue, which was false and alarming in the same breath.
+///
+/// Raising the number would only move the lie. What tells the two apart is
+/// whether the machine is *doing* anything, and the processor's cycle count
+/// answers that: it only goes up, and a backend that is wedged stops moving it.
+/// So the deadline is reset whenever the count changes, and a run of any length
+/// is fine as long as it is still running.
 const DEFAULT_WATCHDOG: Duration = Duration::from_secs(10);
 
 /// How long to sleep between looks at the break count. Short enough not to
@@ -782,12 +797,22 @@ impl Reference {
 /// Free of the race described in `ffi::Backend::listen_for_breaks`, because
 /// `before` is read before the request is lodged and the count only rises.
 fn wait_for_break(backend: &Backend, before: u64, watchdog: Duration) -> bool {
-    let deadline = Instant::now() + watchdog;
+    // The cycle count only goes up, and a wedged backend stops moving it. So
+    // the deadline is on *silence*, not on duration: it resets every time the
+    // machine has got anywhere, and a two-minute replay is as acceptable as a
+    // two-millisecond one as long as it is still working.
+    let mut deadline = Instant::now() + watchdog;
+    let mut cycles = backend.cpu_snapshot().cycles;
     while backend.breaks() == before {
         if Instant::now() >= deadline {
             return false;
         }
         std::thread::sleep(POLL);
+        let now = backend.cpu_snapshot().cycles;
+        if now != cycles {
+            cycles = now;
+            deadline = Instant::now() + watchdog;
+        }
     }
     true
 }
@@ -1434,6 +1459,61 @@ impl Drop for Reference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The watchdog's deadline is on **silence**, not on duration — a run that
+    /// is still working is never given up on, however long it takes.
+    ///
+    /// Tested on the loop's own shape rather than against a backend, because
+    /// what changed is the rule: a deadline that resets on progress cannot be
+    /// reached while progress is being made, and one that does not reset is
+    /// reached in a fixed time no matter what the machine is doing.
+    #[test]
+    fn a_deadline_that_resets_on_progress_is_never_reached_while_there_is_progress() {
+        let watchdog = Duration::from_millis(40);
+
+        // Progress every tick: the deadline keeps moving and the loop would run
+        // for as long as the work does.
+        let mut deadline = Instant::now() + watchdog;
+        let mut cycles = 0u64;
+        let mut ticks = 0;
+        for step in 1..=12u64 {
+            std::thread::sleep(Duration::from_millis(10));
+            if Instant::now() >= deadline {
+                break;
+            }
+            if step != cycles {
+                cycles = step;
+                deadline = Instant::now() + watchdog;
+            }
+            ticks += 1;
+        }
+        assert_eq!(
+            ticks, 12,
+            "120ms of work under a 40ms watchdog, and it is never given up on because \
+             something was happening the whole time"
+        );
+
+        // No progress at all: the same loop, the same watchdog, and it stops.
+        let mut deadline = Instant::now() + watchdog;
+        let mut cycles = 7u64;
+        let mut ticks = 0;
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(10));
+            if Instant::now() >= deadline {
+                break;
+            }
+            let now = 7u64;
+            if now != cycles {
+                cycles = now;
+                deadline = Instant::now() + watchdog;
+            }
+            ticks += 1;
+        }
+        assert!(
+            ticks < 12,
+            "a backend that moves nothing is still caught, and in the same time as before"
+        );
+    }
     use awaseru_core::Access;
 
     /// Every error says something a person can act on, and the three that mean

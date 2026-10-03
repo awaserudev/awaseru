@@ -21,7 +21,7 @@ on until something was done about it; **slowed** means it cost real time;
 | | finding | cost | what it wants |
 |---|---|---|---|
 | 1 | a bounded run costs about as much as the request around it | slowed | a note for `doc/` — half of it is already fixed |
-| 2 | input replay is in the machine and not in the host | **blocked** | a design decision, and §13's Q14 records it |
+| 2 | input replay is in the machine and not in the host | **blocked** | **closed when §13's Q14 closed** — two milestones from the measurement to the verb |
 | 3 | the emulator's chatter lands on the host's own stdout | annoyed | a fix worth making — **not made**: it needs a file-descriptor redirect, which is `unsafe`, and §17.1 keeps that in the backend's `ffi` module. The fix has a home and is not a cheap one |
 | 4 | a frame bound reports a position it then apologises for | annoyed | **fixed in U10** |
 | 5 | the two interfaces key the anchor cache differently, and one keys it by a path | **blocked** | **fixed in U10** — one `Loaded::provenance`, built in one place, with a test |
@@ -39,6 +39,7 @@ on until something was done about it; **slowed** means it cost real time;
 | 17 | `measured` hides the distinction its author tabulated: once, or twice by two means | annoyed | a question for §13 — found in M7 |
 | 18 | a mapping is only visible where a measurement happens to land | annoyed | a note for `doc/`, and probably a verb one day — found in M7 |
 | 19 | the backend says nothing about an input log it could not open | **would have blocked** | **fixed while closing Q14** — the host checks the only observable thing |
+| 20 | the watchdog could not tell a stuck backend from a long run | **blocked** §4.9 on a long anchor | **fixed while closing Q14** — it watches progress now, not duration |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -75,6 +76,21 @@ writing the obvious loop pays a thousandfold and the tool does not mention it.
 would be cheaper to find.
 
 ## 2. Input replay is in the machine and not in the host
+
+**Blocked. CLOSED when §13's Q14 closed.** The verb exists, the capability is
+declared, and the anchor behind the recording arrives — 754 seconds replayed,
+0.017 resumed, the same state both ways, and the screenshot at it shows what the
+person who made the recording said it would.
+
+**What it cost, from first measurement to closed: two milestones.** M5 measured
+the machine replaying a log and could not say so; M6 and M7 went by with the
+entry below standing; Q14 took about two hours once it was started. The gap was
+never about the measurement — it was about there being no verb to ask with, and
+the decision that filled it was two sentences long. The lesson is the size of
+that gap, not the size of the work: a capability a tool has and cannot be asked
+for is invisible, and invisible is indistinguishable from absent.
+
+The original entry follows, unchanged.
 
 **Blocked.** It is the first thing M5 asked for and the tool cannot do it.
 
@@ -547,3 +563,32 @@ What would close it properly is a backend that reports the open. That is the
 backend's to add, and the check here is honest about being a substitute: the
 refusal says the backend is silent and that what can be seen is that nothing is
 being replayed.
+
+## 20. The watchdog could not tell a stuck backend from a long run
+
+**Blocked** §4.9's closing check on the anchor Q14 exists for, and was found by
+running it.
+
+The watchdog is a wall clock on waiting for a break, and the default is ten
+seconds. That is generous for a routine and absurd for a seventeen-thousand-
+frame replay, which is two minutes of entirely honest work. So the closing check
+on that anchor came back saying:
+
+```text
+the backend cannot continue from <an address>: it did not break within 10s
+```
+
+which is false, and alarming in the same breath — it reads as the emulator
+having wedged.
+
+Raising the number would only move the lie: any fixed duration is a guess about
+how long legitimate work takes, and a bigger guess is still a guess. What tells
+a stuck backend from a working one is whether the machine is **doing** anything,
+and the processor's cycle count answers that — it only goes up, and a wedged
+backend stops moving it.
+
+The deadline now resets whenever the count has changed. A run of any length is
+fine as long as it is still running, and a backend that has genuinely stopped is
+caught in the same ten seconds as before. The comment on the constant had the
+reasoning in it all along — "a run that ended on one would not be reproducible"
+— and the implementation was measuring the wrong thing.
