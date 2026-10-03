@@ -24,6 +24,11 @@ awaseru — runs a reference and reports what is in it.
 Options
     --config PATH       the shared configuration        (default awaseru.toml)
     --local PATH        the machine-local configuration (default awaseru.local.toml)
+    --session PATH      one named directory holding one piece of work: its
+                        backend home, its anchor cache, its runs and its logs.
+                        The last part of the path is the session's name. Nothing
+                        is shared between two sessions, and nothing here looks
+                        for another one's work
     --home PATH         where the backend may keep its own files
 
     --frames N          run to the end of N frames      (default 1)
@@ -103,9 +108,26 @@ fn main() -> ExitCode {
         Ok(Command::Reference { places }) => awaseru::child::attend(&places),
         Ok(Command::Run {
             plan,
+            session: named,
             list_only,
             digest_only,
-        }) => match session::run(&plan) {
+        }) => {
+            // Opened here and held for the whole run: the lock is what makes
+            // one session one piece of work, and dropping it early would let a
+            // second process in halfway through.
+            let held = match named {
+                None => None,
+                Some(dir) => match awaseru::workspace::Session::open(dir) {
+                    Ok(session) => Some(session),
+                    Err(e) => {
+                        eprintln!("awaseru: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
+            };
+            let outcome = session::run_in(&plan, held.as_ref());
+            drop(held);
+            match outcome {
             Ok(outcome) => {
                 if digest_only {
                     print!("{}", digest_line(&outcome));
@@ -120,7 +142,8 @@ fn main() -> ExitCode {
                 eprintln!("awaseru: {e}");
                 ExitCode::FAILURE
             }
-        },
+            }
+        }
         Err(e) => {
             eprintln!("awaseru: {e}\n");
             eprint!("{USAGE}");
@@ -241,13 +264,17 @@ enum Command {
         /// byte by region (§5.4's localisation) — which makes it large enough
         /// that `Help` would be paying for it.
         plan: Box<Plan>,
+        /// The session to open and hold for the run, if one was named. Held by
+        /// `main` rather than resolved away here, because opening it takes a
+        /// lock and parsing arguments must not take anything.
+        session: Option<PathBuf>,
         list_only: bool,
         digest_only: bool,
     },
 }
 
-/// Hand-rolled, because an argument parser would be a dependency and this is
-/// nine options (§17.2).
+/// Hand-rolled, because an argument parser would be a dependency and §17.2
+/// keeps those to what is decided in `doc/dependencies.md`.
 ///
 /// Every option takes its value as a separate word. `--frames=3` is not
 /// accepted, and saying so is better than accepting one spelling and silently
@@ -255,7 +282,13 @@ enum Command {
 fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut shared = PathBuf::from("awaseru.toml");
     let mut local = PathBuf::from("awaseru.local.toml");
-    let mut home = std::env::temp_dir().join("awaseru-backend-home");
+    // No default, because the one it had was a single fixed path under the
+    // system's temporary directory that EVERY invocation on the machine wrote
+    // into, whatever software or piece of work it belonged to. §6.7 refuses a
+    // shared cache of blobs; that default obeyed its letter, since nobody had
+    // configured anything, and broke the reason. A bad default is the one kind
+    // of default worth taking away.
+    let mut home: Option<PathBuf> = None;
     let mut bound = None;
     let mut address = None;
     let mut within = None;
@@ -265,7 +298,11 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut list_only = false;
     let mut digest_only = false;
     let mut anchor = None;
-    let mut cache = std::env::temp_dir().join("awaseru-anchor-cache");
+    let mut cache: Option<PathBuf> = None;
+    // The session: one named directory holding one piece of work. Additive —
+    // `--home` and `--cache` do exactly what they did, and either still
+    // overrides what a session would have supplied.
+    let mut session: Option<PathBuf> = None;
 
     let mut log: Option<PathBuf> = None;
     let mut as_reference = false;
@@ -294,7 +331,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "-h" | "--help" => return Ok(Command::Help),
             "--config" => shared = PathBuf::from(value()?),
             "--local" => local = PathBuf::from(value()?),
-            "--home" => home = PathBuf::from(value()?),
+            "--home" => home = Some(PathBuf::from(value()?)),
             "--frames" => bound = Some(Bound::Frames(number(&value()?, 10)?)),
             "--instructions" => bound = Some(Bound::Instructions(number(&value()?, 10)?)),
             "--address" => address = Some(number(&value()?, 16)?),
@@ -303,7 +340,8 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--offset" => offset = number(&value()?, 10)? as usize,
             "--length" => length = number(&value()?, 10)? as usize,
             "--anchor" => anchor = Some(value()?),
-            "--cache" => cache = PathBuf::from(value()?),
+            "--cache" => cache = Some(PathBuf::from(value()?)),
+            "--session" => session = Some(PathBuf::from(value()?)),
             "--log" => log = Some(PathBuf::from(value()?)),
             "--regions" => list_only = true,
             "--state-digest" => digest_only = true,
@@ -315,16 +353,13 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     }
 
     if as_reference || as_server {
+        let found = where_things_go(session, home, cache, log)?;
         let places = Box::new(awaseru::child::Where {
             shared,
             local,
-            home: home.clone(),
-            cache,
-            // Beside the backend's own home by default, because that is where
-            // the emulator's files already are and §6.1 says paths are
-            // machine-local. The NAME carries the moment, so that one run does
-            // not erase the one before it — see `log_name`.
-            log: log.unwrap_or_else(|| home.join(log_name())),
+            home: found.home,
+            cache: found.cache,
+            log: found.log,
         });
         return Ok(if as_server {
             Command::Serve { places }
@@ -369,21 +404,89 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         ));
     }
 
+    // Resolved here and not before the bound: `--anchor x --frames 3` is two
+    // instructions and refusing it is the more useful answer, so a missing
+    // place must not get in front of it.
+    let found = where_things_go(session.clone(), home, cache, log)?;
+
     Ok(Command::Run {
         plan: Box::new(Plan {
             shared,
             local,
-            home,
+            home: found.home,
             bound: bound.unwrap_or(Bound::Frames(1)),
             anchor,
-            cache,
+            cache: found.cache,
             region,
             offset,
             length,
         }),
+        session,
         list_only,
         digest_only,
     })
+}
+
+/// The three places a run writes to, and where they come from.
+struct Found {
+    home: PathBuf,
+    cache: PathBuf,
+    log: PathBuf,
+}
+
+/// Resolves where things go, from a session or from the paths themselves.
+///
+/// A session supplies all three; `--home` and `--cache` still override what it
+/// would have supplied, so neither option changed and nothing was taken away
+/// except a default that was wrong.
+///
+/// With no session and no paths this **refuses**. There is deliberately no
+/// fallback: the one it had sent every invocation on the machine into two fixed
+/// directories, which is the thing §6.7 is about, and a tool that guessed a
+/// place for a blob would be guessing about the one artefact where being wrong
+/// is invisible.
+fn where_things_go(
+    session: Option<PathBuf>,
+    home: Option<PathBuf>,
+    cache: Option<PathBuf>,
+    log: Option<PathBuf>,
+) -> Result<Found, String> {
+    match session {
+        Some(dir) => Ok(Found {
+            home: home.unwrap_or_else(|| dir.join("home")),
+            cache: cache.unwrap_or_else(|| dir.join("anchors")),
+            // The NAME carries the moment, so that one run does not erase the
+            // one before it — see `log_name`.
+            log: log.unwrap_or_else(|| dir.join("logs").join(log_name())),
+        }),
+        None => {
+            let (home, cache) = match (home, cache) {
+                (Some(home), Some(cache)) => (home, cache),
+                (home, cache) => {
+                    let mut missing = Vec::new();
+                    if home.is_none() {
+                        missing.push("--home");
+                    }
+                    if cache.is_none() {
+                        missing.push("--cache");
+                    }
+                    return Err(format!(
+                        "there is nowhere for this run to keep anything: {} {} given. Either                          name a session with `--session PATH`, which supplies both, or give                          them. There is no default, because the default used to be one place                          per machine that every piece of work shared, and §6.7 says a blob is                          the one thing where a stale copy from somebody else's run is invisible",
+                        missing.join(" and "),
+                        if missing.len() == 1 { "was not" } else { "were not" }
+                    ));
+                }
+            };
+            Ok(Found {
+                // Beside the backend's own home by default, because that is
+                // where the emulator's files already are and §6.1 says paths
+                // are machine-local.
+                log: log.unwrap_or_else(|| home.join(log_name())),
+                home,
+                cache,
+            })
+        }
+    }
 }
 
 fn number(text: &str, radix: u32) -> Result<u64, String> {
@@ -437,19 +540,30 @@ mod tests {
         parse(words.iter().map(|s| s.to_string()))
     }
 
+    /// A place to keep things, for the tests that are about something else.
+    ///
+    /// Added here rather than in each test, because the tests below are about
+    /// bounds, regions and anchors, and a session is what they all now need to
+    /// have somewhere to put a blob.
+    fn with_a_session(words: &[&str]) -> Vec<String> {
+        let mut argv = vec!["--session".to_string(), "/tmp/awaseru-parse-test".to_string()];
+        argv.extend(words.iter().map(|w| w.to_string()));
+        argv
+    }
+
     fn plan_of(words: &[&str]) -> Plan {
-        match parse_args(words).expect("it parses") {
+        match parse(with_a_session(words).into_iter()).expect("it parses") {
             Command::Run { plan, .. } => *plan,
             other => panic!("expected a run, got {other:?}"),
         }
     }
 
     fn parse_of(words: &[&str]) -> Result<Command, String> {
-        parse_args(words)
+        parse(with_a_session(words).into_iter())
     }
 
     fn digest_only_of(words: &[&str]) -> bool {
-        match parse_args(words).expect("it parses") {
+        match parse(with_a_session(words).into_iter()).expect("it parses") {
             Command::Run { digest_only, .. } => digest_only,
             other => panic!("expected a run, got {other:?}"),
         }
@@ -486,7 +600,18 @@ mod tests {
 
         // The log has a default beside the backend's home, because the
         // emulator's files are already there (§6.1).
-        match parse_args(&["reference", "--home", "/tmp/elsewhere"]).expect("it parses") {
+        // Both paths, because the parent always spawns the child with both
+        // (`child::Child::spawn`) and there is no longer a shared default to
+        // fall back to.
+        match parse_args(&[
+            "reference",
+            "--home",
+            "/tmp/elsewhere",
+            "--cache",
+            "/tmp/elsewhere-anchors",
+        ])
+        .expect("it parses")
+        {
             Command::Reference { places } => {
                 let log = places.log.display().to_string();
                 assert!(
@@ -506,7 +631,7 @@ mod tests {
     /// The defaults are the whole of M0's command line: no arguments at all
     /// must be a complete request.
     #[test]
-    fn with_no_arguments_everything_has_a_default() {
+    fn everything_except_a_place_to_keep_things_has_a_default() {
         let plan = plan_of(&[]);
         assert_eq!(plan.shared, PathBuf::from("awaseru.toml"));
         assert_eq!(plan.local, PathBuf::from("awaseru.local.toml"));
@@ -516,6 +641,65 @@ mod tests {
         assert_eq!(plan.anchor, None, "a bound unless an anchor is asked for");
         assert!(!digest_only_of(&[]), "the ordinary output is for a person");
         assert!(digest_only_of(&["--state-digest"]));
+    }
+
+    /// The default that was taken away, and why taking it away is the fix.
+    ///
+    /// It used to be two fixed paths under the system's temporary directory, so
+    /// every invocation on the machine wrote into the same backend home and the
+    /// same anchor cache whatever work it belonged to. §6.7 refuses a shared
+    /// cache of blobs because a stale blob is invisible; the default obeyed its
+    /// letter — nobody had configured anything — and broke its reason.
+    #[test]
+    fn with_nowhere_to_keep_anything_a_run_is_refused_and_says_both_ways_out() {
+        let err = parse(["--frames", "3"].iter().map(|w| w.to_string()))
+            .expect_err("nowhere to put a blob is not a thing to guess");
+        assert!(err.contains("--session"), "said: {err}");
+        assert!(err.contains("--home"), "said: {err}");
+        assert!(err.contains("--cache"), "said: {err}");
+        assert!(
+            err.contains("every piece of work shared"),
+            "the refusal has to say why there is no default, said: {err}"
+        );
+
+        // One of the two is still nowhere to keep the other.
+        let err = parse(["--home", "/tmp/h"].iter().map(|w| w.to_string()))
+            .expect_err("half a place is not a place");
+        assert!(err.contains("--cache"), "said: {err}");
+        assert!(!err.contains("--home was not"), "said: {err}");
+    }
+
+    /// A session supplies all three, and either path still overrides it — the
+    /// option is additive and nothing was renamed.
+    #[test]
+    fn a_session_supplies_the_places_and_an_explicit_path_still_wins() {
+        let plan = match parse(
+            ["--session", "/tmp/work/ff5-battle"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect("it parses")
+        {
+            Command::Run { plan, session, .. } => {
+                assert_eq!(session, Some(PathBuf::from("/tmp/work/ff5-battle")));
+                *plan
+            }
+            other => panic!("expected a run, got {other:?}"),
+        };
+        assert_eq!(plan.home, PathBuf::from("/tmp/work/ff5-battle/home"));
+        assert_eq!(plan.cache, PathBuf::from("/tmp/work/ff5-battle/anchors"));
+
+        let plan = plan_of(&["--cache", "/somewhere-else"]);
+        assert_eq!(
+            plan.cache,
+            PathBuf::from("/somewhere-else"),
+            "an explicit path overrides what the session would have supplied"
+        );
+        assert_eq!(
+            plan.home,
+            PathBuf::from("/tmp/awaseru-parse-test/home"),
+            "and the one not given still comes from the session"
+        );
     }
 
     /// A bound beside an anchor is refused rather than discarded — §2.4.

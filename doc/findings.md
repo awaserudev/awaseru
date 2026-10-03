@@ -857,11 +857,79 @@ processes with one home write the same filename. Several processes is how
 anything is done in parallel here (finding 24), so this is reachable the moment
 anybody measures two things at once and looks at a picture afterwards.
 
-The cache is the opposite and is right as it is: sharing it is the whole point,
-because a blob is expensive and reusable.
+**This entry drew the wrong conclusion about the cache and the correction is the
+part worth keeping.** It said the cache was the opposite case and right as it
+was, because a blob is expensive and reusable, so sharing it was the whole
+point. That reasoning looked only at the cost of replaying and never at what
+sharing a derived artefact between two pieces of work means. The cache had the
+same defect as the home and a worse one: §6.7 already refuses a shared cache of
+blobs, because a blob is the single artefact where a stale copy from somebody
+else's run is **invisible** rather than noisy. The default obeyed §6.7's letter,
+since nobody had configured anything, and broke its reason.
 
-**So the two directories want opposite policies**, and only one says so. What is
-not decided is whether `--home` should be subdivided per process automatically —
-which makes the safe thing the default and moves where a person looks for a
-screenshot — or whether two processes should simply be given two homes, which
-costs nothing and has to be remembered.
+The decision that settled it was the user's, and it is a rule rather than a
+preference: *nothing is shared by default; the person turns reuse on where they
+decide it belongs; the tool does not infer it.* Slow because somebody has not
+discovered a feature is a better failure than fast because the tool deduced
+something and deduced it wrong — a wrong deduction costs the same hours and
+also cannot be trusted afterwards.
+
+Both directories are answered by the same thing, which is why neither needed its
+own policy: a **session** (finding 28), one named directory holding one piece of
+work, with the backend's home and the anchor cache inside it. Two pieces of work
+are two directories, so the collision stops being guarded against and stops
+being possible. What crosses from one session to another does so because
+somebody asked for it, never because the tool went looking.
+
+## 28. Two fixed paths that every invocation on the machine shared
+
+**The cause behind findings 24, 26 and 27, which were each a symptom of it.**
+Found by answering a question about handing one piece of work to somebody else,
+and the question is what made it visible: nothing in the code reads wrongly.
+
+`--home` and `--cache` each had a default, and each default was a single fixed
+path:
+
+```rust
+let mut home  = std::env::temp_dir().join("awaseru-backend-home");
+let mut cache = std::env::temp_dir().join("awaseru-anchor-cache");
+```
+
+So **every** run on the machine wrote into those two directories, whatever
+software, anchor or piece of work it belonged to. Two runs against two different
+pieces of software shared one anchor cache and one backend home. Nobody chose
+that; it arrived with the walking skeleton, when there was one piece of work and
+the default was obviously fine, and it was never revisited while three separate
+findings were written about its consequences.
+
+This is finding 20's shape again, which is the part worth noticing. The watchdog
+had been wrong since M2, the code read correctly, the comment stated the right
+principle, and it surfaced only when a legitimate run first exceeded ten
+seconds. Here the code read correctly too, and §6.7's prose stated the right
+principle in so many words — *"what does not travel is the cache"* — while the
+implementation shipped the opposite as a default. **A principle written in the
+specification is not a principle the code has.** Neither of these was found by
+reading.
+
+**Fixed.** There is no default any more: a run names a session with `--session
+PATH`, which supplies both, or gives both paths. With neither, it refuses and
+says both ways out. Taking a default away is normally the one thing not done
+here — a parameter that shipped keeps working, and `--home` and `--cache` both
+do, including as overrides inside a session — but a default that was wrong is
+the one kind worth removing.
+
+Two things fell out of it that are worth recording separately:
+
+- An anchor's name was never validated. It did not matter while a blob lived in
+  a directory named after a digest; it matters now that the directory is named
+  after the anchor, because a name is then a path component and `../..` would
+  decide where a write lands. Refused at the configuration, with the reason,
+  rather than cleaned up at the store — silently rewriting somebody's name is
+  how a name stops meaning what they wrote.
+- The cache now holds **at most one blob per anchor name**. Under a digest it
+  could hold several for one anchor — the same definition against a different
+  reference or backend version — and that was free rather than owed: §4.11
+  already says changing either invalidates the blob, and an invalidated blob is
+  one that gets replayed. A session pins one reference and one version, which is
+  why one slot is the right number. Written down as a test, so that widening it
+  again has to be a decision.

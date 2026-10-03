@@ -14,6 +14,7 @@ use crate::arrive::{ArriveError, Arrived, Arriver};
 use crate::cache::Cache;
 use crate::config::{self, Loaded};
 use crate::platform::{self, Request};
+use crate::workspace::{Session, SessionError};
 
 /// What to do.
 #[derive(Debug, Clone)]
@@ -76,6 +77,9 @@ pub struct Outcome {
 #[derive(Debug)]
 pub enum Error {
     Configuration(config::Error),
+    /// The session this run belongs to would not hold it — §6.6's refusal,
+    /// arriving at the session rather than at the configuration.
+    Session(SessionError),
     /// The configuration names a platform and backend this build does not
     /// have. Refused with the list, because "unsupported" without the list is
     /// a message nobody can act on.
@@ -107,6 +111,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Configuration(e) => write!(f, "{e}"),
+            Error::Session(e) => write!(f, "{e}"),
             Error::NoSuchBackend {
                 platform,
                 backend,
@@ -134,6 +139,12 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl From<SessionError> for Error {
+    fn from(e: SessionError) -> Self {
+        Error::Session(e)
+    }
+}
+
 impl From<config::Error> for Error {
     fn from(e: config::Error) -> Self {
         Error::Configuration(e)
@@ -160,9 +171,30 @@ impl From<ArriveError> for Error {
 
 /// Reads the configuration, opens the reference it names, runs, and reads.
 pub fn run(plan: &Plan) -> Result<Outcome, Error> {
+    run_in(plan, None)
+}
+
+/// The same pass, recording what the session it belongs to is of.
+///
+/// Separate from `run` so that nothing existing had to change its shape. The
+/// session is described here and not after the run, because a session pointed
+/// at other software has to be refused **before** anything expensive happens —
+/// an anchor that takes twelve minutes to replay is twelve minutes spent on a
+/// refusal that was available at the start.
+pub fn run_in(plan: &Plan, session: Option<&Session>) -> Result<Outcome, Error> {
     let loaded = config::load(&plan.shared, &plan.local)?;
     let mut reference = open_reference(&loaded, &plan.home)?;
     let (emulator, _) = loaded.reference();
+
+    if let Some(session) = session {
+        let provenance = loaded.provenance(reference.version().reported);
+        session.describe(
+            &provenance.software,
+            &provenance.reference,
+            &provenance.backend,
+            &provenance.version,
+        )?;
+    }
 
     let regions = reference.regions();
     let region = choose_region(&regions, plan.region.as_deref())?;

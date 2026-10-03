@@ -373,6 +373,15 @@ pub enum Error {
         name: String,
         given: Vec<&'static str>,
     },
+    /// An anchor's name cannot be a directory's name.
+    ///
+    /// A blob is stored in a directory named after its anchor, so that a person
+    /// choosing what to keep can read what they have. That makes the name a
+    /// path component, and a name that is not one — empty, `..`, or carrying a
+    /// separator — would decide where a write lands. Refused at the
+    /// configuration rather than cleaned up at the store, because silently
+    /// rewriting somebody's name is how a name stops meaning what they wrote.
+    AnchorName { name: String, why: &'static str },
     /// An anchor's address is not a hexadecimal number.
     AnchorAddress { name: String, given: String },
     /// An address bound without a budget, or a budget without an address.
@@ -483,6 +492,11 @@ impl std::fmt::Display for Error {
                         given.join(", ")
                     )
                 }
+            ),
+            Error::AnchorName { name, why } => write!(
+                f,
+                "the anchor named `{name}` cannot be stored, because {why}. A blob is kept in a \
+                 directory named after its anchor, so the name has to be one a directory can have"
             ),
             Error::AnchorAddress { name, given } => write!(
                 f,
@@ -697,6 +711,13 @@ fn anchors_from(declarations: &[AnchorDeclaration], beside: &Path) -> Result<Anc
             });
         }
 
+        if let Some(why) = unusable_as_a_directory(&declaration.name) {
+            return Err(Error::AnchorName {
+                name: declaration.name.clone(),
+                why,
+            });
+        }
+
         let bound = if let Some(frames) = declaration.frames {
             Bound::Frames(frames)
         } else if let Some(instructions) = declaration.instructions {
@@ -866,6 +887,30 @@ fn merge(base: Value, over: Value) -> Value {
         }
         (_, over) => over,
     }
+}
+
+/// Why `name` cannot be a directory's name, or `None` if it can.
+///
+/// A free function, and returning the reason rather than a boolean, so that both
+/// answers are testable and the refusal can say which rule was broken. §9's
+/// symbols are not stored this way and are not checked here.
+fn unusable_as_a_directory(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        return Some("it is empty");
+    }
+    if name == "." || name == ".." {
+        return Some("it names a directory instead of being one");
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Some("it carries a path separator");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Some("it has a character outside letters, digits, `-` and `_`");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1281,6 +1326,64 @@ mod tests {
             err.to_string().contains("read first"),
             "the message must say why two is worse than none, said: {err}"
         );
+    }
+
+    /// Both answers, because the free function exists so that both can be had.
+    #[test]
+    fn a_name_a_directory_can_have_is_allowed_and_each_rule_says_which_it_broke() {
+        assert_eq!(unusable_as_a_directory("in-control"), None);
+        assert_eq!(unusable_as_a_directory("after_boot"), None);
+        assert_eq!(unusable_as_a_directory("a1"), None);
+
+        assert_eq!(unusable_as_a_directory(""), Some("it is empty"));
+        assert_eq!(
+            unusable_as_a_directory(".."),
+            Some("it names a directory instead of being one")
+        );
+        assert_eq!(
+            unusable_as_a_directory("."),
+            Some("it names a directory instead of being one")
+        );
+        assert_eq!(
+            unusable_as_a_directory("a/b"),
+            Some("it carries a path separator")
+        );
+        assert_eq!(
+            unusable_as_a_directory("a\\b"),
+            Some("it carries a path separator")
+        );
+        assert_eq!(
+            unusable_as_a_directory("in control"),
+            Some("it has a character outside letters, digits, `-` and `_`")
+        );
+        // A dot anywhere, because the store writes `<name>.<pid>.writing` while
+        // it is preparing an entry, and a dotted anchor could reach it.
+        assert_eq!(
+            unusable_as_a_directory("a.writing"),
+            Some("it has a character outside letters, digits, `-` and `_`")
+        );
+    }
+
+    /// Traversal is the reason this check exists, so it is the case that is
+    /// made to happen rather than argued about.
+    #[test]
+    fn an_anchor_whose_name_would_escape_the_cache_is_refused() {
+        let err = anchors_of("[[anchor]]\nname = \"../../etc\"\nframes = 1\n")
+            .expect_err("a name that leaves the directory");
+        match &err {
+            Error::AnchorName { name, why } => {
+                assert_eq!(name, "../../etc");
+                assert_eq!(*why, "it carries a path separator");
+            }
+            other => panic!("got {other}"),
+        }
+        assert!(
+            err.to_string().contains("directory named after its anchor"),
+            "the message must say why the name has to be one, said: {err}"
+        );
+
+        let err = anchors_of("[[anchor]]\nname = \"\"\nframes = 1\n").expect_err("no name");
+        assert!(matches!(err, Error::AnchorName { .. }), "got {err}");
     }
 
     #[test]

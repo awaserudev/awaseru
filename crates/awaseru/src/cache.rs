@@ -105,8 +105,23 @@ impl Cache {
         &self.root
     }
 
+    /// Where this key's entry lives: a directory named after the anchor.
+    ///
+    /// Named after the anchor and not after `key.digest()`, because a person
+    /// deciding what to keep or hand over has to be able to see what they have,
+    /// and a digest is correct and unreadable. The digest has not gone
+    /// anywhere — it is inside `key`, and `key` is still the whole of what
+    /// decides validity.
+    ///
+    /// This costs something. Under a digest, two different definitions could
+    /// not land in one directory; under a name, they can — a definition edited
+    /// on one side meets a blob from the other with the same name and a
+    /// different key. `get` already treats that as absence rather than as an
+    /// answer, which is what pays for the legibility. The configuration refuses
+    /// a name a directory cannot have, so this does not build a path out of
+    /// something arbitrary.
     fn dir(&self, key: &Key) -> PathBuf {
-        self.root.join(key.digest())
+        self.root.join(key.anchor())
     }
 
     /// What is stored for this key.
@@ -166,7 +181,7 @@ impl Cache {
         // share.
         let staging = self
             .root
-            .join(format!("{}.{}.writing", key.digest(), std::process::id()));
+            .join(format!("{}.{}.writing", key.anchor(), std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|e| unwritable(&staging, e))?;
 
@@ -489,17 +504,73 @@ mod tests {
     #[test]
     fn forgetting_one_entry_leaves_the_others() {
         let cache = Cache::at(scratch("forget"));
-        let mut other = provenance();
-        other.reference = "ref-b".into();
-        let other_key = anchors().key("boot", &other).expect("it resolves");
+        let two = Anchors::new(vec![
+            Anchor {
+                name: "boot".into(),
+                definition: Definition {
+                    start: Start::PowerOn,
+                    bound: Bound::Frames(10),
+                    input: None,
+                },
+                covers: vec!["work-ram".into()],
+            },
+            Anchor {
+                name: "settled".into(),
+                definition: Definition {
+                    start: Start::PowerOn,
+                    bound: Bound::Frames(20),
+                    input: None,
+                },
+                covers: vec!["work-ram".into()],
+            },
+        ])
+        .expect("two anchors");
+        let boot = two.key("boot", &provenance()).expect("it resolves");
+        let settled = two.key("settled", &provenance()).expect("it resolves");
 
-        cache.put(&key(), &stored()).expect("it writes");
-        cache.put(&other_key, &stored()).expect("it writes");
+        cache.put(&boot, &stored()).expect("it writes");
+        cache.put(&settled, &stored()).expect("it writes");
         assert_eq!(cache.len(), 2);
 
-        assert!(cache.forget(&key()));
-        assert_eq!(cache.get(&key()), None);
-        assert!(cache.get(&other_key).is_some(), "the other one stays");
-        assert!(!cache.forget(&key()), "forgetting nothing says so");
+        assert!(cache.forget(&boot));
+        assert_eq!(cache.get(&boot), None);
+        assert!(cache.get(&settled).is_some(), "the other one stays");
+        assert!(!cache.forget(&boot), "forgetting nothing says so");
+    }
+
+    /// The contract the readable directory names narrowed, written down so that
+    /// widening it again has to be a decision.
+    ///
+    /// An entry is named after its anchor, so a cache holds **at most one blob
+    /// per anchor name**. Two keys for one anchor — the same definition against
+    /// a different reference or a different backend version — are one slot, not
+    /// two, and the one that is not the stored key reads as absence.
+    ///
+    /// Nothing is lost that §4.11 promised: it already says that changing the
+    /// reference, the version or the definition invalidates the blob, and an
+    /// invalidated blob is one that has to be replayed. Keeping the superseded
+    /// copy alongside it was free under a digest and was never owed. A session
+    /// pins one reference and one backend version, which is why one slot is the
+    /// right number.
+    #[test]
+    fn two_keys_for_one_anchor_are_one_slot_and_the_other_reads_as_absence() {
+        let cache = Cache::at(scratch("one-slot"));
+        let mut newer = provenance();
+        newer.version = "2.3.0".into();
+        let after_upgrade = anchors().key("boot", &newer).expect("it resolves");
+
+        cache.put(&key(), &stored()).expect("it writes");
+        cache.put(&after_upgrade, &stored()).expect("it writes");
+
+        assert_eq!(cache.len(), 1, "one anchor, one directory");
+        assert!(
+            cache.get(&after_upgrade).is_some(),
+            "the key that was written last is the one that is there"
+        );
+        assert_eq!(
+            cache.get(&key()),
+            None,
+            "the superseded key is absence and never a stale answer"
+        );
     }
 }

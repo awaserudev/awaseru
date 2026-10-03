@@ -146,11 +146,25 @@ pub struct Anchor {
 /// *which* part changed. Whoever stores a blob may hash this for a file name;
 /// the string is what decides validity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Key(String);
+pub struct Key {
+    text: String,
+    /// The leaf anchor's name, carried so that whoever stores a blob can give
+    /// it a directory a person can read.
+    ///
+    /// This is a NAME and never what decides validity — the same thing
+    /// `digest` says about itself. A store that compared these would be
+    /// trusting a label where it could have compared the key.
+    anchor: String,
+}
 
 impl Key {
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
+    }
+
+    /// The leaf anchor's name. A label for a human, not a decision.
+    pub fn anchor(&self) -> &str {
+        &self.anchor
     }
 
     /// A short, file-name-safe form of the same key, for a cache that needs one.
@@ -159,7 +173,7 @@ impl Key {
     /// name. A cache that compared these instead would be trusting a digest
     /// where it could have compared the thing itself.
     pub fn digest(&self) -> String {
-        let out = Sha256::digest(self.0.as_bytes());
+        let out = Sha256::digest(self.text.as_bytes());
         out.iter().fold(String::with_capacity(64), |mut s, byte| {
             use std::fmt::Write;
             let _ = write!(s, "{byte:02x}");
@@ -170,7 +184,7 @@ impl Key {
 
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.text)
     }
 }
 
@@ -359,6 +373,11 @@ impl Anchors {
     /// failure §4.11 is about.
     pub fn key(&self, name: &str, provenance: &Provenance) -> Result<Key, AnchorError> {
         let chain = self.chain(name)?;
+        // The leaf's name, taken from the chain as it is walked rather than from
+        // `name`, so a label can never say one anchor while the key describes
+        // another. Set in the loop and not from `chain.last()`, because a
+        // fallback there would be an error path that cannot happen.
+        let mut leaf = String::new();
         let mut key = format!(
             "reference={} backend={} version={} software={}",
             provenance.reference, provenance.backend, provenance.version, provenance.software
@@ -386,6 +405,7 @@ impl Anchors {
                     format!(" input={hex}")
                 }
             };
+            leaf = anchor.name.clone();
             key = format!(
                 "{key} | anchor={} start={} bound={}{input} covers=[{}]",
                 anchor.name,
@@ -394,7 +414,10 @@ impl Anchors {
                 covers.join(",")
             );
         }
-        Ok(Key(key))
+        Ok(Key {
+            text: key,
+            anchor: leaf,
+        })
     }
 }
 

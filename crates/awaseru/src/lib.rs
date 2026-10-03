@@ -22,3 +22,4 @@ pub mod routine;
 pub mod serve;
 pub mod session;
 pub mod version;
+pub mod workspace;
