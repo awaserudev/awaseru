@@ -14,6 +14,7 @@ pub mod differ;
 pub mod frame;
 pub mod digest;
 pub mod localise;
+pub mod mapping;
 pub mod perturb;
 pub mod platform;
 pub mod protocol;
