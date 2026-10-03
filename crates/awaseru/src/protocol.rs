@@ -35,6 +35,32 @@
 //! bytes **concatenated in the order the spans are listed**. A client that can
 //! count can cut it; nothing is base64 and nothing is doubled in size.
 //!
+//! # Strict one way, tolerant the other
+//!
+//! **Commands refuse a field nobody declared. Replies ignore one.** The
+//! asymmetry is deliberate and it is what makes this vocabulary extensible at
+//! all.
+//!
+//! A client that misspells a field is making a mistake, and §2.4 says the tool
+//! does not guess what was meant: `deny_unknown_fields` on `Command` and
+//! everything only a command carries turns a typo into a refusal that names the
+//! field, rather than a measurement quietly made with a default nobody chose.
+//!
+//! A client reading a reply is in the opposite position. The tool it is talking
+//! to may be **newer than the client**, and a newer tool says more. Until M6
+//! the replies here were strict too — including where this host's own parent
+//! process reads its child — so a field added to a report broke every older
+//! reader and no addition was additive. Every new field would have been a
+//! version bump (§8.6), which in practice means none get added.
+//!
+//! So the rule for growing this vocabulary is: **a new field is additive, a new
+//! variant is not.** Adding `coverage` to a report is free, because a client
+//! that does not know it skips it. Adding a *reply kind*, or a new variant to a
+//! tagged enum like `Verdict` or `Cause`, is not free: an old client fails to
+//! parse the tag, and rightly, because it has no idea what it is being told.
+//! That is where §8.6's version lives, and it is a much rarer event than adding
+//! a field.
+//!
 //! # The names are the configuration's
 //!
 //! §8.5. Every region is a `String` the backend and the mapping supplied, never
@@ -168,7 +194,7 @@ pub struct Perturbation {
 
 /// What the tool answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "result", rename_all = "kebab-case")]
 pub enum Reply {
     /// The handshake's other half. Both versions, always, so a mismatch is
     /// legible from either side (§8.6).
@@ -228,7 +254,6 @@ pub enum Reply {
 
 /// One region, as §3.1 models it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Region {
     pub name: String,
     pub size: usize,
@@ -241,7 +266,7 @@ pub struct Region {
 /// The kind is on the wire because a frame boundary is not an instruction
 /// boundary, and a client that cannot tell them apart will try to seed from one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "position", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "position", rename_all = "kebab-case")]
 pub enum Position {
     FrameBoundary { frame: u64 },
     InstructionBoundary { pc: u64 },
@@ -251,7 +276,6 @@ pub enum Position {
 
 /// Why a run ended, and where — §4.3.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Stop {
     pub reason: Reason,
     pub position: Position,
@@ -264,7 +288,7 @@ pub struct Stop {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "reason", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum Reason {
     BoundReached,
     AddressHit { address: u64 },
@@ -276,7 +300,7 @@ pub enum Reason {
 
 /// §5.1's verdict. **Three values on the wire, never two** (§2.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "verdict", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "verdict", rename_all = "kebab-case")]
 pub enum Verdict {
     Agrees {
         compared: usize,
@@ -315,7 +339,6 @@ pub enum Cause {
 
 /// §5.4's localisation, as far as it is known.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Difference {
     /// Which region the offset below is read against (§5.4).
     ///
@@ -336,7 +359,7 @@ pub struct Difference {
 
 /// What is known about the write that produced the reference's value — §5.4.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "wrote", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "wrote", rename_all = "kebab-case")]
 pub enum Wrote {
     /// Nobody asked. Localising is a replay, so it is a second request.
     NotLooked,
@@ -351,7 +374,7 @@ pub enum Wrote {
 
 /// §5.3's control, or the record that none was run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "control", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(tag = "control", rename_all = "kebab-case")]
 pub enum Control {
     /// **The tool cannot force a control and records its absence** (§5.3).
     NotRun { says: String },
@@ -371,7 +394,6 @@ pub enum Control {
 
 /// All of §5 in one value, which is what §5 requires of a report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Report {
     pub routine: String,
     /// §5.1, **with everything that bears on it applied** — §4.8's caveat and
@@ -399,7 +421,6 @@ pub struct Report {
 
 /// §5.4's answer for one byte.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Localised {
     pub region: String,
     pub offset: usize,
@@ -414,7 +435,6 @@ pub struct Localised {
 
 /// How the reference came up — §4.12.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Beginning {
     /// Whether a run from here can be compared with a run from anywhere else
     /// (§2.5). A report that did not say this would be a report somebody
@@ -690,6 +710,151 @@ mod tests {
 
     fn json(value: &impl Serialize) -> serde_json::Value {
         serde_json::to_value(value).expect("it serializes")
+    }
+
+    /// §8.6's extensibility, in the direction it actually has to work.
+    ///
+    /// A client is talking to a tool that may be **newer than it is**, and a
+    /// newer tool says more. Every reply shape must therefore skip a field it
+    /// does not know, at every depth — because a field is added where it
+    /// belongs, not at the top.
+    ///
+    /// Until M6 these were strict, so a field added to a report broke every
+    /// older reader, including this host's own parent process reading its
+    /// child. Nothing was additive and every addition would have been a version
+    /// bump — which in practice means none happen.
+    #[test]
+    fn a_reply_from_a_newer_tool_parses_at_every_depth() {
+        // Top level, and one nested object per level of the deepest reply
+        // there is: report -> verdict -> difference -> wrote -> position.
+        let from_the_future = r#"{
+            "result": "report",
+            "a_reply_field_from_2027": true,
+            "report": {
+                "routine": "running-total",
+                "coverage": {"executed": 12, "of": 2048},
+                "verdict": {
+                    "verdict": "differs",
+                    "a_verdict_field": null,
+                    "difference": {
+                        "region": "work-ram",
+                        "first": 1025,
+                        "expected": 7,
+                        "found": 3,
+                        "differing": 2,
+                        "compared": 64,
+                        "how_confident": "very",
+                        "wrote": {
+                            "wrote": "at",
+                            "writes": 1,
+                            "cycles_ago": 900,
+                            "position": {
+                                "position": "mid-instruction",
+                                "pc": 49152,
+                                "bank_name": "a name from later"
+                            }
+                        }
+                    }
+                },
+                "control": {"control": "not-run", "says": "none", "why_not": "nobody asked"},
+                "complete": false,
+                "beginning": {
+                    "repeats": true, "settled": ["work-ram"], "says": "fine",
+                    "how": "an answer this client has never heard of"
+                },
+                "took_ms": 3
+            }
+        }"#;
+
+        let reply: Reply = serde_json::from_str(from_the_future)
+            .expect("a reply from a newer tool must parse, skipping what it adds");
+
+        // And what the old client DOES know came through unharmed — a tolerant
+        // parser that dropped the fields it knows would pass the line above.
+        let Reply::Report { report } = reply else {
+            panic!("the tag is still read");
+        };
+        assert_eq!(report.routine, "running-total");
+        assert!(!report.complete);
+        assert_eq!(report.took_ms, 3);
+        assert!(report.beginning.repeats);
+        match &report.verdict {
+            Verdict::Differs { difference } => {
+                assert_eq!(difference.first, 1025);
+                assert_eq!(difference.region.as_deref(), Some("work-ram"));
+                assert_eq!(
+                    difference.wrote,
+                    Wrote::At {
+                        position: Position::MidInstruction { pc: 0xC000 },
+                        writes: 1,
+                    },
+                    "the nested position survived two unknown fields around it"
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// The other half of the asymmetry, and the half that must NOT change.
+    ///
+    /// A client misspelling a field is making a mistake, and §2.4 says the tool
+    /// does not guess what was meant. Without this, `"localise"` written
+    /// `"localize"` would be a measurement quietly made with a default nobody
+    /// chose — which is exactly the class of silent wrong answer this project
+    /// refuses everywhere else.
+    #[test]
+    fn a_command_with_a_field_nobody_declared_is_refused_by_name() {
+        for (text, offender) in [
+            (
+                r#"{"command":"read","region":"work-ram","offset":0,"length":1,"lenght":64}"#,
+                "lenght",
+            ),
+            (
+                r#"{"command":"run","bound":{"bound":"frames","count":1,"untill":9}}"#,
+                "untill",
+            ),
+            (
+                r#"{"command":"reverify","anchor":"early","localize":true}"#,
+                "localize",
+            ),
+        ] {
+            let err = serde_json::from_str::<Command>(text)
+                .expect_err("a field nobody declared is a mistake, not an extension");
+            assert!(
+                err.to_string().contains(offender),
+                "the refusal names the field so its author can find it: {err}"
+            );
+        }
+
+        // And the half that keeps this from being a blanket refusal: the same
+        // commands without the typo parse.
+        for text in [
+            r#"{"command":"read","region":"work-ram","offset":0,"length":64}"#,
+            r#"{"command":"run","bound":{"bound":"frames","count":1}}"#,
+            r#"{"command":"reverify","anchor":"early"}"#,
+        ] {
+            serde_json::from_str::<Command>(text).expect("the correct spelling parses");
+        }
+    }
+
+    /// Where tolerance stops, said out loud so nobody relies on more of it.
+    ///
+    /// A new **field** is additive; a new **variant** is not. An old client
+    /// meeting a reply kind or a cause it has never heard of fails to parse —
+    /// and should, because it has no idea what it is being told. That is what
+    /// §8.6's version number is for, and it is a far rarer event than adding a
+    /// field.
+    #[test]
+    fn a_reply_kind_from_the_future_is_not_silently_accepted() {
+        let err = serde_json::from_str::<Reply>(r#"{"result":"coverage","executed":2}"#)
+            .expect_err("an unknown reply kind is not something to shrug at");
+        assert!(err.to_string().contains("coverage"), "said: {err}");
+
+        let err = serde_json::from_str::<Verdict>(
+            r#"{"verdict":"probably-agrees","compared":1,"moved":1}"#,
+        )
+        .expect_err("and neither is a verdict nobody has heard of (§2.3)");
+        assert!(err.to_string().contains("probably-agrees"), "said: {err}");
     }
 
     /// A command round-trips through JSON, and the JSON is the shape a client's

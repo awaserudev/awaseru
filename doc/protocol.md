@@ -754,6 +754,61 @@ away from the menu bar. The lesson for this project is that a tool depending on 
 person operating a GUI inherits every bug in that GUI, and that this one is now
 depending on a *recording* instead, which it does not.
 
+## Strict one way, tolerant the other
+
+**A command refuses a field nobody declared. A reply ignores one.**
+
+The two directions are not symmetric because the two sides are not in the same
+position.
+
+A client that misspells a field is making a mistake. §2.4 says this tool does
+not guess what was meant, so `localise` written `localize` is a refusal that
+names the field — not a measurement quietly made with a default nobody chose,
+which is the class of silent wrong answer the whole project refuses:
+
+```json
+{"command":"reverify","anchor":"early","localize":true}
+```
+```text
+unknown field `localize`, expected `anchor`
+```
+
+A client *reading* a reply is in the opposite position: the tool it is talking
+to may be **newer than it is**, and a newer tool says more. So every reply shape
+skips what it does not know, at every depth — a field is added where it belongs,
+not at the top:
+
+```json
+{"result": "report",
+ "report": {"routine": "...", "coverage": {"executed": 12, "of": 2048},
+            "verdict": {"verdict": "differs",
+                        "difference": {"first": 1025, "how_confident": "very", ...}}}}
+```
+
+An older client parses that and gets the report it understands.
+
+### Why this was worth a unit of its own
+
+Until M6 the replies were strict too — including where this host's own parent
+process reads its child. So a field added to a report broke every older reader,
+and **no addition was additive**: every one would have been a protocol version
+bump (§8.6), which in practice means none get made. A vocabulary that cannot
+grow a field is a vocabulary that stops being written down and starts being
+guessed at.
+
+### Where tolerance stops
+
+**A new field is additive. A new variant is not.**
+
+Adding `coverage` to a report is free. Adding a *reply kind*, or a variant to a
+tagged enum like `verdict` or the cause of a *not determined*, is not: an old
+client fails to parse the tag, and should, because it has no idea what it is
+being told. Guessing there would mean treating an unknown verdict as one it
+knows, which is exactly §2.3's refusal to collapse three values into two.
+
+That is what §8.6's version number is for, and it is a far rarer event than
+adding a field.
+
 ## The reference in a child process
 
 | | |
