@@ -665,3 +665,19 @@ waiting for somebody else's.
 - **Several children.** One child is one reference, which is all §13's Q10
   allows this backend. Two children is what §5.5's cross-check would need, and
   this unit measured nothing about two.
+
+---
+
+## A note on what this directory may not contain
+
+§11.2 keeps the software this project is developed against private, and the
+Python client is where that rule was broken once. The *source* never named it;
+the **compiled bytecode** did, because Python embeds the absolute path of the
+machine that compiled it, and this machine's path names the software. Two `.pyc`
+files were committed before anyone noticed.
+
+So: `__pycache__/` is ignored, and `tools/leak-check.sh` searches every tracked
+file **as binary**, every commit message, and every blob in history. The words it
+looks for are not in this repository — writing them here would be the leak —
+they come from a local `.private-words`, and without that file the check fails
+rather than passing while checking nothing.

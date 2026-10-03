@@ -17,3 +17,14 @@ awaseru.toml
 
 # A vendored reference backend (§16.6) is committed deliberately, never by accident.
 /vendor/**/target
+
+# Python bytecode, which embeds the ABSOLUTE PATH of the machine that compiled
+# it — and this machine's path names the software (§11.2). Two of these were
+# committed before anyone noticed: nothing in them was secret except the one
+# thing that is.
+__pycache__/
+*.py[cod]
+
+# The words §11.2 keeps private, for tools/leak-check.sh. Writing them into a
+# committed file would be the leak the check exists to prevent.
+.private-words
