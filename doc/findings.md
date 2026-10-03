@@ -12,6 +12,39 @@ This file is completed in M5's ninth unit, where the whole list is classified
 together. Entries arrive here as they are found, so that none is lost to the end
 of the milestone.
 
+## The list
+
+Thirteen, in the order they were found. **Blocked** means the cycle could not go
+on until something was done about it; **slowed** means it cost real time;
+**annoyed** means it was wrong and cheap.
+
+| | finding | cost | what it wants |
+|---|---|---|---|
+| 1 | a bounded run costs about as much as the request around it | slowed | a note for `doc/` — half of it is already fixed |
+| 2 | input replay is in the machine and not in the host | **blocked** | a design decision, and §13's Q14 records it |
+| 3 | the emulator's chatter lands on the host's own stdout | annoyed | a fix worth making |
+| 4 | a frame bound reports a position it then apologises for | annoyed | a fix worth making, in the printer |
+| 5 | the two interfaces key the anchor cache differently, and one keys it by a path | **blocked** | a fix worth making, and it is one line |
+| 6 | a client cannot arrive at an anchor | **blocked** | a design decision: a verb §8 does not have |
+| 7 | a bound given with an anchor is discarded in silence | annoyed | a fix worth making |
+| 8 | an ancestor's cached blob never shortens the walk | slowed | a question for §13 |
+| 9 | the wire has no write bound, so §5.4 had to be rebuilt by hand | slowed | a design decision: §8 gains a bound |
+| 10 | nothing in the tool helps you find a routine | slowed | a note for `doc/`, and a question for §13 |
+| 11 | a vacuous verdict cannot say why nothing moved | annoyed | a fix worth making |
+| 12 | a control that is not noticed has a third explanation | annoyed | a fix worth making, in the wording |
+| 13 | the keyboard that reached no controller | annoyed | a note for `doc/backend.md` |
+
+Three blocked the cycle and all three are about the same boundary: what the
+**backend** can do, what the **host** can ask for, and what a **client** can ask
+the host. The backend is ahead of the host, and the host is ahead of the wire.
+Nothing in this list is a measurement that came out wrong.
+
+Four are the tool refusing to guess, and are here as costs rather than faults:
+§2.2's vacuous verdict catching an empty reimplementation, §7.3's gate refusing
+an anchor it cannot reach, §4.9's closing check refusing a blob that does not
+exist, and §5.3's control leaving a measurement incomplete. Each cost an
+afternoon and each was right.
+
 ## 1. A bounded run costs about as much as the request around it
 
 **Slowed.** Not a defect, and it changes how the tool should be asked things.
@@ -319,3 +352,26 @@ behaved as intended is a sign something may be wrong.
 A note for `doc/`, and a better sentence: the comparison cannot discriminate it,
 which is a fault if the routine reads it and depends on it, and the expected
 answer if the routine reads it and does not.
+
+## 13. The keyboard that reached no controller
+
+**Annoyed, and it cost an evening**, which is a strange pair until you notice
+that none of the evening was spent on this project's code.
+
+The input log that answered §13's Q14 had to be recorded by a person pressing
+buttons in the emulator's own interface. That interface delivered no input to
+the software at all, for hours, with no error and no message. Two gates, both in
+its code and neither in any document:
+
+- **the interface swallows every key while its menu bar holds keyboard focus**,
+  and a menu opened with the mouse can keep that focus after it has closed. The
+  software is running, the window is in front, and nothing arrives;
+- **the core discards all input when it believes its window is in the
+  background**, which a compositor can report wrongly.
+
+Neither is a fault in this tool and both are facts about the reference it drives,
+so they belong in `doc/backend.md` with the rest of what driving this backend
+costs. The general lesson is the one worth keeping: **a tool that depends on a
+person operating a GUI inherits every bug in that GUI**, including the ones
+nobody has written down. This project now depends on a *recording* instead, which
+it does not.

@@ -537,3 +537,21 @@ cargo test
 Without those, every test that needs a backend prints `SKIPPED` and the suite
 still passes — §11.3's third route, which is how this project tests against
 software it may not redistribute.
+
+## Driving this backend by hand, which you may have to
+
+Recording an input log needs a person at the emulator's own interface, and on at
+least one machine that interface delivered no input to the software at all, for
+hours, with no error and no message. Two gates, both in its code and neither in
+its documentation:
+
+- **the menu bar takes keyboard focus and keeps it.** While it has focus every
+  key is swallowed before the software sees it, and a menu opened with the mouse
+  can keep that focus after it has closed. The window is in front, the software
+  is running, and nothing arrives. Clicking into the display area returns it;
+- **input is discarded while the window is thought to be in the background**,
+  which a compositor can report wrongly even when the window is plainly visible.
+
+Neither is a fault in this project, and both cost an evening before being found,
+so they are here. The conclusion this project drew is in `doc/findings.md`: a
+tool that depends on a person operating a GUI inherits every bug in that GUI.
