@@ -352,6 +352,10 @@ impl Anchors {
 }
 
 /// A digest of the regions an anchor declares — §4.8's cheap check, one half.
+///
+/// Not `platform::ExecutionCoverage`, which is §10's answer to "which bytes
+/// ran". Two different questions wearing one word: this one is about bytes at
+/// rest, that one about instructions.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Coverage {
     entries: Vec<(String, String)>,

@@ -55,19 +55,24 @@ fn the_declaration_says_what_was_measured_and_nothing_more() {
             Capability::StopOnWrite,
             Capability::WritingPosition,
             Capability::WriteRecency,
+            Capability::ExecutionCoverage,
         ]),
-        "the four measured in M3's first unit, and not a fifth: {declared}"
+        "M3's four and M6's fifth, and not a sixth: {declared}"
     );
 
     // ---- and what it refuses to claim -----------------------------------
-    // `input-replay` is the one absent in the machine rather than in this
-    // crate: the library exposes no control device for an input to arrive at
-    // (§13's Q14). The other three are routes that exist and have not been
-    // taken, which §7.3 says is not a declaration.
+    // `input-replay` is the odd one: the machine CAN do it — M5 measured a
+    // recorded log replaying — and `Platform` has no verb for asking, so
+    // declaring it would let §7.3's gate pass an anchor whose log then goes
+    // unreplayed (`doc/findings.md`). The other three are routes that exist and
+    // have not been taken, which §7.3 says is not a declaration.
+    //
+    // `execution-coverage` was in this list until M6 and is now declared, which
+    // is why the exercise below exists: a capability moves out of this list by
+    // having something run through it, never by being believed.
     for absent in [
         Capability::InputReplay,
         Capability::StopOnRead,
-        Capability::ExecutionCoverage,
         Capability::CallAndReturnEvents,
         Capability::RegisterWrites,
     ] {
@@ -100,4 +105,47 @@ fn the_declaration_says_what_was_measured_and_nothing_more() {
         },
         "a declared `stop-on-execution` that did not stop would be a false declaration: {stop}"
     );
+
+    // ---- and M6's, which is a declaration only because this runs ---------
+    // The machine is at the routine's entry, so the setup before it has run and
+    // the routine itself has not. Both halves, because a coverage that answered
+    // the same thing everywhere would pass either one alone.
+    assert!(declared.has(Capability::ExecutionCoverage));
+    let covered = reference
+        .coverage("program-rom", 0, 0x40)
+        .expect("a declared capability answers");
+    assert_eq!(covered.region, "program-rom");
+    assert_eq!(covered.executions.len(), 0x40);
+    assert_eq!(
+        covered.ran_at(0),
+        Some(true),
+        "the first instruction of the program has run"
+    );
+    assert_eq!(
+        covered.ran_at(usize::try_from(expected::ROUTINE_ENTRY - 0x8000).unwrap()),
+        Some(false),
+        "and the routine's own entry has not, because the machine is stopped ON it"
+    );
+    assert_eq!(
+        covered.ran_at(0x40),
+        None,
+        "one byte past the span is not an answer about that byte (§2.3)"
+    );
+    assert!(
+        covered.ran() > 0 && covered.untouched() > 0,
+        "both halves are non-empty, or the assertions above are about a constant: \
+         {} ran, {} did not",
+        covered.ran(),
+        covered.untouched()
+    );
+    let gaps = covered.never_ran();
+    assert!(
+        gaps.iter().any(|g| g.contains(&0x20)),
+        "the routine's entry falls in a stretch nothing reached: {gaps:?}"
+    );
+
+    // And forgetting works through the verb, not only through the backend.
+    reference.forget_coverage().expect("declared, so it answers");
+    let cleared = reference.coverage("program-rom", 0, 0x40).expect("readable");
+    assert_eq!(cleared.ran(), 0, "forgetting leaves nothing behind");
 }

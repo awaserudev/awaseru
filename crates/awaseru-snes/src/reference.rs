@@ -807,6 +807,12 @@ impl Platform for Reference {
     /// - `write-recency` — the access counters give a per-address write stamp
     ///   in a clock of the backend's own, which is comparable with other
     ///   stamps and with nothing else.
+    /// - `execution-coverage` — the same record counts **executions** per byte,
+    ///   and M6 measured that it means what it says: byte-exact about what ran
+    ///   and what did not, not polluted by the host's own reads, clearable, and
+    ///   kept for memory that is not the cartridge as well. `doc/backend.md`
+    ///   has the measurements. This was the longest-standing of §13's Q15's
+    ///   untaken routes, and taking it is what turned it into a declaration.
     ///
     /// All four are reachable through a verb of this crate: `Bound::Address`
     /// for the first, `Bound::Write` for the second and third — one bound
@@ -830,9 +836,8 @@ impl Platform for Reference {
     ///   a capability is declared when it has been measured; the reason this
     ///   one waits is that a declaration nothing can act on is not merely
     ///   useless but unsafe. `doc/findings.md` has the two decisions it needs.
-    /// - `stop-on-read`, `execution-coverage`, `call-and-return-events` — a
-    ///   route exists for each and nothing here has taken it: a read flag in
-    ///   the breakpoint record, an execute counter in the access record, and an
+    /// - `stop-on-read`, `call-and-return-events` — a route exists for each and
+    ///   nothing here has taken it: a read flag in the breakpoint record and an
     ///   exported call-stack reader. `doc/backend.md` lists them under what was
     ///   *not* exercised. A route is not a declaration (§7.3), because a host
     ///   relying on one would be relying on this crate's reading of a header.
@@ -844,6 +849,7 @@ impl Platform for Reference {
             Capability::StopOnWrite,
             Capability::WritingPosition,
             Capability::WriteRecency,
+            Capability::ExecutionCoverage,
         ])
     }
 
@@ -903,6 +909,31 @@ impl Platform for Reference {
         } else {
             Recency::Stamp(count.write_stamp)
         })
+    }
+
+    fn coverage(
+        &self,
+        region: &str,
+        offset: usize,
+        length: usize,
+    ) -> Result<awaseru_core::ExecutionCoverage, ReadError> {
+        // The same shape as `write_recency` and for the same reason: the record
+        // is only coherent while the backend is in a break, because its own
+        // thread is writing memory otherwise.
+        let record = self.access_record(region, offset, length)?;
+        Ok(awaseru_core::ExecutionCoverage {
+            region: region.to_string(),
+            offset,
+            executions: record.iter().map(|c| c.executions).collect(),
+        })
+    }
+
+    fn forget_coverage(&mut self) -> Result<(), ReadError> {
+        // Not gated on being stopped: clearing a counter does not read memory,
+        // and a caller asking to forget while the machine runs gets what it
+        // asked for rather than a refusal about coherence it did not need.
+        self.forget_access_counts();
+        Ok(())
     }
 
     fn write(&mut self, region: &str, bytes: &[u8]) -> Result<(), WriteError> {

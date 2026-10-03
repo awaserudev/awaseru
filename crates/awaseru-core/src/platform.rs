@@ -201,6 +201,92 @@ impl Beginning {
 /// other stamps from the same backend and with nothing else — not with a cycle
 /// count, not between processes. So it answers "was this written, and was it
 /// written after that one", and never "when" in any absolute sense.
+/// §10's execution coverage for a span: how many times each byte ran.
+///
+/// Not to be confused with `anchor::Coverage`, which is §4.8's cheap check — a
+/// digest of the regions an anchor declares. Two different questions wearing
+/// one word; this one is about instructions and that one is about bytes at
+/// rest.
+///
+/// **The shape is what M6's gate measured and not what would be convenient**
+/// (§2.4). The backend counts per byte, incrementing every byte of an
+/// instruction each time that instruction runs — so the loop's opcode and its
+/// operand report the same number, and that number is the number of passes.
+/// Keeping the count rather than a flag keeps what was measured: a byte run
+/// once and a byte run ten thousand times are different facts, and a boolean
+/// throws the second away.
+///
+/// What a caller usually wants is the opposite question. §10 says coverage is
+/// "the structural answer to *there is always a routine I did not know
+/// about*: it says what has **not** been seen yet", so `never_ran` is the
+/// method this type exists for and `ran` is its complement.
+///
+/// # What a count does NOT mean
+///
+/// It is a count of executions since the last `forget_coverage`, and nothing
+/// else. It is not a measure of time, it does not say in what order the bytes
+/// ran, and comparing one span's counts against another's says only which ran
+/// more often. Order is `call-and-return-events` (§10), which no backend here
+/// declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionCoverage {
+    /// The region the span was read from — a name, never an enum (§8.5).
+    pub region: String,
+    /// Where the span begins in that region.
+    pub offset: usize,
+    /// One entry per byte of the span, in order.
+    pub executions: Vec<u32>,
+}
+
+impl ExecutionCoverage {
+    /// The offsets, in the region's own numbering, of bytes that never ran.
+    ///
+    /// Returned as ranges because the interesting answer is "this stretch was
+    /// never reached", and a list of individual offsets over a cartridge would
+    /// be longer than the cartridge.
+    pub fn never_ran(&self) -> Vec<std::ops::Range<usize>> {
+        let mut gaps = Vec::new();
+        let mut start = None;
+        for (i, count) in self.executions.iter().enumerate() {
+            match (count, start) {
+                (0, None) => start = Some(i),
+                (0, Some(_)) => {}
+                (_, Some(from)) => {
+                    gaps.push(self.offset + from..self.offset + i);
+                    start = None;
+                }
+                (_, None) => {}
+            }
+        }
+        if let Some(from) = start {
+            gaps.push(self.offset + from..self.offset + self.executions.len());
+        }
+        gaps
+    }
+
+    /// How many bytes of the span ran at least once.
+    pub fn ran(&self) -> usize {
+        self.executions.iter().filter(|c| **c > 0).count()
+    }
+
+    /// How many did not.
+    pub fn untouched(&self) -> usize {
+        self.executions.len() - self.ran()
+    }
+
+    /// Whether one byte ran, by its offset in the region.
+    ///
+    /// `None` when the offset is outside the span this covers, which is a
+    /// different answer from "it did not run" and is kept apart on purpose
+    /// (§2.3's habit, applied to a span).
+    pub fn ran_at(&self, offset: usize) -> Option<bool> {
+        offset
+            .checked_sub(self.offset)
+            .and_then(|i| self.executions.get(i))
+            .map(|c| *c > 0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recency {
     /// The byte's last write, in the backend's clock.
@@ -341,6 +427,45 @@ pub trait Platform {
         Ok(Recency::NotSupplied)
     }
 
+    /// §10's execution coverage over a span — which of those bytes ran.
+    ///
+    /// Defaulted to a refusal rather than to an empty answer, and the reason is
+    /// §2.3: a backend that keeps no record and returned "nothing ran" would be
+    /// telling a caller that its routine was never reached, which is a wrong
+    /// answer where "ask something else" is the right one. `write_recency`
+    /// defaults to `NotSupplied` for the same reason; this one has no such
+    /// value in its type, so the refusal carries it.
+    ///
+    /// A backend declaring `execution-coverage` must implement this, and one
+    /// that does not declare it must not.
+    ///
+    /// **The span is the caller's, because reading is not free.** Measured on
+    /// the first backend at 34 µs per kilobyte, a whole cartridge is about as
+    /// expensive as the measurement it describes, so a verb that only answered
+    /// for an entire region would make the cheap question impossible to ask.
+    fn coverage(&self, region: &str, offset: usize, length: usize) -> Result<ExecutionCoverage, ReadError> {
+        let _ = (region, offset, length);
+        Err(ReadError::Backend {
+            why: "this backend does not keep an execution record (§7.3's `execution-coverage`)"
+                .to_string(),
+        })
+    }
+
+    /// Throws away what has been counted, so that the next reading of
+    /// `coverage` is about what happens after this call.
+    ///
+    /// Here because M6's gate measured that it is how the question is asked on
+    /// the first backend: the counts reset and the backend's clock does not, so
+    /// "what ran in **this** run" is a forget, a run and a reading — not a
+    /// subtraction of two readings. A backend whose counts could not be cleared
+    /// would have to answer that question differently, and would say so here.
+    fn forget_coverage(&mut self) -> Result<(), ReadError> {
+        Err(ReadError::Backend {
+            why: "this backend does not keep an execution record (§7.3's `execution-coverage`)"
+                .to_string(),
+        })
+    }
+
     /// Puts one back, and checks that it arrived.
     ///
     /// The check is not optional politeness. A backend may report nothing at
@@ -400,6 +525,91 @@ pub fn check_write<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn covering(offset: usize, executions: &[u32]) -> ExecutionCoverage {
+        ExecutionCoverage {
+            region: "program-rom".into(),
+            offset,
+            executions: executions.to_vec(),
+        }
+    }
+
+    /// §10's question is "what has NOT been seen", so the gaps are the answer
+    /// this type exists to give — and the ends are where an off-by-one hides.
+    #[test]
+    fn the_gaps_are_found_at_both_ends_and_in_the_middle() {
+        // A gap opening the span, one closing it, and one between two runs.
+        let c = covering(0x100, &[0, 0, 3, 1, 0, 0, 0, 7, 0]);
+        assert_eq!(
+            c.never_ran(),
+            vec![0x100..0x102, 0x104..0x107, 0x108..0x109],
+            "offsets are the REGION's, not the span's"
+        );
+        assert_eq!(c.ran(), 3);
+        assert_eq!(c.untouched(), 6);
+        assert_eq!(c.ran() + c.untouched(), c.executions.len());
+
+        // The two degenerate spans, which are the ones a loop gets wrong.
+        assert_eq!(covering(0, &[1, 1, 1]).never_ran(), vec![]);
+        assert_eq!(covering(9, &[0, 0]).never_ran(), vec![9..11]);
+        assert_eq!(covering(4, &[]).never_ran(), vec![]);
+        assert_eq!(covering(4, &[]).ran(), 0);
+        assert_eq!(covering(4, &[]).untouched(), 0);
+    }
+
+    /// Outside the span is not the same answer as "did not run" — §2.3's habit,
+    /// applied to a span. A caller that asked about a byte this reading does not
+    /// cover must not be told it was never reached.
+    #[test]
+    fn a_byte_outside_the_span_is_not_an_answer_about_that_byte() {
+        let c = covering(0x200, &[5, 0, 2]);
+        assert_eq!(c.ran_at(0x200), Some(true));
+        assert_eq!(c.ran_at(0x201), Some(false));
+        assert_eq!(c.ran_at(0x202), Some(true));
+        assert_eq!(c.ran_at(0x203), None, "one past the end");
+        assert_eq!(c.ran_at(0x1FF), None, "one before the start");
+        assert_eq!(c.ran_at(0), None, "and an offset below the span does not wrap");
+    }
+
+    /// A backend that has not implemented this refuses rather than answering
+    /// "nothing ran", which would tell a caller its routine was never reached.
+    #[test]
+    fn a_backend_without_the_record_refuses_rather_than_saying_nothing_ran() {
+        struct Bare;
+        impl Platform for Bare {
+            fn version(&self) -> BackendVersion { unimplemented!() }
+            fn beginning(&self) -> Beginning { unimplemented!() }
+            fn capabilities(&self) -> crate::Capabilities { crate::Capabilities::of([]) }
+            fn regions(&self) -> crate::Regions { unimplemented!() }
+            fn read(&self, _: &str) -> Result<Vec<u8>, ReadError> { unimplemented!() }
+            fn read_span(&self, _: &str, _: usize, _: usize) -> Result<Vec<u8>, ReadError> { unimplemented!() }
+            fn run(&mut self, _: crate::Bound) -> Result<crate::Stop, RunError> { unimplemented!() }
+            fn write(&mut self, _: &str, _: &[u8]) -> Result<(), WriteError> { unimplemented!() }
+            fn write_span(&mut self, _: &str, _: usize, _: &[u8]) -> Result<(), WriteError> { unimplemented!() }
+            fn read_processor(&self) -> Result<crate::Processor, ReadError> { unimplemented!() }
+            fn write_processor(&mut self, _: &crate::Processor) -> Result<(), WriteError> { unimplemented!() }
+            fn save_state(&mut self) -> Result<crate::Blob, crate::StateError> { unimplemented!() }
+            fn return_to_origin(&mut self) -> Result<(), RunError> { unimplemented!() }
+            fn load_state(&mut self, _: &crate::Blob) -> Result<(), crate::StateError> { unimplemented!() }
+        }
+
+        let mut bare = Bare;
+        let refused = bare.coverage("program-rom", 0, 16).expect_err("no record, no answer");
+        assert!(
+            refused.to_string().contains("execution-coverage"),
+            "the refusal names the capability a caller would have to look for: {refused}"
+        );
+        assert!(
+            bare.forget_coverage().is_err(),
+            "and forgetting a record that does not exist is not a success"
+        );
+        // The conservative answer is a refusal and not an empty reading: a
+        // caller told `ran() == 0` would conclude its routine was never reached.
+        assert!(
+            Platform::write_recency(&bare, "program-rom", 0).is_ok(),
+            "the other defaulted verb answers NotSupplied, which its type can carry"
+        );
+    }
     use crate::region::Access;
 
     fn set() -> Regions {

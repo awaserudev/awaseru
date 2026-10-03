@@ -33,7 +33,7 @@ pub use capture::{
 pub use compare::{Comparison, compare, compare_processor, compare_regions};
 pub use platform::{
     BackendVersion, Beginning, Platform, ReadError, Recency, RunError, WriteError, check_read,
-    check_write,
+    check_write, ExecutionCoverage,
 };
 pub use region::{Access, Region, Regions, SpanError};
 pub use run::{Bound, Position, Reason, Stop};
