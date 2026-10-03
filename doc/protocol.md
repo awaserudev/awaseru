@@ -111,6 +111,66 @@ between `BrokenPipe` and a panic about a handle that is gone.
 
 ---
 
+## The framing
+
+```text
+frame := envelope_len:u32be  envelope:bytes[envelope_len]
+         payload_len:u32be   payload:bytes[payload_len]
+```
+
+A second client is written against these numbers, so they are here and not only
+in the code.
+
+| | |
+|---|---|
+| prefix width | **four bytes**, **big-endian** (network order) — `struct.pack(">I", n)` in Python, which is the second client §M4 asks for |
+| envelope | JSON text, UTF-8. Validated as text by the framing and as JSON by the layer above it |
+| envelope limit | **1 MiB**. The control plane is one command or one result; the largest this project can imagine is a region list, which is kilobytes |
+| payload | arbitrary bytes, carrying state (§8.3) |
+| payload limit | **64 MiB**. §8.3 puts a snapshot at hundreds of kilobytes and a console's whole memory at a couple of megabytes; this leaves room for a batch and not for an accident |
+| no payload | `payload_len` of **zero**. The prefix is always present |
+| zero-length envelope | **refused** |
+
+Four decisions, and the reasons rather than the rules:
+
+**The payload's prefix is always there.** §8.3 makes the payload optional and
+this is how: zero length. A reader that had to consult the JSON to know whether
+more bytes followed could not find the end of a message it could not parse — and
+finding the end of a message you do not understand is exactly what a version
+refusal needs to do (§8.6). Four bytes of zero per message is the price.
+
+**An empty payload and no payload are the same thing**, which costs nothing: a
+payload carries state, and zero bytes of state is not a state.
+
+**A zero-length envelope is refused**, because the shortest JSON value is two
+bytes. A sender that offers none has lost its place in the stream, and saying so
+is more useful than handing an empty string to a parser.
+
+**Every length is checked against its limit before anything is allocated.**
+Nothing a client sends is trusted, a length least of all: four bytes can ask for
+four gigabytes. Reading the body then uses `take`, so a length that passed the
+limit but exceeds what is actually coming costs what arrives rather than what
+was claimed — the limit is the policy and the `take` is the floor under it.
+
+**A clean end of stream is `Ok(None)`, and a stream that stops mid-frame is a
+refusal.** That distinction is the whole reason this is not `read_exact` with an
+error: §M4's child processes are read with "the sender finished" and "the sender
+died" as different answers, and U1 measured that a dead child gives end of file
+while a live one gives bytes.
+
+### What the framing's tests do NOT cover
+
+- **Concurrency.** One frame is written with one `write_all`, so two writers on
+  one stream cannot interleave halves of a message — but nothing here tests two
+  writers, because nothing in M4 has two.
+- **A reader that must not block.** Everything here is blocking. A server that
+  wants to do something else while waiting for a frame needs a different shape,
+  and nothing needs one yet.
+- **JSON.** The framing validates UTF-8 and stops. A valid frame can carry
+  nonsense, and refusing that is the vocabulary's job.
+
+---
+
 ## What these measurements do NOT cover
 
 - **Another platform.** All of it was measured on Linux. The public transport of
