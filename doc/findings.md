@@ -40,6 +40,7 @@ on until something was done about it; **slowed** means it cost real time;
 | 18 | a mapping is only visible where a measurement happens to land | annoyed | a note for `doc/`, and probably a verb one day — found in M7 |
 | 19 | the backend says nothing about an input log it could not open | **would have blocked** | **fixed while closing Q14** — the host checks the only observable thing |
 | 20 | the watchdog could not tell a stuck backend from a long run | **blocked** §4.9 on a long anchor | **fixed while closing Q14** — it watches progress now, not duration |
+| 21 | six more calls the host believes although they cannot report failure | **would block** a verdict, invisibly | found by the audit's hunt; the cheap ones fixed in its next unit |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -592,3 +593,52 @@ fine as long as it is still running, and a backend that has genuinely stopped is
 caught in the same ten seconds as before. The comment on the constant had the
 reasoning in it all along — "a run that ended on one would not be reproducible"
 — and the implementation was measuring the wrong thing.
+
+# Found by the audit before the FF5 use pass
+
+## 21. Six more calls the host believes, and the pattern they form
+
+Findings 19 and 20 and §13's Q12 were three sightings of one animal, found
+months apart and by accident. The audit went looking for the rest of the herd:
+all thirty-one imported symbols, asked what each reports when it fails.
+
+**Twenty-one of thirty-one return `void`.** They cannot report a failure at all.
+Eight of those sit in a path where a wrong answer still looks like an answer,
+and two of the eight are already guarded — `LoadStateFile`, because Q12 hurt,
+and `MoviePlay`, because finding 19 hurt. That leaves six.
+
+| the call | what a silent failure produces | what the host could observe instead |
+|---|---|---|
+| seeding a span | the routine runs on whatever was already there, and §5's comparison is about input nobody chose | read the span back and compare it with the bytes just written |
+| writing a region | the same, and §5.3's perturbation goes through here | the same |
+| writing the processor | the processor stays as it was | read it back |
+| reading the video record | zeros, so `dot = 0` and `line = 0` — and `frame_position` reads exactly that as a frame boundary | the frame counter does not advance across two readings with a run between them |
+| reading the processor | thirty-two bytes of filler, and the filler is already there | if the whole head is still filler, the call wrote nothing |
+| reading the access record | zeros, which read as "nothing was read, written or executed" — §10's coverage and §5.4's cheap filter | a byte the run certainly touched has a count |
+
+A seventh is half-guarded and worth saying separately. **Saving a state** reads
+the file back, so a save that wrote nothing is caught — but a stale file from the
+same process is not, because the path is per-process and fixed. The blob is then
+wrong, and the error arrives much later from `load_state`, blaming the load for
+something the save did.
+
+### The one that is most worth looking at
+
+`GetPpuState`, because the code around it was written **carefully**. It does not
+assume the backend is at a frame boundary; it reads the video record and checks
+that the line and the dot are both zero, and the comment says *checked rather
+than assumed*. A read that fails silently returns zeros — which is exactly the
+condition being checked for. **The care inverts into a false positive**, and
+every position reported from a frame-bounded run would be a frame boundary at
+frame zero.
+
+### The pattern, which is the point of having hunted
+
+It is not that the backend is poor. It is that **the host checks where it has
+already been burned and does not check where it has not.** `load_state` carries
+two checks because Q12 hurt; `MoviePlay` carries one because finding 19 hurt.
+The six above are in exactly the state those two were in beforehand, and nothing
+distinguishes them except that nobody has been burned by them yet.
+
+That is not a thing reading finds. It is a thing counting finds, and the count
+only means something with all thirty-one in one table.
