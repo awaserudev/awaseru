@@ -16,6 +16,7 @@ pub mod digest;
 pub mod localise;
 pub mod mapping;
 pub mod perturb;
+pub mod parcel;
 pub mod platform;
 pub mod protocol;
 pub mod record;

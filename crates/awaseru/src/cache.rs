@@ -250,6 +250,51 @@ impl Cache {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// What is in here, by the name a person reads and the key that decides.
+    ///
+    /// There was no way to look at a cache at all until something had to choose
+    /// what to hand over. `get` answers about a key somebody already has;
+    /// choosing needs the opposite question, and the full key text is stored
+    /// beside each blob precisely because a digest cannot be read backwards.
+    ///
+    /// Sorted by name, so that two listings of one cache read the same —
+    /// directory order is the filesystem's business and would make a report
+    /// change for no reason.
+    ///
+    /// A directory that is not an entry is skipped rather than reported as a
+    /// broken one: the same reason `get` treats everything as absence, and a
+    /// staging directory from a write in flight is exactly such a thing.
+    pub fn kept(&self) -> Vec<Kept> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.root) {
+            for entry in entries.flatten() {
+                let dir = entry.path();
+                let Ok(key) = std::fs::read_to_string(dir.join("key")) else {
+                    continue;
+                };
+                let Some(anchor) = dir.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                out.push(Kept {
+                    anchor: anchor.to_string(),
+                    key: key.trim_end().to_string(),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.anchor.cmp(&b.anchor));
+        out
+    }
+}
+
+/// One entry, as a listing sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    /// The directory's name, which is the anchor's name (§6.8).
+    pub anchor: String,
+    /// The key in full. What decides validity, and what a reader looks at to
+    /// see *which* part of a stale entry went stale.
+    pub key: String,
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -499,6 +544,57 @@ mod tests {
 
         cache.put(&key(), &stored()).expect("it writes");
         assert_eq!(cache.get(&key()).expect("there").demonstrated_with, 3);
+    }
+
+    #[test]
+    fn a_listing_names_what_is_there_and_skips_what_is_not_an_entry() {
+        let root = scratch("listing");
+        let cache = Cache::at(&root);
+        let two = Anchors::new(vec![
+            Anchor {
+                name: "settled".into(),
+                definition: Definition {
+                    start: Start::PowerOn,
+                    bound: Bound::Frames(20),
+                    input: None,
+                },
+                covers: vec!["work-ram".into()],
+            },
+            Anchor {
+                name: "boot".into(),
+                definition: Definition {
+                    start: Start::PowerOn,
+                    bound: Bound::Frames(10),
+                    input: None,
+                },
+                covers: vec!["work-ram".into()],
+            },
+        ])
+        .expect("two anchors");
+        cache
+            .put(&two.key("boot", &provenance()).unwrap(), &stored())
+            .expect("written");
+        cache
+            .put(&two.key("settled", &provenance()).unwrap(), &stored())
+            .expect("written");
+
+        // Something in the cache directory that is not an entry: a staging
+        // directory from a write in flight looks exactly like this.
+        std::fs::create_dir_all(root.join("boot.9999.writing")).expect("a directory");
+        std::fs::write(root.join("stray"), b"not an entry").expect("a file");
+
+        let kept = cache.kept();
+        assert_eq!(
+            kept.iter().map(|k| k.anchor.as_str()).collect::<Vec<_>>(),
+            vec!["boot", "settled"],
+            "by name, and in an order that does not depend on the filesystem"
+        );
+        assert!(
+            kept[0].key.contains("anchor=boot"),
+            "the key in full, because a digest cannot be read backwards: {}",
+            kept[0].key
+        );
+        assert_eq!(kept.len(), cache.len(), "a listing and a count must agree");
     }
 
     #[test]

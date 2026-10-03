@@ -161,11 +161,64 @@ keeps the layout an implementation detail and the protocol the contract, under
 
 What travels is not the cache. The cache is a warehouse; a box is drawn from it.
 
+```
+awaseru save <anchor> --session PATH --into PATH
+```
+
+**A box is a directory**, not an archive. Compressing it or committing it is the
+person's to do with the tools they already have; an archive format would be a
+dependency (§17.2) for what `zip` and `git` already do, and a directory is the
+form that can be looked at before it is sent.
+
+```
+<box>/
+  box.toml          what it is of: the software's identity, the reference, the
+                    backend and its version, the chain, and which of the chain
+                    travelled with a blob
+  definitions.toml  the chain as [[anchor]] blocks a receiver's configuration
+                    reads. Rendered, not copied: the sender's file holds anchors
+                    that are not in this chain and paths that are theirs
+  anchors/<name>/   key, entry.toml, blob — copied byte for byte out of the
+                    session, so a box is what the session has rather than what
+                    this build understood of it
+  input/<name>      an input log's contents, renamed after the anchor that uses
+                    it so two cannot collide on a base name. Safe to rename
+                    because §4.11 keys a log by its contents and never its path
+```
+
 A box is selected by anchor name and closes over `Anchors::chain(name)` — that
 anchor's **ancestors**, and the definitions, input logs and blobs they need.
 Siblings do not travel. Two pieces of work that branch from a common trunk share
 the trunk, so handing over one of them hands over the trunk and not the other
 branch.
+
+```text
+origin
+└── opening
+    └── settled
+        ├── branch-a     asking for branch-b packs none of this
+        └── branch-b     <- asked for
+```
+
+That is `chain` walking from the leaf to the origin and nothing sideways, so a
+sibling does not travel by construction rather than by being filtered out.
+
+An ancestor this session never arrived at travels as a **definition only**, and
+the report says which: a receiver replays those legs, and knowing that in advance
+is the difference between a plan and a surprise. A box with no blob anywhere in
+its chain is refused — it would carry nothing the configuration does not already
+carry.
+
+The keys are **recomputed** from the definitions rather than taken from each
+entry's stored key. That is the point: a box whose definitions disagree with its
+blobs is the stale-blob hazard §4.11 exists for, and letting the cache refuse
+the mismatch is what makes them agree.
+
+A box's provenance comes from the session's own `session.toml`, not from opening
+the reference. The blobs in a session were made under what the session recorded,
+and asking the binary installed today would build a key for a version that may
+not be the one they were made with — and it means packing does not start an
+emulator to read a version string.
 
 The box carries the closure rather than only the leaf blob, because §4.11 says a
 blob is a cache and never an input, and a cache nobody can re-derive is a cache

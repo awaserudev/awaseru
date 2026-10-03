@@ -24,6 +24,13 @@ awaseru — runs a reference and reports what is in it.
 Options
     --config PATH       the shared configuration        (default awaseru.toml)
     --local PATH        the machine-local configuration (default awaseru.local.toml)
+  awaseru save ANCHOR --session PATH --into PATH
+                        packs that anchor and everything it is built on into a
+                        directory, to be compressed or committed and handed to
+                        somebody with the same software. Its ancestry travels;
+                        anything branching off beside it does not
+
+    --into PATH         where `save` puts the box
     --session PATH      one named directory holding one piece of work: its
                         backend home, its anchor cache, its runs and its logs.
                         The last part of the path is the session's name. Nothing
@@ -86,6 +93,21 @@ fn main() -> ExitCode {
         }
         Ok(Command::Serve { places }) => awaseru::serve::serve(&places),
         Ok(Command::Reference { places }) => awaseru::child::attend(&places),
+        Ok(Command::Save {
+            plan,
+            session: named,
+            anchor,
+            into,
+        }) => match save(&plan, named, &anchor, &into) {
+            Ok(packed) => {
+                println!("{packed}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("awaseru: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::Run {
             plan,
             session: named,
@@ -142,6 +164,53 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Packs an anchor and its ancestry out of a session — §6.8's box.
+///
+/// The provenance comes from the session's own `session.toml` rather than from
+/// opening the reference. The blobs in a session were made under whatever the
+/// session recorded, and asking the binary that happens to be installed today
+/// would build a key for a version that may not be the one they were made with.
+/// It also means packing does not start an emulator to read a version string.
+///
+/// Recomputed from the definitions rather than taken from each entry's stored
+/// key, which is the point: a box whose definitions do not agree with its blobs
+/// is the stale-blob hazard §4.11 exists for, and letting the cache refuse the
+/// mismatch is what makes them agree.
+fn save(
+    plan: &Plan,
+    named: Option<PathBuf>,
+    anchor: &str,
+    into: &std::path::Path,
+) -> Result<awaseru::parcel::Packed, String> {
+    use awaseru_core::snapshot::Provenance;
+
+    let session = match named {
+        Some(dir) => awaseru::workspace::Session::open(dir).map_err(|e| e.to_string())?,
+        None => {
+            return Err("`save` takes a box out of a session, so it needs `--session PATH`.                         `--cache` alone says where blobs are and not what they are of"
+                .to_string())
+        }
+    };
+    let described = session.described().ok_or_else(|| {
+        format!(
+            "the session `{}` has not been used yet, so it does not say what it is of and there              is nothing in it to pack",
+            session.name()
+        )
+    })?;
+
+    let loaded = awaseru::config::load(&plan.shared, &plan.local).map_err(|e| e.to_string())?;
+    let cache = awaseru::cache::Cache::at(&plan.cache);
+    let provenance = Provenance {
+        reference: described.reference,
+        backend: described.backend,
+        version: described.version,
+        software: described.software,
+    };
+
+    awaseru::parcel::pack(&loaded.anchors, anchor, &provenance, &cache, into)
+        .map_err(|e| e.to_string())
 }
 
 /// Keeps what was asked and what came back, in the session's `runs/`.
@@ -337,6 +406,13 @@ enum Command {
     /// `current_exe` is a path that always exists, and a sibling binary is a
     /// path that may not have been installed.
     Reference { places: Box<awaseru::child::Where> },
+    /// `awaseru save <anchor> --into PATH` — §6.8's box.
+    Save {
+        plan: Box<Plan>,
+        session: Option<PathBuf>,
+        anchor: String,
+        into: PathBuf,
+    },
     Run {
         /// Boxed because a `Plan` carries a `Bound`, and a bound can name a
         /// byte by region (§5.4's localisation) — which makes it large enough
@@ -385,6 +461,9 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut log: Option<PathBuf> = None;
     let mut as_reference = false;
     let mut as_server = false;
+    // `save <anchor>`: which anchor to pack, and where to.
+    let mut packing: Option<String> = None;
+    let mut into: Option<PathBuf> = None;
 
     let mut args = args.peekable();
     // The one bare word this tool takes, and it has to be first: a subcommand
@@ -397,6 +476,22 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         Some("serve") => {
             as_server = true;
             args.next();
+        }
+        Some("save") => {
+            args.next();
+            // The anchor is a bare word after the verb, the way a subcommand's
+            // subject is. Taken here so that a missing one is refused before
+            // anything is opened.
+            packing = match args.peek() {
+                Some(word) if !word.starts_with('-') => args.next(),
+                _ => {
+                    return Err(
+                        "`save` needs the anchor to pack, as in \
+                         `awaseru save settled --into somewhere`"
+                            .to_string(),
+                    )
+                }
+            };
         }
         _ => {}
     }
@@ -420,6 +515,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             "--anchor" => anchor = Some(value()?),
             "--cache" => cache = Some(PathBuf::from(value()?)),
             "--session" => session = Some(PathBuf::from(value()?)),
+            "--into" => into = Some(PathBuf::from(value()?)),
             "--log" => log = Some(PathBuf::from(value()?)),
             "--regions" => list_only = true,
             "--state-digest" => digest_only = true,
@@ -486,6 +582,30 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     // instructions and refusing it is the more useful answer, so a missing
     // place must not get in front of it.
     let found = where_things_go(session.clone(), home, cache, log)?;
+
+    if let Some(anchor) = packing {
+        let into = into.ok_or_else(|| {
+            format!(
+                "`save {anchor}` needs somewhere to put the box: `--into PATH`. There is no                  default, because a box is something you are about to hand over and where it                  lands is not a thing to guess"
+            )
+        })?;
+        return Ok(Command::Save {
+            plan: Box::new(Plan {
+                shared,
+                local,
+                home: found.home,
+                bound: Bound::Frames(1),
+                anchor: Some(anchor.clone()),
+                cache: found.cache,
+                region: None,
+                offset: 0,
+                length: 0,
+            }),
+            session,
+            anchor,
+            into,
+        });
+    }
 
     Ok(Command::Run {
         plan: Box::new(Plan {
