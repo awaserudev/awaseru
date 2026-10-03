@@ -44,6 +44,9 @@ double-to-string crate — `serde_json` 1.0.151 has moved on from `ryu`, and the
 prediction was made from memory of an older release. The record says the
 measured name because the point of measuring is that it corrects you.
 
+The lock file now holds **34** crates, which is what `cargo deny check` and
+`cargo audit` run against on every commit.
+
 Also worth writing down, because it decided something: **`libc` is already in
 the lock file**, through `cpufeatures` under `sha2`. So the route M4 did *not*
 take — protecting the server's standard output with `dup2` — would have cost no

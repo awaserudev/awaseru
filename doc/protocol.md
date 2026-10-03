@@ -192,6 +192,135 @@ rather than quietly serializing as something else.
 one that said "invalid request" would make a client's author guess, and §2.4
 refuses guessing on this side of the line too.
 
+### Every message, field by field
+
+A second client is written from this. Each example is a complete envelope; the
+payload, where there is one, is described beside it.
+
+**`hello`** — first, always. Nothing else is answered before it.
+
+```json
+{"command":"hello","protocol":1,"client":"a name for the logs"}
+{"result":"hello","protocol":1,"tool":"0.0.0"}
+```
+
+A protocol the tool does not speak is refused with **both** numbers in it.
+
+**`capabilities`** — §7.3, and both lists.
+
+```json
+{"command":"capabilities"}
+{"result":"capabilities",
+ "declared":["stop-on-execution","stop-on-write","write-recency","writing-position"],
+ "absent":["stop-on-read","execution-coverage","call-and-return-events","register-writes","input-replay"]}
+```
+
+**`regions`** — §3.1, by the backend's own names (§8.5).
+
+```json
+{"command":"regions"}
+{"result":"regions","regions":[{"name":"work-ram","size":131072,"readable":true,"writable":true}]}
+```
+
+**`read`** — the bytes come back in the payload, and `length` is what was
+actually read.
+
+```json
+{"command":"read","region":"work-ram","offset":1024,"length":64}
+{"result":"bytes","region":"work-ram","offset":1024,"length":64}
+```
+
+**`write`** — the bytes go out in the payload. Not a way to seed a machine: a
+console is not its memories, and §5.3's perturbation is what this is for.
+
+```json
+{"command":"write","region":"work-ram","offset":768}
+{"result":"written","region":"work-ram","offset":768,"length":64}
+```
+
+**`run`** — bounded, always (§4.2). Four bounds:
+
+```json
+{"command":"run","bound":{"bound":"frames","count":2}}
+{"command":"run","bound":{"bound":"instructions","count":100}}
+{"command":"run","bound":{"bound":"address","address":32800,"within":20000}}
+{"command":"run","bound":{"bound":"write","region":"work-ram","offset":1024,"until":32783,"within":20000}}
+
+{"result":"stopped","stop":{
+  "reason":{"reason":"address-hit","address":32800},
+  "position":{"position":"instruction-boundary","pc":32800},
+  "arrived":true,
+  "says":"stopped at 0x8020, which is instruction boundary at 0x8020"}}
+```
+
+`reason` is one of `bound-reached`, `address-hit` (with `address`),
+`budget-exhausted`, `write-hit` (with `region` and `offset`), `refused` (with
+`why`), `cannot-continue` (with `why`). `position` is one of `frame-boundary`
+(with `frame`), `instruction-boundary`, `mid-instruction` or `unclassified`
+(each with `pc`). `arrived` is carried rather than left to be derived, because
+every client would otherwise write that match itself and the one that gets it
+wrong compares a state from the wrong place.
+
+**`examine`** — §5.6's cycle and all of §5's answers.
+
+```json
+{"command":"examine",
+ "routine":{"name":"running-total","entry":32800,"returns_to":32783,"within":20000},
+ "given":[{"region":"work-ram","offset":768,"length":64}],
+ "produced":[{"region":"work-ram","offset":1024,"length":64}],
+ "control":{"name":"the first input byte","span":{"region":"work-ram","offset":768,"length":64}},
+ "localise":true}
+```
+
+`routine.from` names an anchor to begin from (§4.7) and may be left out, which
+means wherever the reference already is. `control` may be left out, and its
+absence is **recorded in the report** rather than skipped (§5.3). `localise`
+costs a replay — about as much again as the measurement itself — so it is asked
+for.
+
+The reply is a report, and this is all of it:
+
+```json
+{"result":"report","report":{
+  "routine":"running-total",
+  "verdict":{"verdict":"differs","difference":{
+      "region":"work-ram","first":1025,"expected":87,"found":80,
+      "differing":63,"compared":64,
+      "wrote":{"wrote":"at","position":{"position":"mid-instruction","pc":32812},"writes":1}}},
+  "as_compared":null,
+  "moved":null,
+  "localisation":{"region":"work-ram","offset":1025,
+                  "wrote":{"wrote":"at","position":{"position":"mid-instruction","pc":32812},"writes":1},
+                  "replayed":true,"from":null},
+  "control":{"control":"not-run","says":"no control was run, …"},
+  "complete":false,
+  "beginning":{"repeats":true,"settled":["work-ram","…"],"says":"began at a position it can return to, …"},
+  "took_ms":162}}
+```
+
+- **`verdict`** is the field to read: everything that bears on it is already
+  applied — §4.8's caveat for an anchor nobody demonstrated, §4.12's beginning
+  that does not repeat, and §2.5's two readings of one measurement disagreeing.
+- **`as_compared`** is present only when the comparison alone said something
+  different, so a client that ignores it is never misled by it.
+- **`moved`** is §5.2, present for agreement and absent otherwise — a report
+  that said `0` for a difference would be stating something it does not know.
+- **`complete`** is §5.3's first sentence, and false both when no control was run
+  and when one was run and went unnoticed.
+- **`took_ms`** is the only field that is not reproducible, and no comparison
+  uses it.
+
+**`refused`** — the shape every failure takes, and the only one.
+
+```json
+{"result":"refused",
+ "looking_for":"a region named `nowhere`",
+ "found":"this backend exposes no region named `nowhere`"}
+```
+
+Both halves are always there. A refusal that said "invalid request" would make a
+client's author guess, and §2.4 refuses guessing on this side of the line too.
+
 ### Where the bytes are
 
 A command or reply that carries state does not put it in the JSON. The envelope
@@ -434,15 +563,42 @@ per region. A client that wants a localisable difference from perturbed inputs
 sends an `examine` with those inputs instead. Recorded rather than filled with a
 wrong name, which is what taking the plain difference's region would have been.
 
+### A conversation, end to end
+
+What `cycle.py` does, which is §M4's done-condition:
+
+1. spawn `awaseru serve --config … --local … --home … --cache …`;
+2. `hello`, and check the protocol number that comes back;
+3. `capabilities`, to see what may be asked for (§7.3) — `absent` included;
+4. `regions`, to learn the names (§3.1) rather than assume them;
+5. `examine` with the implementation you believe is right, and expect `agrees`;
+6. `examine` with one you know is wrong, with `localise`, and read the first
+   differing offset, its region, and the instruction that wrote the reference's
+   value;
+7. `read` the output span and compare it against your own, **before** any
+   control;
+8. `examine` with a `control`, and check that it was `noticed`;
+9. close the stream, which is how the conversation ends.
+
+Step 7 is before step 8 on purpose: a control runs the reference again with an
+input changed and leaves the machine where **that** run ended, so a read after it
+returns the perturbed answer.
+
 ### What a second client would need from this document
 
-Everything above: the frame's four fields and their widths, the two limits, the
-commands and replies, where the bytes are, and the three shapes of a verdict.
-The Python client was written against this document and its self-test asserts the
-same frame vector the tool's own test does — which is how a drift between the
-two would be caught by whichever ran first. Proved by mutation: writing the
-lengths little-endian fails the client's own check before any conversation is
-attempted.
+Everything above: the frame's four fields and their widths, the two limits, every
+command and reply field by field, where the bytes are, the three shapes of a
+verdict, and the order of a conversation. The Python client was written against
+this document, and its self-test asserts the same frame vector the tool's own
+test does — which is how a drift between the two is caught by whichever runs
+first. Proved by mutation: writing the lengths little-endian fails the client's
+own check before any conversation is attempted.
+
+What this document deliberately does not promise: **a version other than 1**.
+§8.6's negotiation is open (§13's Q3), and what exists instead is a refusal with
+both numbers in it. A client built against this document should expect that
+refusal rather than a fallback, and a second version of this protocol will be
+written when there is a client whose author did not write the tool.
 
 ## The reference in a child process
 

@@ -1019,6 +1019,48 @@ Framing (§8.3), stdio transport (§8.2), in-process binding (§8.4).
 *Done when*: a client written in a language other than the host's drives a full
 cycle — seed, run, compare — without linking the host.
 
+*How it was met*: by a Python client in `clients/python/`, standard library only,
+which spawns `awaseru serve` itself (§8.1 — the client drives), seeds a routine's
+inputs, runs it, compares a reimplementation written in Python against the
+reference, reads back what the reference produced, and runs §5.3's control. It
+links nothing of this project: no crate, no header, no shared library.
+
+Two numbers in its summary are the tool's and cannot be the client's, which is
+what keeps the test from being one a hollow protocol passes. The client is told
+where its output span begins and nothing about where it is wrong; the **first
+differing offset** comes back from the comparison, and the wrong implementation
+used here is right about the output's first byte, so the offset is one past it.
+And the **instruction that wrote the reference's value** comes from a replay with
+a write breakpoint; the client never sees the program. Both halves are tested,
+because either alone is passed by a stub: the right implementation agrees and the
+wrong one differs.
+
+What M4 established that it did not set out to:
+
+- **The emulator writes to standard output, which is where §8.2 puts the
+  protocol.** So the reference runs in a child process and the server keeps a
+  clean pair of streams. The route not taken — `dup2` on the server's own output
+  — would have cost no new dependency, because `libc` is already in the lock
+  file; it was refused for needing `unsafe` outside the backend's `ffi` (§17.1)
+  and because a child that can crash, hang or be killed without taking the
+  protocol down is the more robust shape.
+- **A tool whose failure mode is "no output" is worse than one that says what it
+  waited for.** A mutation that pointed the answers at the emulator's stream did
+  not make the tests fail, it made them hang — so the parent reads frames on a
+  thread of its own and gives the channel a deadline. §4.2's "no unbounded run"
+  is just as true of waiting for somebody else's run.
+- **A panic must not be able to look like an answer.** Measured: 213 bytes of
+  English in the answer channel without a hook, 13 with one, and the exit status
+  still naming the panic either way.
+- **The transport is not the cost** (§3.6's Q1, answered): 79.0 ms over the wire
+  against 79.7 ms in process for the same cycle, a whole region by value at
+  1.4 ms, and framing 128 KiB at 0.10 ms. §5.4's localisation, by contrast,
+  doubles a cycle, because it is a second full replay.
+- **A difference needs its region on the wire** (Q16, answered). In one process
+  it is recoverable while the comparison is in hand; on a wire it is not
+  recoverable at all, and taking it from §5.4's optional localisation left a
+  client that did not pay for a replay with an offset it could not place.
+
 ### M5 — Dogfooding
 
 Reimplement a routine of a homebrew program through the API, as a user of the
@@ -1053,9 +1095,9 @@ rather than by address.
 |---|---|---|
 | Q1 | **ANSWERED in M4, by measurement: carry both, and the by-value route is affordable.** §3.6's worry was hundreds of kilobytes crossing for every comparison. Measured on one machine in a debug build, five rounds each: a routine-level cycle costs **79.7 ms** in process and **79.0 ms** over the wire — the same number within noise, because both are dominated by the emulator running the routine — while a whole region by value (131 072 bytes) costs **1.4 ms**, about 1.3% of a cycle, and framing that many bytes with no backend at all costs **0.10 ms**. So the transport is not the cost, and a handle would save about one percent of a cycle in exchange for the client not being able to look at the bytes. Both routes stay in the protocol as built: `examine` holds the states and returns only a verdict, `read` brings the bytes. The numbers and the table are in `doc/protocol.md`. One thing worth keeping from taking them: §5.4's localisation **doubles** a cycle, because it is a second full replay — which is why it is asked for and not always done. | settled for this backend and this shape of client. What would move it again: a client doing frame-level work, where a cycle is cheap and a state is the same size, or a backend whose own measurement is fast enough for the transport to matter |
 | Q2 | The platform trait's exact signatures (§7.6) | the second platform, with a real backend. **Narrowed by M1**: the processor state is carried opaquely and that works — the first backend's record is exactly 32 bytes, measured, and writing back what was read reproduces the state. So the question is no longer whether an opaque record is enough to *seed* with; it is enough. What it is not enough for is §5.4's localisation, which has to name the register that differs, and that is the thing which will force a shape. Opaque also makes a processor-state comparison nearly useless on its own, since the record begins with a cycle count: `compare` deliberately leaves it out and says why |
-| Q3 | Protocol versioning and capability negotiation (§8.6) | the first client written by someone who did not write the tool |
+| Q3 | **Narrowed by M4, not answered.** What exists now: the handshake carries the protocol version both ways and the tool's own version with it, a mismatch is a refusal naming **both** numbers, and a field this tool does not know is refused rather than ignored — the strict reading, which is the honest one while this is unsettled. §7.3's capabilities are also on the wire in both lists, declared and absent, so a client discovers what may be asked for rather than guessing. What is still open is negotiation: what a client and a tool of different versions should *do* about it, beyond saying so. | still the first client written by someone who did not write the tool. M4's Python client was written against `doc/protocol.md`, which is the next best thing and not the same thing: it never disagreed with the tool, so it never exercised the question |
 | Q4 | Licence for the tool and for mapping data (§11.4) | the intent to publish, with the dependency set known |
-| Q6 | Whether a backend driven as a child process and one driven as a library can share one trait without the trait leaking the difference | implementing one of each |
+| Q6 | **Informed by M4, deliberately not answered.** M4 built a reference driven **in a child process** — but as the server's child speaking the protocol, not as a second `Platform` implementation, and the trait stayed library-only on purpose. Two things that informs. First, the cost is not the obstacle: a routine-level cycle measured 79.0 ms over a process boundary against 79.7 ms in process (Q1), so every verb in §7.2 crosses one for nothing measurable. Second, what the trait would have to gain is not a verb but a **lifecycle**: a child can die, be killed, or be alive and silent, and M4 answers those three separately (`doc/protocol.md`) while the trait has no vocabulary for any of them — a library-driven backend cannot do them, so a shared trait would make every host handle cases that only one kind of backend has. | implementing one of each **behind the trait**, which M4 did not do. The next honest attempt is §5.5's cross-check, where two references as two child processes is the architecture (Q10) — that is where a trait spanning both would earn its shape |
 | Q7 | The first backend's upstream is a community fork of a project whose original author archived it (§15.4). How much of the risk the narrow C ABI absorbs is untested | a second backend, and one upstream version bump survived |
 | Q8 | Whether a pre-built binary should be able to load a backend at runtime, rather than backends being compiled in (§7.5) | someone with an emulator worth having who cannot rebuild the host |
 | Q9 | **ANSWERED in M2.** Loading the software twice — with the debugger existing and in a break — stops at cycle 0 at the reset vector, before one instruction, identically across processes. `doc/backend.md` has the measurement. What follows is below, and the original question was: **a starting position that is reproducible.** The first backend begins executing the moment software is loaded, and the earliest stop the transcribed API can ask for lands wherever it had got to by the time the request arrived — so the position a session starts from differs from run to run. §2.5 wants the same run to stop the same way every time, and this is upstream of every comparison. | breaking before the first instruction. The backend does this when a setting of its own says to, and that setting lives in a large configuration record not yet transcribed (§16.1); alternatively, loading a saved state on arrival makes the start a known one and is §4.6's job anyway. **Measured since**: everything downstream of a blob *is* reproducible, exactly and across processes (`doc/backend.md`), so the practical answer is that an anchor's origin is itself a blob, captured once. What stays open is that the first blob's own derivation is not reproducible, so it is the one artefact in the chain whose provenance rests on nothing but having been taken |
