@@ -100,3 +100,38 @@ without a verb and a machine without the ability produce the same sentence.
 
 That is a fix worth making and it is small: §7.3's gate knows the declaration it
 read and the verb it has.
+
+## 3. The emulator's chatter lands on the host's own stdout
+
+**Annoyed, and it breaks a documented promise.**
+
+`--state-digest` says it prints "one line a machine can compare, and nothing
+else". Running it against real software produced **1.1 MB** of the emulator's own
+commentary on stdout — one line per uninitialised read, of which this software
+makes a great many at power-on — with the digest somewhere inside it. A caller
+doing the obvious thing gets a megabyte and has to filter by eye.
+
+This is the same problem §8.2 already solved once. The reference was put in a
+child process precisely because the emulator writes to stdout and the protocol
+needs it; the plain command-line host has the same collision and none of the
+solution. `--log PATH` exists and is documented as where `awaseru reference`
+sends the emulator's output — so the machinery is there, and the one-process
+path does not use it.
+
+A fix worth making, and cheap: the same redirection, taken before the backend
+comes up.
+
+## 4. A frame bound reports a position it then apologises for
+
+**Annoyed.** Arriving at an anchor bounded by frames prints:
+
+```text
+stop=<an address> , of a kind the backend does not say
+```
+
+Which is true — this backend reports no reason for a frame-boundary stop — and
+reads as a defect rather than as the honest statement it is. The position is
+exact and the *kind* is what is unknown. A sentence saying "at a frame boundary,
+and the backend does not say what kind of stop that was" would carry the same
+information without looking like a bug. A note for `doc/`, or a word in the
+printer; not a change to what is measured.
