@@ -925,6 +925,18 @@ impl<'a> Arriver<'a> {
         );
 
         // ---- step 2: take the blob and cache it ------------------------
+        //
+        // Where the blob came from is provenance and survives this. `store`
+        // writes a fresh entry, so a blob that arrived in a box would lose its
+        // packer's name here — and finding 29 keeps that on purpose: a
+        // demonstration belongs to the run that performed it, and this session
+        // demonstrating its own does not unmake theirs. Read before the store
+        // and put back after it, which is also what makes the both-established
+        // state reachable rather than a case the code could not be in.
+        let came_from = self
+            .cache
+            .get(&key)
+            .and_then(|had| had.demonstrated_elsewhere);
         self.store(&key, &anchor)?;
         let stored = self
             .cache
@@ -973,6 +985,7 @@ impl<'a> Arriver<'a> {
         let mut stored = stored;
         stored.demonstrated_with = replays;
         stored.uses = 0;
+        stored.demonstrated_elsewhere = came_from;
         self.cache.put(&key, &stored)?;
 
         // Leave the machine at the anchor rather than past it.

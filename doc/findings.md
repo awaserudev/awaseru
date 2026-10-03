@@ -1224,3 +1224,37 @@ about.** 120 against a demonstration's several hundred seconds is not a number
 that is slightly wrong; the two have no relation, because one is a guess about
 hanging and the other is however long a recording is. Finding 23's three routes
 out are still the three routes out, and all of them cost a decision.
+
+## 39. A fix for a state the code could not be in
+
+**Found by looking at a cache entry after the thing I had just written ran.**
+
+§8.5b's demonstration records itself against the blob. Finding 29 keeps a
+packer's demonstration beside this session's rather than erasing it, because a
+demonstration belongs to the run that performed it and where a blob came from is
+provenance. So a blob that arrived in a box and has since been established here
+should carry **both** facts.
+
+The arrival's reply reads those two in a particular order, and the order is the
+whole correctness of that function: this session's demonstration decides whether
+a comparison is evidence, the packer's is provenance, and reading the packer's
+first reports somebody else's work after this session has done its own. That was
+written, tested with the both-true state made to happen, and mutated against.
+
+**And the state could not occur.** §4.8's second step stores the blob through
+the same path a replay uses, which writes a *fresh* entry — so the packer's name
+was dropped there, before the demonstration got as far as recording anything.
+The ordering fix was correct and unreachable, and the test that proved it
+constructed a state the tool would never produce.
+
+Worse, the specification said otherwise. §8.5b had *"both are kept"* in it, in
+the present tense, an hour after being written. That is the rot the audit's fifth
+unit hunts, committed by the same hand that wrote the hunt.
+
+**Fixed**: the provenance is read before the store and put back after it, and
+the both-established state is now a state the tool can be in.
+
+The shape is worth more than the fix. **A test that constructs its own
+precondition cannot tell you the precondition happens.** Making the state
+happen is what the audit asks for, and it was done — in the test. What nobody
+did was ask whether anything else could make it, and the answer was no.
