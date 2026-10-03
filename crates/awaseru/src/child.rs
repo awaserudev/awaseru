@@ -238,16 +238,27 @@ impl Child {
             why: format!("this command could not be written as JSON: {e}"),
         })?;
 
-        let Some(to) = self.to.as_mut() else {
-            return Err(self.died());
-        };
-        if let Err(e) = frame::write_frame(to, &Frame::with_payload(envelope, payload.to_vec())) {
-            // A write that fails is almost always a child that is gone; say
-            // which, with the status, rather than reporting a pipe error.
-            return Err(match e {
-                FrameError::Io(_) => self.died(),
-                other => ChildError::Frame(other),
-            });
+        // A write that fails is almost always a child that is gone — and that is
+        // **not** the end of the matter, which is what a flaky test taught.
+        //
+        // The child may have spoken first: one that cannot open its reference
+        // answers a framed refusal and leaves, so its answer can be sitting in
+        // the channel while this write hits a closed pipe. Returning a death
+        // here threw that refusal away and reported "the reference is gone"
+        // where the child had said *why* it was gone — intermittently, because
+        // it depends on whether the child was scheduled to exit before the
+        // write landed. So a failed write falls through to the read below: a
+        // channel with an answer in it answers, and a disconnected one is the
+        // death.
+        match self.to.as_mut() {
+            None => {}
+            Some(to) => {
+                if let Err(e) = frame::write_frame(to, &Frame::with_payload(envelope, payload.to_vec()))
+                    && !matches!(e, FrameError::Io(_))
+                {
+                    return Err(ChildError::Frame(e));
+                }
+            }
         }
 
         let watchdog = self.watchdog;
@@ -259,15 +270,10 @@ impl Child {
             // The sender is gone: end of file, or the reading thread stopped.
             // Either way there is no answer, and `wait` says which.
             //
-            // **Not exercised by this child, and kept anyway.** Measured by
-            // mutation: turning this into a reply left both integration tests
-            // passing, because every death this child can produce is caught
-            // one step earlier — the kernel closes the read end of the command
-            // pipe when the process dies, so the *write* fails first with
-            // `BrokenPipe`. Reaching this branch needs a child that is alive
-            // with its answer channel closed, which this one never is. It
-            // stays because a future child, or a library that starts writing
-            // to standard error, can produce exactly that.
+            // **Now the only path for a death**, which it was not when this was
+            // written: a failed write used to report one from above, and it
+            // reported it over the top of an answer the child had already sent.
+            // Everything that ends a child ends here instead.
             Err(RecvTimeoutError::Disconnected) => Err(self.died()),
             Err(RecvTimeoutError::Timeout) => Err(ChildError::Silent {
                 waited: watchdog,

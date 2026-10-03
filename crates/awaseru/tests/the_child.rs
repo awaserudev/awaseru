@@ -240,6 +240,53 @@ fn a_reference_in_a_child_answers_and_its_voice_goes_to_the_log() {
     );
 }
 
+/// A child that has already left is still allowed to have spoken.
+///
+/// The race this makes deterministic: a child that cannot open its reference
+/// answers a framed refusal and exits, so by the time the parent asks anything,
+/// the pipe for commands is closed and the refusal is sitting in the answer
+/// channel. Waiting first turns "sometimes" into "always".
+///
+/// Before this was fixed, the failed write reported `Died` over the top of that
+/// refusal: the parent said "the reference is gone" where the child had said
+/// *why* it was gone, and it did so intermittently — about once in ten runs,
+/// which is the worst frequency a fault can have.
+#[test]
+fn a_parting_refusal_survives_a_write_to_a_closed_pipe() {
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_awaseru"));
+    let dir = std::env::temp_dir().join("awaseru-child-parting-word");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("home")).expect("a directory");
+    let rom = dir.join("routine.sfc");
+    std::fs::write(&rom, fixture::image_with_a_routine()).expect("write the image");
+    let places = configure(&dir, &rom, Path::new("/nowhere/at/all/MesenCore.so"));
+
+    let mut child = Child::spawn(&exe, &places).expect("the process starts");
+
+    // Long enough that the child has certainly refused and gone. Nothing is
+    // being timed here; the wait is what removes the timing from the test.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let answered = child
+        .ask(&hello(), &[])
+        .expect("the child's parting word is an answer, not a death");
+    match &answered.reply {
+        Reply::Refused { looking_for, found } => {
+            assert!(looking_for.contains("reference"), "{looking_for}");
+            assert!(
+                found.contains("nowhere"),
+                "the child's own reason, not the parent's report of a corpse: {found}"
+            );
+        }
+        other => panic!("expected the refusal it sent on its way out: {other:?}"),
+    }
+
+    // And once that is read, the next question is the death — there is nothing
+    // left in the channel to mistake for an answer.
+    let err = child.ask(&Command::Capabilities, &[]).expect_err("gone now");
+    assert!(matches!(err, ChildError::Died { .. }), "{err}");
+}
+
 /// A child that cannot open its reference says so **in a frame** and leaves.
 ///
 /// Separate from the test above because it needs its own child, and a child is

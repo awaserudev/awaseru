@@ -634,12 +634,17 @@ waiting for somebody else's.
 
 ### What the child's tests do NOT cover
 
-- **A child that is alive with its answer channel closed.** Measured by
-  mutation: the branch that would report it is never reached, because the kernel
-  closes the read end of the command pipe when a process dies, so the *write*
-  fails first with `BrokenPipe`. The branch is kept — a future child, or a
-  library that starts writing to standard error, produces exactly that — and it
-  is recorded as untested rather than counted as covered.
+- **A child that is alive with its answer channel closed.** Still not
+  arrangeable with this child. What *was* recorded here before is now wrong and
+  the correction is worth more than the note: a failed write used to report a
+  death of its own, which meant it reported one **over the top of an answer the
+  child had already sent**. A child that cannot open its reference answers a
+  framed refusal and exits, so the refusal can be waiting in the channel while
+  the write hits a closed pipe — and the parent said "the reference is gone"
+  where the child had said why, about one run in ten. A failed write now falls
+  through to the read, so the channel's contents win and a disconnected channel
+  is the only path to a death. There is a test that makes that deterministic by
+  waiting for the child to leave before asking.
 - **Two children.** One child is one reference, which is all §13's Q10 allows.
   Two is what §5.5's cross-check would need.
 - **The client's streams.** Nothing here reads the client's standard input or
