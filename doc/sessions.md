@@ -108,10 +108,54 @@ Nothing in this tool used to write a verdict to disk. A run was a `Plan` in, an
 asked, when, against which software identity and backend version, and what came
 back — with §2.3's three values intact on disk and not only on a screen.
 
+```toml
+asked = "--anchor settled --offset 0 --length 256"
+at = "20261003-174748-570"
+took_seconds = 0.343
+software = "…"   # what a reader needs to tell whose measurement this is
+reference = "…"
+backend = "…"
+version = "…"
+answer = "arrived"
+how = "resumed from a cached blob"
+state = "…"
+```
+
+The names are `NNN-<verb>-<subject>-<moment>.toml`, so a directory listing is
+already a history in order.
+
+**A refusal is a record.** §2.4 makes a refusal the product, so a question asked
+and not answered is kept as exactly that — `answer = "not-determined"` with the
+reason the configuration or the backend gave. A question that produced nothing
+is not a question that never happened.
+
+**`agrees` is never written for something that was not compared.** An arrival
+reached a position and read bytes; calling that agreement would be §2.3's
+collapse under a different word. An arrival carrying §4.8's caveat is not
+evidence and is recorded as not determined, not as an arrival.
+
+Three decisions about the shape, each because of how it could go wrong:
+
+- **The format is decided, not derived.** The file is written field by field
+  rather than by deriving a serialiser over the types in `awaseru-core`, which
+  change as the tool learns things. §8.6 says a new field is additive and a new
+  variant is not, so the vocabulary of answers is a short fixed list and adding
+  to it is a decision somebody makes rather than a consequence of renaming an
+  enum.
+- **An answer a reader does not know is not determined.** §8.6 wants a tolerant
+  reader; §2.3 forbids collapsing the third value. Together they decide it: an
+  unrecognised answer reads back as not determined, carrying the word it did not
+  recognise. A tolerant reader that treated an unknown answer as agreement would
+  turn a later version's verdict into a pass.
+- **Agreement carries `moved`, or it is refused.** §2.2 makes agreement over
+  nothing vacuous, so a record claiming agreement without the number that makes
+  it a measurement is unreadable rather than read as agreement over an unknown
+  amount.
+
 A received run is read back through a verb, not by reading the directory.
 Reading the directory would bind every consumer to the layout forever; a verb
 keeps the layout an implementation detail and the protocol the contract, under
-§8.6 (a new field is additive, a new variant is not).
+§8.6.
 
 ## A box
 

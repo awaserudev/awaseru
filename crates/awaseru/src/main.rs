@@ -75,27 +75,7 @@ Options
 /// The arithmetic below is the civil-from-days one, written out rather than
 /// taken as a sixth dependency for twenty lines.
 fn log_name() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let (secs, millis) = (now.as_secs(), now.subsec_millis());
-    let (days, rest) = (secs / 86_400, secs % 86_400);
-    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
-
-    // Days since 1970-01-01 to a civil date. Shifts the era to start in March
-    // so that a leap day lands at the end of a year and the month lengths run
-    // in a repeating pattern.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = era * 400 + yoe + i64::from(month <= 2);
-
-    format!("awaseru-{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}-{millis:03}.log")
+    format!("awaseru-{}.log", awaseru::workspace::stamp())
 }
 
 fn main() -> ExitCode {
@@ -125,7 +105,19 @@ fn main() -> ExitCode {
                     }
                 },
             };
+            let clock = std::time::Instant::now();
             let outcome = session::run_in(&plan, held.as_ref());
+            let took = clock.elapsed();
+            // Kept before the session is released, and kept whether the run
+            // answered or refused: §2.4 says a refusal is the product, so a
+            // refusal is a run that happened and is recorded as one. A
+            // question asked and not answered is exactly §2.3's third value.
+            if let Some(Err(e)) = held.as_ref().map(|s| keep(s, &plan, took, &outcome)) {
+                // The answer is not lost because the record could not be
+                // written: it is still printed below. Saying so is better than
+                // either hiding it or throwing the run away.
+                eprintln!("awaseru: the run happened and could not be recorded: {e}");
+            }
             drop(held);
             match outcome {
             Ok(outcome) => {
@@ -150,6 +142,92 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Keeps what was asked and what came back, in the session's `runs/`.
+fn keep(
+    session: &awaseru::workspace::Session,
+    plan: &Plan,
+    took: std::time::Duration,
+    outcome: &Result<session::Outcome, session::Error>,
+) -> Result<PathBuf, awaseru::record::RecordError> {
+    use awaseru::record::{Answer, Record};
+
+    let described = session.described().unwrap_or(awaseru::workspace::Described {
+        software: String::new(),
+        reference: String::new(),
+        backend: String::new(),
+        version: String::new(),
+    });
+
+    let (verb, subject) = match &plan.anchor {
+        Some(anchor) => ("arrive", anchor.clone()),
+        None => ("read", plan.region.clone().unwrap_or_else(|| "first".into())),
+    };
+
+    let answer = match outcome {
+        Ok(outcome) => match outcome.arrived.as_ref().and_then(|a| a.caveat.as_ref()) {
+            // An arrival carrying §4.8's caveat is not evidence, and a record
+            // that said "arrived" for it would be the collapse §2.3 forbids
+            // wearing a different word.
+            Some(caveat) => Answer::NotDetermined {
+                because: caveat.to_string(),
+            },
+            None => Answer::Arrived {
+                how: outcome
+                    .arrived
+                    .as_ref()
+                    .map(|a| a.how.to_string())
+                    .unwrap_or_else(|| "ran a bound".to_string()),
+                state: outcome.state.clone(),
+            },
+        },
+        Err(e) => Answer::NotDetermined {
+            because: e.to_string(),
+        },
+    };
+
+    Record {
+        asked: question(plan),
+        at: awaseru::workspace::stamp(),
+        software: described.software,
+        reference: described.reference,
+        backend: described.backend,
+        version: described.version,
+        took,
+        answer,
+    }
+    .keep(&session.runs(), verb, &subject)
+}
+
+/// The question, as the arguments that would ask it again.
+///
+/// Only the arguments that are the question. `--config`, `--local`, `--home`,
+/// `--cache` and `--session` say where things are on this machine (§6.1) and
+/// are not part of what was asked.
+fn question(plan: &Plan) -> String {
+    let mut out = Vec::new();
+    match &plan.anchor {
+        Some(anchor) => out.push(format!("--anchor {anchor}")),
+        None => out.push(match &plan.bound {
+            Bound::Frames(n) => format!("--frames {n}"),
+            Bound::Instructions(n) => format!("--instructions {n}"),
+            Bound::Address { address, within } => {
+                format!("--address {address:X} --within {within}")
+            }
+            // §5.4's localisation. No option asks for this one, so there are
+            // no arguments to write down and inventing some would make the
+            // record claim a question could be re-asked when it could not.
+            // What it was is said in words instead.
+            other => format!("(no command line asks for this bound: {other})"),
+        }),
+    }
+    if let Some(region) = &plan.region {
+        out.push(format!("--region {region}"));
+    }
+    out.push(format!("--offset {}", plan.offset));
+    out.push(format!("--length {}", plan.length));
+    out.join(" ")
 }
 
 /// One line, for a machine to compare — §2.5's "the same state" across

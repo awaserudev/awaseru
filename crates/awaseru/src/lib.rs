@@ -18,6 +18,7 @@ pub mod mapping;
 pub mod perturb;
 pub mod platform;
 pub mod protocol;
+pub mod record;
 pub mod routine;
 pub mod serve;
 pub mod session;

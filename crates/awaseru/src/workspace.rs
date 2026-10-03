@@ -37,6 +37,15 @@ const LOCK: &str = "lock";
 /// What a session is of: the software, the reference, when it began.
 const DESCRIPTION: &str = "session.toml";
 
+/// What a session is of, as its description says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Described {
+    pub software: String,
+    pub reference: String,
+    pub backend: String,
+    pub version: String,
+}
+
 /// One named place.
 ///
 /// Open while the value is alive. Dropping it releases the lock, and a process
@@ -197,6 +206,21 @@ impl Session {
         self.dir.join("logs")
     }
 
+    /// What this session was recorded as being of, if it has been.
+    ///
+    /// Read back from the file rather than kept in memory, because a session
+    /// opened today was described on whatever day it was first opened and the
+    /// file is where that lives.
+    pub fn described(&self) -> Option<Described> {
+        let text = std::fs::read_to_string(self.dir.join(DESCRIPTION)).ok()?;
+        Some(Described {
+            software: field(&text, "software")?.to_string(),
+            reference: field(&text, "reference").unwrap_or_default().to_string(),
+            backend: field(&text, "backend").unwrap_or_default().to_string(),
+            version: field(&text, "version").unwrap_or_default().to_string(),
+        })
+    }
+
     /// Records what this session is of, or refuses if it is already of
     /// something else.
     ///
@@ -249,6 +273,39 @@ impl Drop for Session {
             let _ = std::fs::remove_file(self.dir.join(LOCK));
         }
     }
+}
+
+/// The moment, as `YYYYMMDD-HHMMSS-mmm`.
+///
+/// Lives here because two things need it — a log's name, so that one run does
+/// not erase the one before it, and a run's record, so that what was asked
+/// carries when it was asked. A second copy of the arithmetic below is the one
+/// thing worse than the arithmetic.
+///
+/// Hand-written rather than taken from a crate: a date is four lines of
+/// division and §17.2 keeps dependencies to what `doc/dependencies.md` decided.
+pub fn stamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let (secs, millis) = (now.as_secs(), now.subsec_millis());
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
+
+    // Days since 1970-01-01 to a civil date. Shifts the era to start in March
+    // so that a leap day lands at the end of a year and the month lengths run
+    // in a repeating pattern.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + i64::from(month <= 2);
+
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}-{millis:03}")
 }
 
 /// Why `name` cannot name a session, or `None` if it can.
