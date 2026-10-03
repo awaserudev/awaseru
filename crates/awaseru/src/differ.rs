@@ -77,6 +77,15 @@ pub struct Report {
     caveat: Option<Undetermined>,
     /// §4.12: how the reference came up.
     beginning: Beginning,
+    /// Which region the difference is in — §13's Q16, answered.
+    ///
+    /// The comparison knows this and `Difference` does not carry it, so it was
+    /// recoverable only while the comparison was in hand. On a wire it was not
+    /// recoverable at all: a client got an offset and no name. It is carried
+    /// here, from the region-by-region comparison that produced the verdict,
+    /// and **not** taken from the localisation — a difference has a region
+    /// whether or not anybody paid for a replay.
+    differing_region: Option<String>,
     /// §5.4, when it was asked for and there was something to localise.
     located: Option<Localised>,
     /// §5.3.
@@ -151,6 +160,14 @@ impl Report {
             Verdict::Agrees { moved, .. } => Some(*moved),
             Verdict::Differs(_) | Verdict::NotDetermined(_) => None,
         }
+    }
+
+    /// Which region a difference is in (§5.4's offset is read against it).
+    ///
+    /// `None` when the verdict is not a difference, and never `None` when it
+    /// is: the comparison that produced it knew the name.
+    pub fn differing_region(&self) -> Option<&str> {
+        self.differing_region.as_deref()
     }
 
     /// §5.4, when it was asked for.
@@ -280,12 +297,12 @@ pub fn examine(
     let (compared, differing_region) = by_region(&measured, &candidate, routine)?;
 
     // ---- §5.4, only when there is something to localise ------------------
-    let located = match (&compared, request.localise, differing_region) {
+    let located = match (&compared, request.localise, &differing_region) {
         (Verdict::Differs(difference), true, Some(region)) => Some(localise::localise_difference(
             arriver,
             routine,
             request.given,
-            &region,
+            region,
             difference,
         )?),
         _ => None,
@@ -317,6 +334,7 @@ pub fn examine(
         repeated,
         caveat: measured.caveat().cloned(),
         beginning: arriver.beginning(),
+        differing_region,
         located,
         control,
         took: began.elapsed(),
@@ -368,32 +386,37 @@ fn by_region(
     })
 }
 
-/// A report built from parts, for a caller that has already done the work.
+/// Everything a report is made of, for a caller that has already done the work.
 ///
-/// Public because §5's four requirements are what a report must carry, not how
-/// it was produced: the external API of M4 will assemble one from a client's
-/// own measurements. Every field is a parameter, so nothing can be left out by
-/// forgetting it.
-#[allow(clippy::too_many_arguments)]
-pub fn report_of(
-    routine: impl Into<String>,
-    compared: Verdict,
-    repeated: Option<Verdict>,
-    caveat: Option<Undetermined>,
-    beginning: Beginning,
-    located: Option<Localised>,
-    control: Control,
-    took: Duration,
-) -> Report {
+/// A struct rather than nine arguments, and public because §5's requirements are
+/// what a report must carry rather than how it was produced. Every field is
+/// named, so nothing can be left out by forgetting it or put in the wrong
+/// position — which a nine-argument function invites.
+#[derive(Debug, Clone)]
+pub struct Parts {
+    pub routine: String,
+    pub compared: Verdict,
+    pub repeated: Option<Verdict>,
+    pub caveat: Option<Undetermined>,
+    pub beginning: Beginning,
+    pub differing_region: Option<String>,
+    pub located: Option<Localised>,
+    pub control: Control,
+    pub took: Duration,
+}
+
+/// A report built from parts.
+pub fn report_of(parts: Parts) -> Report {
     Report {
-        routine: routine.into(),
-        compared,
-        repeated,
-        caveat,
-        beginning,
-        located,
-        control,
-        took,
+        routine: parts.routine,
+        compared: parts.compared,
+        repeated: parts.repeated,
+        caveat: parts.caveat,
+        beginning: parts.beginning,
+        differing_region: parts.differing_region,
+        located: parts.located,
+        control: parts.control,
+        took: parts.took,
     }
 }
 
@@ -429,17 +452,28 @@ mod tests {
         }
     }
 
-    fn report(compared: Verdict, caveat: Option<Undetermined>, control: Control) -> Report {
-        report_of(
-            "running-total",
+    /// The parts of a report, with everything that is not under test set to
+    /// what a working measurement would have given.
+    fn parts(compared: Verdict) -> Parts {
+        Parts {
+            routine: "running-total".into(),
             compared,
-            None,
+            repeated: None,
+            caveat: None,
+            beginning: repeats(),
+            differing_region: Some("work-ram".into()),
+            located: None,
+            control: noticed(),
+            took: Duration::from_millis(12),
+        }
+    }
+
+    fn report(compared: Verdict, caveat: Option<Undetermined>, control: Control) -> Report {
+        report_of(Parts {
             caveat,
-            repeats(),
-            None,
             control,
-            Duration::from_millis(12),
-        )
+            ..parts(compared)
+        })
     }
 
     /// **The assertion this module exists for.** A verdict read out of a
@@ -471,16 +505,10 @@ mod tests {
     /// same measurement that disagree are not evidence, whichever is right.
     #[test]
     fn a_measurement_that_does_not_repeat_is_not_determined() {
-        let r = report_of(
-            "running-total",
-            agrees(),
-            Some(differs()),
-            None,
-            repeats(),
-            None,
-            noticed(),
-            Duration::ZERO,
-        );
+        let r = report_of(Parts {
+            repeated: Some(differs()),
+            ..parts(agrees())
+        });
         match r.verdict() {
             Verdict::NotDetermined(Undetermined::NotRepeatable { first, second }) => {
                 assert!(first.contains("agrees"), "{first}");
@@ -491,16 +519,10 @@ mod tests {
 
         // And the same reading twice is left alone — without this half, the
         // check above would be a check that no verdict ever stands.
-        let r = report_of(
-            "running-total",
-            agrees(),
-            Some(agrees()),
-            None,
-            repeats(),
-            None,
-            noticed(),
-            Duration::ZERO,
-        );
+        let r = report_of(Parts {
+            repeated: Some(agrees()),
+            ..parts(agrees())
+        });
         assert_eq!(r.verdict(), agrees());
     }
 
@@ -509,19 +531,13 @@ mod tests {
     /// beginning rather than naming it in the abstract.
     #[test]
     fn a_beginning_that_does_not_repeat_takes_the_verdict_away() {
-        let r = report_of(
-            "running-total",
-            agrees(),
-            None,
-            None,
-            Beginning {
+        let r = report_of(Parts {
+            beginning: Beginning {
                 reproducible: true,
                 settled: vec![],
             },
-            None,
-            noticed(),
-            Duration::ZERO,
-        );
+            ..parts(agrees())
+        });
         match r.verdict() {
             Verdict::NotDetermined(Undetermined::StatesIncomparable { why }) => {
                 assert!(why.contains("does NOT repeat") || why.contains("NOT"), "{why}");
@@ -575,16 +591,10 @@ mod tests {
             replayed: true,
             from: None,
         };
-        let r = report_of(
-            "running-total",
-            differs(),
-            None,
-            None,
-            repeats(),
-            Some(located.clone()),
-            noticed(),
-            Duration::ZERO,
-        );
+        let r = report_of(Parts {
+            located: Some(located.clone()),
+            ..parts(differs())
+        });
 
         match r.verdict() {
             Verdict::Differs(d) => assert_eq!(
@@ -603,17 +613,31 @@ mod tests {
         }
 
         // And a report with no localisation is left exactly as compared.
-        let unlocalised = report_of(
-            "running-total",
-            differs(),
-            None,
-            None,
-            repeats(),
-            None,
-            noticed(),
-            Duration::ZERO,
-        );
+        let unlocalised = report_of(Parts { ..parts(differs()) });
         assert_eq!(unlocalised.verdict(), differs());
+    }
+
+    /// §13's Q16, answered. A difference's offset is read against a region, and
+    /// the region's name is carried by the report **whether or not anyone paid
+    /// for a localisation**. Taken from the localisation instead, as it was
+    /// first, a client that did not ask for §5.4 got an offset it could not
+    /// place.
+    #[test]
+    fn a_difference_names_its_region_without_a_localisation() {
+        let r = report_of(Parts { ..parts(differs()) });
+        assert!(r.localisation().is_none(), "nobody asked for one");
+        assert_eq!(
+            r.differing_region(),
+            Some("work-ram"),
+            "and the region is still known, because the comparison knew it"
+        );
+
+        // And it is not claimed where there is no difference to place.
+        let agreed = report_of(Parts {
+            differing_region: None,
+            ..parts(agrees())
+        });
+        assert_eq!(agreed.differing_region(), None);
     }
 
     /// §5.2. The movement is reported where there is one, and absent rather
@@ -639,13 +663,8 @@ mod tests {
     /// conclude from an incomplete picture.
     #[test]
     fn the_report_prints_every_part_of_section_five() {
-        let r = report_of(
-            "running-total",
-            differs(),
-            None,
-            None,
-            repeats(),
-            Some(Localised {
+        let r = report_of(Parts {
+            located: Some(Localised {
                 region: "work-ram".into(),
                 offset: 0x400,
                 wrote: Wrote::At {
@@ -655,9 +674,9 @@ mod tests {
                 replayed: true,
                 from: None,
             }),
-            noticed(),
-            Duration::from_millis(500),
-        );
+            took: Duration::from_millis(500),
+            ..parts(differs())
+        });
         let said = r.to_string();
 
         assert!(said.contains("running-total"), "{said}");

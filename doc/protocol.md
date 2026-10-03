@@ -319,6 +319,28 @@ command right after a death is refused either way — the respawn only shows on 
 command after *that*. The test now sends it, and compares the two refusals
 word for word.
 
+### Seeding and comparing across it
+
+The payload's three segments in order — the given spans, the produced spans, the
+control's span — are what a client fills to run §5.6's cycle over the wire. All
+three are exercised: a right reimplementation agreeing, a wrong one caught at an
+offset only the reference knows, a control that is noticed, inputs cut out of the
+payload in two pieces rather than one, and a payload one byte short refused with
+both numbers.
+
+Two things that a careless version of this would have got wrong, both caught by
+mutation:
+
+- **the order of the segments.** Taking the control's bytes before the produced
+  spans' makes the right implementation stop agreeing, because the routine is
+  then seeded with the candidate's bytes. The order is the order the spans are
+  listed, and the test that proves it is the one that seeds in two pieces.
+- **where a difference's region comes from** (§13's Q16, answered). It is the
+  report's, taken from the comparison that produced the verdict — **not** the
+  localisation's, which is optional. Taken from the localisation, a client that
+  did not pay for a replay got an offset with no region to read it against, and
+  a test that always asked for localisation never noticed.
+
 ### What the transport's tests do NOT cover
 
 - **A client that sends a frame while an answer is still coming.** The

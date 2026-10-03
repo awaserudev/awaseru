@@ -305,9 +305,10 @@ pub enum Cause {
 pub struct Difference {
     /// Which region the offset below is read against (§5.4).
     ///
-    /// `None` only where nothing recorded it — §13's Q16. A client that gets
-    /// `null` here has an offset it cannot place, which is why the question
-    /// exists.
+    /// Always present on a difference this tool produced — §13's Q16, answered
+    /// in M4: the comparison knows the region and the report carries it,
+    /// whether or not §5.4's localisation was asked for. Optional in the shape
+    /// because a client assembling a difference of its own may not have one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     pub first: usize,
@@ -582,9 +583,11 @@ impl Report {
     /// never looks at it is never misled by it.
     pub fn of(r: &crate::differ::Report) -> Self {
         let verdict = r.verdict();
-        // §13's Q16: the core's difference does not name its region, and the
-        // region is recoverable here only where §5.4's localisation ran.
-        let region = r.localisation().map(|l| l.region.clone());
+        // §13's Q16, answered: the region comes from the report, which took it
+        // from the comparison that produced the verdict — not from the
+        // localisation, which is optional. A client that did not pay for §5.4
+        // still gets an offset it can place.
+        let region = r.differing_region().map(str::to_string);
         Report {
             routine: r.routine().to_string(),
             verdict: Verdict::of(&verdict, region.clone()),

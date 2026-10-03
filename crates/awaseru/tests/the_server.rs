@@ -276,6 +276,194 @@ fn a_client_drives_the_whole_cycle_over_stdin_and_stdout() {
     );
 }
 
+/// Seeding and comparing across the boundary, in the three shapes the earlier
+/// tests do not use: a difference nobody localised, a control, and inputs cut
+/// out of the payload in more than one piece.
+///
+/// Its own server, because a reference is one per process.
+#[test]
+fn the_wire_carries_every_part_of_section_five_and_cuts_the_payload_by_its_spans() {
+    let Some(library) = std::env::var_os("AWASERU_TEST_BACKEND").map(PathBuf::from) else {
+        eprintln!("SKIPPED: set AWASERU_TEST_BACKEND to a built backend library");
+        return;
+    };
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_awaseru"));
+
+    let dir = std::env::temp_dir().join("awaseru-server-section-five");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("home")).expect("a directory");
+    let rom = dir.join("routine.sfc");
+    std::fs::write(&rom, fixture::image_with_a_routine()).expect("write the image");
+    configure(&dir, &rom, &library);
+
+    let mut client = Client::spawn(&exe, &dir);
+    let (reply, _) = client.ask(&hello(), &[]);
+    assert!(matches!(reply, Reply::Hello { .. }), "{reply:?}");
+
+    let right = expected::routine(&input());
+    let wrong = expected::routine_without_the_chain(&input());
+    let routine = protocol::Routine {
+        name: "running-total".into(),
+        entry: expected::ROUTINE_ENTRY,
+        returns_to: expected::ROUTINE_RETURN,
+        within: BUDGET,
+        from: None,
+    };
+
+    // ---- §13's Q16 on the wire: a difference nobody localised --------------
+    // `localise` is false, so nothing replayed and §5.4's third item is
+    // `not-looked` — and the offset must STILL be placeable, which is the
+    // question. Taken from the localisation, as the first version did, this
+    // comes back null.
+    let mut payload = input();
+    payload.extend(wrong.clone());
+    let (reply, _) = client.ask(
+        &Command::Examine {
+            routine: routine.clone(),
+            given: vec![span(expected::ROUTINE_INPUT_AT)],
+            produced: vec![span(expected::ROUTINE_OUTPUT_AT)],
+            control: None,
+            localise: false,
+        },
+        &payload,
+    );
+    match &reply {
+        Reply::Report { report } => {
+            assert!(report.localisation.is_none(), "nobody asked for one");
+            match &report.verdict {
+                protocol::Verdict::Differs { difference } => {
+                    assert_eq!(
+                        difference.region.as_deref(),
+                        Some("work-ram"),
+                        "an offset a client cannot place is not §5.4's first item"
+                    );
+                    assert_eq!(difference.first, expected::ROUTINE_OUTPUT_AT + 1);
+                    assert_eq!(
+                        difference.wrote,
+                        protocol::Wrote::NotLooked,
+                        "and nobody looked, which is said rather than implied"
+                    );
+                }
+                other => panic!("got {other:?}"),
+            }
+        }
+        other => panic!("got {other:?}"),
+    }
+
+    // ---- §5.3 across the boundary: a control, with its bytes in the payload
+    // The payload is given, then produced, then the control's span — the third
+    // segment, which nothing has exercised until now.
+    let mut changed = input();
+    changed[0] = changed[0].wrapping_add(1);
+    let mut payload = input();
+    payload.extend(right.clone());
+    payload.extend(changed);
+    let (reply, _) = client.ask(
+        &Command::Examine {
+            routine: routine.clone(),
+            given: vec![span(expected::ROUTINE_INPUT_AT)],
+            produced: vec![span(expected::ROUTINE_OUTPUT_AT)],
+            control: Some(protocol::Perturbation {
+                name: "the first input byte".into(),
+                span: span(expected::ROUTINE_INPUT_AT),
+            }),
+            localise: false,
+        },
+        &payload,
+    );
+    match &reply {
+        Reply::Report { report } => {
+            assert!(
+                matches!(report.verdict, protocol::Verdict::Agrees { .. }),
+                "the right implementation still agrees: {:?}",
+                report.verdict
+            );
+            match &report.control {
+                protocol::Control::Ran {
+                    perturbation,
+                    noticed,
+                    plain,
+                    perturbed,
+                    ..
+                } => {
+                    assert_eq!(perturbation, "the first input byte");
+                    assert!(*noticed, "every output byte depends on it");
+                    assert!(matches!(**plain, protocol::Verdict::Agrees { .. }));
+                    assert!(matches!(**perturbed, protocol::Verdict::Differs { .. }));
+                }
+                other => panic!("a control was asked for: {other:?}"),
+            }
+            assert!(
+                report.complete,
+                "a control that discriminates is what completes a measurement (§5.3)"
+            );
+        }
+        other => panic!("got {other:?}"),
+    }
+
+    // ---- the payload is cut by its spans, however many there are ----------
+    // The same input, seeded as two halves. If the cutting followed anything
+    // but the spans' own lengths in order, the routine would read different
+    // bytes and the right implementation would stop agreeing.
+    let half = expected::ROUTINE_LENGTH / 2;
+    let mut payload = input();
+    payload.extend(right.clone());
+    let (reply, _) = client.ask(
+        &Command::Examine {
+            routine: routine.clone(),
+            given: vec![
+                protocol::Span {
+                    region: "work-ram".into(),
+                    offset: expected::ROUTINE_INPUT_AT,
+                    length: half,
+                },
+                protocol::Span {
+                    region: "work-ram".into(),
+                    offset: expected::ROUTINE_INPUT_AT + half,
+                    length: expected::ROUTINE_LENGTH - half,
+                },
+            ],
+            produced: vec![span(expected::ROUTINE_OUTPUT_AT)],
+            control: None,
+            localise: false,
+        },
+        &payload,
+    );
+    match &reply {
+        Reply::Report { report } => assert!(
+            matches!(report.verdict, protocol::Verdict::Agrees { .. }),
+            "two spans holding the same bytes as one must give the same answer: {:?}",
+            report.verdict
+        ),
+        other => panic!("got {other:?}"),
+    }
+
+    // And a payload one byte short of what those spans claim is refused.
+    let mut short = input();
+    short.extend(right.clone());
+    short.pop();
+    let (reply, _) = client.ask(
+        &Command::Examine {
+            routine,
+            given: vec![span(expected::ROUTINE_INPUT_AT)],
+            produced: vec![span(expected::ROUTINE_OUTPUT_AT)],
+            control: None,
+            localise: false,
+        },
+        &short,
+    );
+    match &reply {
+        Reply::Refused { looking_for, found } => {
+            assert!(looking_for.contains("128"), "the number needed: {looking_for}");
+            assert!(found.contains("127"), "and the number sent: {found}");
+        }
+        other => panic!("a payload that disagrees with its spans must be refused: {other:?}"),
+    }
+
+    let status = client.finish();
+    assert!(status.success(), "{status:?}");
+}
+
 /// A server whose reference cannot be opened refuses, and keeps refusing.
 ///
 /// Its own test because it needs its own server, and the refusal is relayed
