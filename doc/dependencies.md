@@ -22,6 +22,7 @@ was taken against.
 | `serde` 1.0.229 | deserializing the configuration, and writing the anchor cache's entries (§4.11) | hand-write the parsing, which is work with no payoff. The cache's use of it is safe to couple to a format precisely because §4.11 says a cache may be wrong: a format that changes invalidates a cache, and invalidating a cache costs only time |
 | `toml` 1.1.6 | the configuration format, decided in §6 | change the format, which §6 chose for explicit structure, comments and unambiguous types |
 | `sha2` 0.11.0 | the hash §6.6 identifies software by, and §4.11's anchor key and §4.8's coverage digests | write it out — which this project did, and `Not taken` below records why that was the wrong call |
+| `serde_json` 1.0.151 | §8.3's control plane, which is JSON because every language reads it and a human can debug it | hand-write the encoder and the parser — which is the `sha2` mistake with different details: escapes, surrogate pairs and number formats are exactly the kind of thing that passes a published test vector and fails on a real client. §8.3 names JSON, so the format is not a choice this would be avoiding |
 
 Approved 2026-10-02, for M0. Versions are recorded as each one is actually
 taken, at its latest stable release looked up at that moment (§17.3) — never one
@@ -31,8 +32,28 @@ remembered or copied from elsewhere.
 default brings `const-oid`, for naming the algorithm in ASN.1, which nothing
 here does.
 
-What the four cost, measured rather than guessed: the lock file went from 22
-crates to 30. `sha2` accounts for eight of them — `sha2` itself, `digest`,
+`serde_json` was approved for M4, on 2026-10-02, at its latest stable release
+looked up at that moment (§17.3).
+
+What it cost, measured rather than guessed: **30 lock entries became 34**, which
+is what was predicted, with one of the four not the crate that was predicted.
+`serde_json`, `itoa` (integer formatting, MIT or Apache-2.0) and `memchr`
+(substring search, Unlicense or MIT) were expected. The fourth was predicted as
+`ryu` and is **`zmij` 1.0.23** (MIT), the same author's newer
+double-to-string crate — `serde_json` 1.0.151 has moved on from `ryu`, and the
+prediction was made from memory of an older release. The record says the
+measured name because the point of measuring is that it corrects you.
+
+Also worth writing down, because it decided something: **`libc` is already in
+the lock file**, through `cpufeatures` under `sha2`. So the route M4 did *not*
+take — protecting the server's standard output with `dup2` — would have cost no
+new dependency at all. It was refused for a different reason: it needs `unsafe`
+outside the backend's `ffi` module, which §17.1 forbids, and running the
+reference in a child process is the more robust shape anyway (`protocol.md`).
+The dependency count was not the argument.
+
+What the first four cost, measured rather than guessed: the lock file went from
+22 crates to 30. `sha2` accounts for eight of them — `sha2` itself, `digest`,
 `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `cpufeatures` and
 `libc`. `libc` arrives through `cpufeatures`, which is how the hash finds out at
 run time whether the processor has instructions for it; it is declarations

@@ -1,0 +1,1105 @@
+//! The vocabulary — §8.3's data model, and the one both bindings of §8.4 use.
+//!
+//! > The data model is the contract; the encoding of a payload is an
+//! > implementation detail that may change behind a version (§8.6).
+//!
+//! # Why these types and not the core's own
+//!
+//! `awaseru-core`'s types already derive serialization in one or two places,
+//! and it would be shorter to put the whole model on the wire that way. This
+//! module does not, and the reason is the sentence above: **the data model is
+//! the contract.** Deriving the wire form from internal types makes every field
+//! name and every variant name a promise nobody wrote down, so renaming a field
+//! for clarity breaks a client. Here the shapes are written out, the JSON names
+//! are chosen, and the conversions from the core are explicit — which is also
+//! how §13's Q16 can be answered on the wire without changing the comparison
+//! that produced the value.
+//!
+//! Each conversion is written with an **exhaustive match**, so a variant added
+//! to the core stops this file compiling rather than silently serializing as
+//! something else.
+//!
+//! # One pair of enums
+//!
+//! `Command` and `Reply`. Both bindings of §8.4 speak them: the subprocess
+//! binding encodes them into §8.3's frames, and the in-process binding passes
+//! them as values. That is what makes "same semantics, two bindings"
+//! structural — there is one vocabulary and two ways of carrying it, rather
+//! than two implementations that are meant to agree.
+//!
+//! # Where the bytes are
+//!
+//! A command or reply that carries state does **not** put it in the JSON.
+//! §8.3's binary payload does, and the envelope says how to cut it up: each
+//! span in the command has a length, and the payload is those spans'
+//! bytes **concatenated in the order the spans are listed**. A client that can
+//! count can cut it; nothing is base64 and nothing is doubled in size.
+//!
+//! # The names are the configuration's
+//!
+//! §8.5. Every region is a `String` the backend and the mapping supplied, never
+//! an enum this file knows. A vocabulary with a variant per region would be a
+//! second naming scheme and a platform name on the wire (§2.7).
+
+use serde::{Deserialize, Serialize};
+
+/// The protocol's version — §8.6, which is open.
+///
+/// Carried in the handshake, refused on a mismatch, and deliberately not
+/// negotiated: §13's Q3 says the first client written by someone who did not
+/// write the tool is what settles how negotiation should work, and inventing it
+/// before then is inventing a guess.
+pub const PROTOCOL: u32 = 1;
+
+// ---------------------------------------------------------------- commands --
+
+/// What a client asks for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Command {
+    /// First, always. Says which protocol the client speaks.
+    Hello { protocol: u32, client: String },
+    /// What the backend declares it can do (§7.3).
+    Capabilities,
+    /// Every region the backend exposes, by name (§3.1).
+    Regions,
+    /// A span of one region. The bytes come back in the payload.
+    Read {
+        region: String,
+        offset: usize,
+        length: usize,
+    },
+    /// A span of one region, written from the payload.
+    ///
+    /// **Not a way to seed a machine** — `Platform::write`'s warning applies on
+    /// the wire too: a console is not its memories. §5.3's perturbation is what
+    /// this is for.
+    Write { region: String, offset: usize },
+    /// Advance, bounded (§4.2). There is no unbounded run to ask for.
+    Run { bound: Bound },
+    /// §5.6's cycle and all of §5's answers: measure a routine, compare a
+    /// reimplementation's output against it, localise a difference, run a
+    /// control.
+    ///
+    /// The payload is the `given` spans' bytes followed by the `produced`
+    /// spans' bytes, in order.
+    Examine {
+        routine: Routine,
+        given: Vec<Span>,
+        /// One `Vec` of bytes per span the routine writes, taken from the
+        /// payload after the given spans.
+        produced: Vec<Span>,
+        /// §5.3. Absent means no control was run, which the report records
+        /// rather than hides.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        control: Option<Perturbation>,
+        /// §5.4. A replay, so it is asked for.
+        #[serde(default)]
+        localise: bool,
+    },
+}
+
+/// How far a run goes — §4.2's bound, on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "bound", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Bound {
+    Frames {
+        count: u64,
+    },
+    Instructions {
+        count: u64,
+    },
+    /// §4.4's budget is part of the bound and not optional.
+    Address {
+        address: u64,
+        within: u64,
+    },
+    /// §5.4's localisation bound: a byte, and the end of the subject (§4.5).
+    Write {
+        region: String,
+        offset: usize,
+        until: u64,
+        within: u64,
+    },
+}
+
+/// A named span of a region (§3.1, §8.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Span {
+    pub region: String,
+    pub offset: usize,
+    pub length: usize,
+}
+
+/// §5.6's unit of work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Routine {
+    pub name: String,
+    pub entry: u64,
+    /// What bounds the measurement (§4.5).
+    pub returns_to: u64,
+    /// §4.4's budget, in instructions.
+    pub within: u64,
+    /// The anchor to begin from (§4.7), by name. Absent means wherever the
+    /// reference already is, which repeats only if somebody made it so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// §5.3's named change to one input. Its bytes are at the end of the payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Perturbation {
+    pub name: String,
+    pub span: Span,
+}
+
+// ----------------------------------------------------------------- replies --
+
+/// What the tool answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Reply {
+    /// The handshake's other half. Both versions, always, so a mismatch is
+    /// legible from either side (§8.6).
+    Hello {
+        protocol: u32,
+        /// The tool's own version (§16.1).
+        tool: String,
+    },
+    Capabilities {
+        declared: Vec<String>,
+        /// What the backend does **not** declare. Present because a list of
+        /// what a tool can do reads like a complete answer, and a reader
+        /// deciding whether to trust a result wants the other list (§7.3).
+        absent: Vec<String>,
+    },
+    Regions {
+        regions: Vec<Region>,
+    },
+    /// The bytes are in the payload.
+    Bytes {
+        region: String,
+        offset: usize,
+        length: usize,
+    },
+    Written {
+        region: String,
+        offset: usize,
+        length: usize,
+    },
+    Stopped {
+        stop: Stop,
+    },
+    /// Boxed because a report carries all of §5 and the other replies carry a
+    /// field or two: without it, every reply on the wire would be the size of
+    /// the largest one.
+    Report {
+        report: Box<Report>,
+    },
+    /// A refusal — §14.2, and the one shape every failure takes.
+    ///
+    /// Both halves are required: what was looked for and what was found. A
+    /// refusal that said only "invalid request" would make a client's author
+    /// guess, and guessing is what §2.4 refuses on the tool's side of the line
+    /// as well.
+    Refused {
+        looking_for: String,
+        found: String,
+    },
+}
+
+/// One region, as §3.1 models it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Region {
+    pub name: String,
+    pub size: usize,
+    pub readable: bool,
+    pub writable: bool,
+}
+
+/// Where execution stands, and what kind of place that is — §3.4.
+///
+/// The kind is on the wire because a frame boundary is not an instruction
+/// boundary, and a client that cannot tell them apart will try to seed from one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "position", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Position {
+    FrameBoundary { frame: u64 },
+    InstructionBoundary { pc: u64 },
+    MidInstruction { pc: u64 },
+    Unclassified { pc: u64 },
+}
+
+/// Why a run ended, and where — §4.3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stop {
+    pub reason: Reason,
+    pub position: Position,
+    /// Whether the run got where it was asked to go. Derived, and on the wire
+    /// anyway: every client would otherwise write this match itself, and the
+    /// one that gets it wrong compares a state from the wrong place.
+    pub arrived: bool,
+    /// The sentence the tool would print.
+    pub says: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Reason {
+    BoundReached,
+    AddressHit { address: u64 },
+    BudgetExhausted,
+    WriteHit { region: String, offset: usize },
+    Refused { why: String },
+    CannotContinue { why: String },
+}
+
+/// §5.1's verdict. **Three values on the wire, never two** (§2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "verdict", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Verdict {
+    Agrees {
+        compared: usize,
+        /// §5.2, reported always rather than on request.
+        moved: usize,
+    },
+    Differs {
+        difference: Difference,
+    },
+    /// The third value, with a machine-readable cause and the sentence.
+    NotDetermined {
+        cause: Cause,
+        says: String,
+    },
+}
+
+/// Why a comparison did not happen, or happened without meaning — §2.3.
+///
+/// A tag rather than a string, so that a client can branch on it; the sentence
+/// travels beside it for a client that only prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Cause {
+    RegionAbsent,
+    ReferencesDisagree,
+    DidNotArrive,
+    Vacuous,
+    CapabilityAbsent,
+    MovementUnknown,
+    SpansDiffer,
+    StatesIncomparable,
+    NotRepeatable,
+    AnchorNotDemonstrated,
+    SeededFromNoBoundary,
+}
+
+/// §5.4's localisation, as far as it is known.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Difference {
+    /// Which region the offset below is read against (§5.4).
+    ///
+    /// `None` only where nothing recorded it — §13's Q16. A client that gets
+    /// `null` here has an offset it cannot place, which is why the question
+    /// exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    pub first: usize,
+    pub expected: u8,
+    pub found: u8,
+    pub differing: usize,
+    pub compared: usize,
+    /// §5.4's third item.
+    pub wrote: Wrote,
+}
+
+/// What is known about the write that produced the reference's value — §5.4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "wrote", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Wrote {
+    /// Nobody asked. Localising is a replay, so it is a second request.
+    NotLooked,
+    /// Asked, and the backend does not declare what it would take (§7.3).
+    NotAvailable { capability: String },
+    /// Asked, and nothing wrote it between the seed and the stop.
+    NothingWrote,
+    /// The position that last wrote it, and how many times it was written — so
+    /// that "the last write" is not read as "the only write".
+    At { position: Position, writes: u64 },
+}
+
+/// §5.3's control, or the record that none was run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "control", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Control {
+    /// **The tool cannot force a control and records its absence** (§5.3).
+    NotRun { says: String },
+    Ran {
+        perturbation: String,
+        /// Boxed for the same reason as `Reply::Report`: two verdicts are the
+        /// heaviest thing in this vocabulary, and `NotRun` should not pay for
+        /// them.
+        plain: Box<Verdict>,
+        perturbed: Box<Verdict>,
+        /// Whether the comparison noticed. A control that was run and went
+        /// unnoticed is a statement about the comparison, not a failure.
+        noticed: bool,
+        says: String,
+    },
+}
+
+/// All of §5 in one value, which is what §5 requires of a report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Report {
+    pub routine: String,
+    /// §5.1, **with everything that bears on it applied** — §4.8's caveat and
+    /// §4.12's beginning included. This is the field a client should read.
+    pub verdict: Verdict,
+    /// What the comparison alone said, when the two differ. A client that wants
+    /// to know what a caveat changed reads this; one that does not, ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_compared: Option<Verdict>,
+    /// §5.2's movement, absent rather than zero where there is no count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<usize>,
+    /// §5.4, when it was asked for and there was something to localise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub localisation: Option<Localised>,
+    /// §5.3.
+    pub control: Control,
+    /// §5.3's first sentence: a measurement without a control that varies is
+    /// incomplete.
+    pub complete: bool,
+    /// §4.12, next to the result rather than in a footnote.
+    pub beginning: Beginning,
+    pub took_ms: u64,
+}
+
+/// §5.4's answer for one byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Localised {
+    pub region: String,
+    pub offset: usize,
+    pub wrote: Wrote,
+    /// Whether the answer cost a replay, or the cheap filter settled it.
+    pub replayed: bool,
+    /// What the replay began from: an anchor's name, or absent for the
+    /// reference's origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// How the reference came up — §4.12.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Beginning {
+    /// Whether a run from here can be compared with a run from anywhere else
+    /// (§2.5). A report that did not say this would be a report somebody
+    /// trusts.
+    pub repeats: bool,
+    pub settled: Vec<String>,
+    pub says: String,
+}
+
+// ------------------------------------------------------------ conversions --
+
+impl From<&awaseru_core::Position> for Position {
+    fn from(p: &awaseru_core::Position) -> Self {
+        match p {
+            awaseru_core::Position::FrameBoundary { frame } => {
+                Position::FrameBoundary { frame: *frame }
+            }
+            awaseru_core::Position::InstructionBoundary { pc } => {
+                Position::InstructionBoundary { pc: *pc }
+            }
+            awaseru_core::Position::MidInstruction { pc } => Position::MidInstruction { pc: *pc },
+            awaseru_core::Position::Unclassified { pc } => Position::Unclassified { pc: *pc },
+        }
+    }
+}
+
+impl From<&awaseru_core::Reason> for Reason {
+    fn from(r: &awaseru_core::Reason) -> Self {
+        match r {
+            awaseru_core::Reason::BoundReached => Reason::BoundReached,
+            awaseru_core::Reason::AddressHit { address } => {
+                Reason::AddressHit { address: *address }
+            }
+            awaseru_core::Reason::BudgetExhausted => Reason::BudgetExhausted,
+            awaseru_core::Reason::WriteHit { region, offset } => Reason::WriteHit {
+                region: region.clone(),
+                offset: *offset,
+            },
+            awaseru_core::Reason::Refused { why } => Reason::Refused { why: why.clone() },
+            awaseru_core::Reason::CannotContinue { why } => {
+                Reason::CannotContinue { why: why.clone() }
+            }
+        }
+    }
+}
+
+impl From<&awaseru_core::Stop> for Stop {
+    fn from(s: &awaseru_core::Stop) -> Self {
+        Stop {
+            reason: (&s.reason).into(),
+            position: (&s.position).into(),
+            arrived: s.arrived(),
+            says: s.to_string(),
+        }
+    }
+}
+
+impl From<&awaseru_core::Undetermined> for Cause {
+    fn from(u: &awaseru_core::Undetermined) -> Self {
+        use awaseru_core::Undetermined as U;
+        match u {
+            U::RegionAbsent { .. } => Cause::RegionAbsent,
+            U::ReferencesDisagree { .. } => Cause::ReferencesDisagree,
+            U::DidNotArrive { .. } => Cause::DidNotArrive,
+            U::Vacuous { .. } => Cause::Vacuous,
+            U::CapabilityAbsent { .. } => Cause::CapabilityAbsent,
+            U::MovementUnknown { .. } => Cause::MovementUnknown,
+            U::SpansDiffer { .. } => Cause::SpansDiffer,
+            U::StatesIncomparable { .. } => Cause::StatesIncomparable,
+            U::NotRepeatable { .. } => Cause::NotRepeatable,
+            U::AnchorNotDemonstrated { .. } => Cause::AnchorNotDemonstrated,
+            U::SeededFromNoBoundary { .. } => Cause::SeededFromNoBoundary,
+        }
+    }
+}
+
+impl From<&awaseru_core::Wrote> for Wrote {
+    fn from(w: &awaseru_core::Wrote) -> Self {
+        match w {
+            awaseru_core::Wrote::NotLooked => Wrote::NotLooked,
+            awaseru_core::Wrote::NotAvailable { capability } => Wrote::NotAvailable {
+                capability: capability.clone(),
+            },
+            awaseru_core::Wrote::NothingWrote => Wrote::NothingWrote,
+            awaseru_core::Wrote::At { position, writes } => Wrote::At {
+                position: position.into(),
+                writes: *writes,
+            },
+        }
+    }
+}
+
+impl Difference {
+    /// A difference, told which region its offset belongs to.
+    ///
+    /// The region is a parameter because the core's value does not carry one —
+    /// §13's Q16 — and the caller is what knows. A `None` here is the question
+    /// being left open, not an omission.
+    pub fn of(d: &awaseru_core::Difference, region: Option<String>) -> Self {
+        Difference {
+            region,
+            first: d.first,
+            expected: d.expected,
+            found: d.found,
+            differing: d.differing,
+            compared: d.compared,
+            wrote: (&d.wrote).into(),
+        }
+    }
+}
+
+impl Verdict {
+    /// A verdict, with the region a difference belongs to where the caller
+    /// knows it.
+    pub fn of(v: &awaseru_core::Verdict, region: Option<String>) -> Self {
+        match v {
+            awaseru_core::Verdict::Agrees { compared, moved } => Verdict::Agrees {
+                compared: *compared,
+                moved: *moved,
+            },
+            awaseru_core::Verdict::Differs(d) => Verdict::Differs {
+                difference: Difference::of(d, region),
+            },
+            awaseru_core::Verdict::NotDetermined(cause) => Verdict::NotDetermined {
+                cause: cause.into(),
+                says: cause.to_string(),
+            },
+        }
+    }
+}
+
+impl From<&awaseru_core::platform::Beginning> for Beginning {
+    fn from(b: &awaseru_core::platform::Beginning) -> Self {
+        Beginning {
+            repeats: b.repeats(),
+            settled: b.settled.clone(),
+            says: b.to_string(),
+        }
+    }
+}
+
+impl From<&awaseru_core::Region> for Region {
+    fn from(r: &awaseru_core::Region) -> Self {
+        Region {
+            name: r.name.clone(),
+            size: r.size,
+            readable: r.access.readable(),
+            writable: r.access.writable(),
+        }
+    }
+}
+
+impl Control {
+    pub fn of(c: &crate::perturb::Control) -> Self {
+        match c {
+            crate::perturb::Control::NotRun => Control::NotRun {
+                says: c.to_string(),
+            },
+            crate::perturb::Control::Ran {
+                perturbation,
+                plain,
+                perturbed,
+            } => Control::Ran {
+                perturbation: perturbation.clone(),
+                plain: Box::new(Verdict::of(plain, None)),
+                perturbed: Box::new(Verdict::of(perturbed, None)),
+                noticed: plain != perturbed,
+                says: c.to_string(),
+            },
+        }
+    }
+}
+
+impl From<&crate::localise::Localised> for Localised {
+    fn from(l: &crate::localise::Localised) -> Self {
+        Localised {
+            region: l.region.clone(),
+            offset: l.offset,
+            wrote: (&l.wrote).into(),
+            replayed: l.replayed,
+            from: l.from.clone(),
+        }
+    }
+}
+
+impl Span {
+    pub fn of(s: &crate::routine::Span) -> Self {
+        Span {
+            region: s.region.clone(),
+            offset: s.offset,
+            length: s.length,
+        }
+    }
+
+    pub fn into_routine_span(&self) -> crate::routine::Span {
+        crate::routine::Span::new(self.region.clone(), self.offset, self.length)
+    }
+}
+
+impl Bound {
+    /// The bound a client asked for, as the one the tool runs.
+    ///
+    /// Infallible: every bound this vocabulary can express is one §4.2 has, and
+    /// a bound the *backend* will not honour comes back as `Reason::Refused`
+    /// from the run rather than as a refusal here (§4.3).
+    pub fn into_core(self) -> awaseru_core::Bound {
+        match self {
+            Bound::Frames { count } => awaseru_core::Bound::Frames(count),
+            Bound::Instructions { count } => awaseru_core::Bound::Instructions(count),
+            Bound::Address { address, within } => {
+                awaseru_core::Bound::Address { address, within }
+            }
+            Bound::Write {
+                region,
+                offset,
+                until,
+                within,
+            } => awaseru_core::Bound::Write {
+                region,
+                offset,
+                until,
+                within,
+            },
+        }
+    }
+}
+
+impl Routine {
+    pub fn into_core(self, writes: Vec<crate::routine::Span>) -> crate::routine::Routine {
+        crate::routine::Routine {
+            name: self.name,
+            entry: self.entry,
+            returns_to: self.returns_to,
+            within: self.within,
+            from: self.from,
+            writes,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json(value: &impl Serialize) -> serde_json::Value {
+        serde_json::to_value(value).expect("it serializes")
+    }
+
+    /// A command round-trips through JSON, and the JSON is the shape a client's
+    /// author would guess. Both halves matter: the first is the contract
+    /// working, the second is the contract being usable.
+    #[test]
+    fn a_command_round_trips_and_reads_the_way_a_client_would_write_it() {
+        let command = Command::Read {
+            region: "work-ram".into(),
+            offset: 0x400,
+            length: 64,
+        };
+        let text = serde_json::to_string(&command).expect("it serializes");
+        assert_eq!(
+            text,
+            r#"{"command":"read","region":"work-ram","offset":1024,"length":64}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Command>(&text).expect("it parses"),
+            command
+        );
+    }
+
+    /// Every command and every reply survives the round trip. A vocabulary
+    /// where one variant is write-only is a vocabulary with a hole in it that
+    /// the client finds.
+    #[test]
+    fn every_command_and_reply_round_trips() {
+        let commands = vec![
+            Command::Hello {
+                protocol: PROTOCOL,
+                client: "a client".into(),
+            },
+            Command::Capabilities,
+            Command::Regions,
+            Command::Read {
+                region: "work-ram".into(),
+                offset: 0,
+                length: 1,
+            },
+            Command::Write {
+                region: "work-ram".into(),
+                offset: 7,
+            },
+            Command::Run {
+                bound: Bound::Frames { count: 2 },
+            },
+            Command::Run {
+                bound: Bound::Address {
+                    address: 0x8020,
+                    within: 20_000,
+                },
+            },
+            Command::Run {
+                bound: Bound::Instructions { count: 10 },
+            },
+            Command::Run {
+                bound: Bound::Write {
+                    region: "work-ram".into(),
+                    offset: 0x400,
+                    until: 0x800F,
+                    within: 20_000,
+                },
+            },
+            Command::Examine {
+                routine: Routine {
+                    name: "r".into(),
+                    entry: 0x8020,
+                    returns_to: 0x800F,
+                    within: 20_000,
+                    from: None,
+                },
+                given: vec![Span {
+                    region: "work-ram".into(),
+                    offset: 0x300,
+                    length: 64,
+                }],
+                produced: vec![Span {
+                    region: "work-ram".into(),
+                    offset: 0x400,
+                    length: 64,
+                }],
+                control: Some(Perturbation {
+                    name: "the first input byte".into(),
+                    span: Span {
+                        region: "work-ram".into(),
+                        offset: 0x300,
+                        length: 64,
+                    },
+                }),
+                localise: true,
+            },
+        ];
+        for command in &commands {
+            let text = serde_json::to_string(command).expect("out");
+            assert_eq!(
+                &serde_json::from_str::<Command>(&text).expect("in"),
+                command,
+                "{text}"
+            );
+            // Every command names itself in a field a client can switch on.
+            assert!(
+                json(command).get("command").is_some(),
+                "a command must say which it is: {text}"
+            );
+        }
+
+        let replies = vec![
+            Reply::Hello {
+                protocol: PROTOCOL,
+                tool: "0.0.0".into(),
+            },
+            Reply::Capabilities {
+                declared: vec!["stop-on-write".into()],
+                absent: vec!["input-replay".into()],
+            },
+            Reply::Regions {
+                regions: vec![Region {
+                    name: "work-ram".into(),
+                    size: 0x20000,
+                    readable: true,
+                    writable: true,
+                }],
+            },
+            Reply::Bytes {
+                region: "work-ram".into(),
+                offset: 0,
+                length: 64,
+            },
+            Reply::Written {
+                region: "work-ram".into(),
+                offset: 0,
+                length: 64,
+            },
+            Reply::Stopped {
+                stop: Stop {
+                    reason: Reason::AddressHit { address: 0x8020 },
+                    position: Position::InstructionBoundary { pc: 0x8020 },
+                    arrived: true,
+                    says: "stopped".into(),
+                },
+            },
+            Reply::Refused {
+                looking_for: "a region named `nowhere`".into(),
+                found: "work-ram, palette-ram".into(),
+            },
+        ];
+        for reply in &replies {
+            let text = serde_json::to_string(reply).expect("out");
+            assert_eq!(
+                &serde_json::from_str::<Reply>(&text).expect("in"),
+                reply,
+                "{text}"
+            );
+            assert!(json(reply).get("result").is_some(), "{text}");
+        }
+    }
+
+    /// **§2.3 on the wire.** Three values, each tagged differently, and the
+    /// third one carrying both a cause a client can branch on and the sentence.
+    /// A wire form with two states would be the lie this project exists to not
+    /// tell, told in JSON.
+    #[test]
+    fn the_verdict_has_three_shapes_and_the_third_says_why() {
+        let agrees = Verdict::of(
+            &awaseru_core::Verdict::Agrees {
+                compared: 64,
+                moved: 64,
+            },
+            None,
+        );
+        let differs = Verdict::of(
+            &awaseru_core::Verdict::Differs(awaseru_core::Difference::new(1025, 0x57, 0x50, 63, 64)),
+            Some("work-ram".into()),
+        );
+        let undetermined = Verdict::of(
+            &awaseru_core::Verdict::NotDetermined(awaseru_core::Undetermined::Vacuous {
+                compared: 64,
+            }),
+            None,
+        );
+
+        assert_eq!(json(&agrees)["verdict"], "agrees");
+        assert_eq!(json(&agrees)["moved"], 64);
+        assert_eq!(json(&differs)["verdict"], "differs");
+        assert_eq!(json(&undetermined)["verdict"], "not-determined");
+
+        // The three tags are distinct, and none of them is a boolean.
+        let tags: Vec<String> = [&agrees, &differs, &undetermined]
+            .iter()
+            .map(|v| json(v)["verdict"].as_str().expect("a tag").to_string())
+            .collect();
+        assert_eq!(tags.len(), 3);
+        assert_ne!(tags[0], tags[1]);
+        assert_ne!(tags[1], tags[2]);
+        assert_ne!(tags[0], tags[2]);
+
+        // The third carries a cause to branch on AND the sentence to print.
+        let j = json(&undetermined);
+        assert_eq!(j["cause"], "vacuous");
+        assert!(
+            j["says"].as_str().expect("a sentence").contains("neither side wrote"),
+            "{j}"
+        );
+
+        // §5.4's first item is read against a region, and the wire says which.
+        assert_eq!(json(&differs)["difference"]["region"], "work-ram");
+        assert_eq!(json(&differs)["difference"]["first"], 1025);
+    }
+
+    /// Every cause the core can produce has a tag here. The conversion's match
+    /// is exhaustive, so a new cause stops this file compiling — this test is
+    /// the other half: that the tags are distinct and kebab-case, so a client
+    /// can switch on them.
+    #[test]
+    fn every_cause_has_its_own_tag() {
+        let causes = [
+            awaseru_core::Undetermined::RegionAbsent {
+                region: "x".into(),
+            },
+            awaseru_core::Undetermined::ReferencesDisagree {
+                first: "a".into(),
+                second: "b".into(),
+            },
+            awaseru_core::Undetermined::DidNotArrive {
+                stopped: "x".into(),
+            },
+            awaseru_core::Undetermined::Vacuous { compared: 1 },
+            awaseru_core::Undetermined::CapabilityAbsent {
+                capability: "x".into(),
+            },
+            awaseru_core::Undetermined::MovementUnknown {
+                region: "x".into(),
+            },
+            awaseru_core::Undetermined::SpansDiffer {
+                region: "x".into(),
+            },
+            awaseru_core::Undetermined::StatesIncomparable { why: "x".into() },
+            awaseru_core::Undetermined::NotRepeatable {
+                first: "a".into(),
+                second: "b".into(),
+            },
+            awaseru_core::Undetermined::AnchorNotDemonstrated {
+                anchor: "x".into(),
+            },
+            awaseru_core::Undetermined::SeededFromNoBoundary {
+                position: "x".into(),
+            },
+        ];
+
+        let mut tags: Vec<String> = causes
+            .iter()
+            .map(|c| {
+                let cause: Cause = c.into();
+                serde_json::to_value(cause)
+                    .expect("a tag")
+                    .as_str()
+                    .expect("a string")
+                    .to_string()
+            })
+            .collect();
+        let before = tags.len();
+        tags.sort();
+        tags.dedup();
+        assert_eq!(tags.len(), before, "two causes share a tag: {tags:?}");
+        for tag in &tags {
+            assert!(
+                tag.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "a client switches on this: {tag}"
+            );
+        }
+    }
+
+    /// §5.4's third item has four shapes on the wire, and "nobody asked" is not
+    /// one of the other three. A client that could not tell them apart would
+    /// read an absence as an answer.
+    #[test]
+    fn the_four_answers_about_a_write_are_four_shapes() {
+        let wrote = |w: &awaseru_core::Wrote| json(&Wrote::from(w));
+
+        assert_eq!(wrote(&awaseru_core::Wrote::NotLooked)["wrote"], "not-looked");
+        assert_eq!(
+            wrote(&awaseru_core::Wrote::NothingWrote)["wrote"],
+            "nothing-wrote"
+        );
+        let absent = wrote(&awaseru_core::Wrote::NotAvailable {
+            capability: "writing-position".into(),
+        });
+        assert_eq!(absent["wrote"], "not-available");
+        assert_eq!(absent["capability"], "writing-position");
+
+        let at = wrote(&awaseru_core::Wrote::At {
+            position: awaseru_core::Position::MidInstruction { pc: 0x802C },
+            writes: 1,
+        });
+        assert_eq!(at["wrote"], "at");
+        assert_eq!(at["writes"], 1);
+        // Mid-instruction, and the wire says so: §3.4 forbids seeding there,
+        // and a client told only the number would not know.
+        assert_eq!(at["position"]["position"], "mid-instruction");
+        assert_eq!(at["position"]["pc"], 0x802C);
+    }
+
+    /// §5.3's absence is a shape, not a null. A client reading `null` would
+    /// read "no problem".
+    #[test]
+    fn a_control_nobody_ran_says_so_on_the_wire() {
+        let not_run = Control::of(&crate::perturb::Control::NotRun);
+        let j = json(&not_run);
+        assert_eq!(j["control"], "not-run");
+        assert!(
+            j["says"].as_str().expect("a sentence").contains("no control was run"),
+            "{j}"
+        );
+
+        let ran = Control::of(&crate::perturb::Control::Ran {
+            perturbation: "the first input byte".into(),
+            plain: awaseru_core::Verdict::Agrees {
+                compared: 64,
+                moved: 64,
+            },
+            perturbed: awaseru_core::Verdict::Differs(awaseru_core::Difference::new(
+                0, 1, 2, 64, 64,
+            )),
+        });
+        let j = json(&ran);
+        assert_eq!(j["control"], "ran");
+        assert_eq!(j["noticed"], true);
+        assert_eq!(j["plain"]["verdict"], "agrees");
+        assert_eq!(j["perturbed"]["verdict"], "differs");
+    }
+
+    /// §4.3's stop carries whether it arrived, because every client would
+    /// otherwise write that match itself and the one that gets it wrong
+    /// compares a state from the wrong place.
+    #[test]
+    fn a_stop_says_whether_it_arrived_rather_than_leaving_it_to_be_derived() {
+        let arrived = Stop::from(&awaseru_core::Stop {
+            reason: awaseru_core::Reason::AddressHit { address: 0x8020 },
+            position: awaseru_core::Position::InstructionBoundary { pc: 0x8020 },
+        });
+        assert!(arrived.arrived);
+        assert_eq!(json(&arrived)["reason"]["reason"], "address-hit");
+
+        let exhausted = Stop::from(&awaseru_core::Stop {
+            reason: awaseru_core::Reason::BudgetExhausted,
+            position: awaseru_core::Position::InstructionBoundary { pc: 0x8015 },
+        });
+        assert!(!exhausted.arrived, "a budget that ran out did not arrive");
+        assert!(exhausted.says.contains("budget"), "{}", exhausted.says);
+    }
+
+    /// §8.5 and §2.7: the vocabulary names no platform and no region. Every
+    /// name on the wire came from the configuration or the backend.
+    #[test]
+    fn the_vocabulary_names_no_platform_and_no_console_memory() {
+        // The serialized *shape* of every type here, with no values filled in
+        // from a backend: the tags and field names are the vocabulary.
+        let shapes = [
+            serde_json::to_string(&Command::Capabilities).unwrap(),
+            serde_json::to_string(&Command::Regions).unwrap(),
+            serde_json::to_string(&Bound::Frames { count: 1 }).unwrap(),
+            serde_json::to_string(&Cause::Vacuous).unwrap(),
+            serde_json::to_string(&Wrote::NotLooked).unwrap(),
+        ]
+        .join(" ");
+
+        for forbidden in [
+            "snes", "nintendo", "mesen", "ppu", "apu", "vram", "cgram", "oam", "wram", "sfc",
+            "cartridge",
+        ] {
+            assert!(
+                !shapes.to_lowercase().contains(forbidden),
+                "`{forbidden}` is a platform's word and must not be in the vocabulary: {shapes}"
+            );
+        }
+    }
+
+    /// A bound a client wrote is the bound the tool runs — all four of them,
+    /// with the budget §4.4 requires carried through rather than defaulted.
+    #[test]
+    fn every_bound_converts_to_the_one_the_tool_runs() {
+        assert_eq!(
+            Bound::Frames { count: 3 }.into_core(),
+            awaseru_core::Bound::Frames(3)
+        );
+        assert_eq!(
+            Bound::Instructions { count: 3 }.into_core(),
+            awaseru_core::Bound::Instructions(3)
+        );
+        assert_eq!(
+            Bound::Address {
+                address: 0x8020,
+                within: 99
+            }
+            .into_core(),
+            awaseru_core::Bound::Address {
+                address: 0x8020,
+                within: 99
+            }
+        );
+        assert_eq!(
+            Bound::Write {
+                region: "work-ram".into(),
+                offset: 4,
+                until: 0x800F,
+                within: 99
+            }
+            .into_core(),
+            awaseru_core::Bound::Write {
+                region: "work-ram".into(),
+                offset: 4,
+                until: 0x800F,
+                within: 99
+            }
+        );
+    }
+
+    /// **A field this tool does not know is a refusal, not something to
+    /// ignore.** A client sending one expects behaviour this tool does not
+    /// have, and §8.6's negotiation is not settled — so the strict reading is
+    /// the honest one until it is. Serde ignores unknown fields by default,
+    /// which is why this is a decision and a test rather than a sentence in a
+    /// document.
+    #[test]
+    fn a_field_this_tool_does_not_know_is_refused() {
+        let unknown = r#"{"command":"read","region":"work-ram","offset":0,"length":1,"hurry":true}"#;
+        let err = serde_json::from_str::<Command>(unknown).expect_err("an unknown field");
+        assert!(
+            err.to_string().contains("hurry"),
+            "the refusal must name it: {err}"
+        );
+
+        // And the same message without the extra field parses, so the test is
+        // about the field and not about the message.
+        let known = r#"{"command":"read","region":"work-ram","offset":0,"length":1}"#;
+        assert!(serde_json::from_str::<Command>(known).is_ok());
+
+        // Nested, too: a span with a field nobody knows is refused.
+        let nested = r#"{"command":"write","region":"work-ram","offset":0,"extra":1}"#;
+        assert!(serde_json::from_str::<Command>(nested).is_err());
+    }
+
+    /// A refusal must say both halves. One that said only what went wrong would
+    /// make a client's author guess, and §2.4 refuses guessing on this side of
+    /// the line too.
+    #[test]
+    fn a_refusal_carries_what_was_looked_for_and_what_was_found() {
+        let refused = Reply::Refused {
+            looking_for: "a region named `nowhere`".into(),
+            found: "work-ram, palette-ram".into(),
+        };
+        let j = json(&refused);
+        assert_eq!(j["result"], "refused");
+        assert!(j["looking_for"].as_str().unwrap().contains("nowhere"));
+        assert!(j["found"].as_str().unwrap().contains("work-ram"));
+    }
+}

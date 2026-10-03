@@ -158,6 +158,82 @@ error: §M4's child processes are read with "the sender finished" and "the sende
 died" as different answers, and U1 measured that a dead child gives end of file
 while a live one gives bytes.
 
+## The vocabulary
+
+One pair of enums, `Command` and `Reply`, in `crates/awaseru/src/protocol.rs`.
+Both bindings of §8.4 speak them: the subprocess binding encodes them into the
+frames above, the in-process binding passes them as values. That is what makes
+"same semantics, two bindings" structural rather than a promise — there is one
+vocabulary and two ways of carrying it.
+
+The wire types are **written out rather than derived from the tool's internal
+ones**, because §8.3 says the data model is the contract. Deriving it would make
+every internal field name a promise nobody wrote down, and renaming one for
+clarity would break a client. Each conversion from an internal type is an
+exhaustive match, so a variant added inside the tool stops the file compiling
+rather than quietly serializing as something else.
+
+### Commands
+
+| command | asks for | payload |
+|---|---|---|
+| `hello` | the handshake; says which protocol the client speaks | — |
+| `capabilities` | what the backend declares, **and what it does not** (§7.3) | — |
+| `regions` | every region by name, with its size and access (§3.1) | — |
+| `read` | a span of one region | the bytes come back in the reply's payload |
+| `write` | a span of one region, written | the bytes go out with the command |
+| `run` | a bounded advance (§4.2) — frames, instructions, an address with its budget (§4.4), or a byte with the end of its subject (§4.5) | — |
+| `examine` | §5.6's cycle and all of §5's answers | the given spans' bytes, then the produced spans' bytes |
+
+### Replies
+
+`hello`, `capabilities`, `regions`, `bytes`, `written`, `stopped`, `report`,
+`refused`. A refusal carries **both** what was looked for and what was found:
+one that said "invalid request" would make a client's author guess, and §2.4
+refuses guessing on this side of the line too.
+
+### Where the bytes are
+
+A command or reply that carries state does not put it in the JSON. The envelope
+says how to cut the payload: each span in the command has a length, and the
+payload is those spans' bytes **concatenated in the order the spans are
+listed**. A client that can count can cut it, nothing is base64, and nothing is
+doubled in size — which is §8.3's whole reason for having a binary payload.
+
+### §2.3 on the wire
+
+A verdict has **three** shapes, tagged `agrees`, `differs` and
+`not-determined`, and the third carries a `cause` a client can branch on
+(`vacuous`, `capability-absent`, `not-repeatable`, …) beside the sentence a
+client can print. There is no boolean anywhere in a verdict, and no shape that
+a two-valued client could mistake for one.
+
+§5.4's third item has four shapes for the same reason: `not-looked`,
+`not-available` with the capability named, `nothing-wrote`, and `at` with the
+position and how many times the byte was written. "Nobody asked" is not the same
+answer as "nothing wrote it", and neither is "the backend cannot say".
+
+§5.3's absence is a shape too — `{"control":"not-run"}` with its sentence —
+because a field reading `null` would be read as "no problem".
+
+### The version
+
+`hello` carries the protocol version both ways, and a mismatch is a refusal
+naming both numbers. Negotiation is **not** invented here: §8.6 and §13's Q3 say
+the first client written by someone who did not write the tool is what settles
+how it should work.
+
+### What the vocabulary's tests do NOT cover
+
+- **A client that sends nonsense that parses.** Every command round-trips and
+  every refusal carries both halves, but nothing here checks what the *tool*
+  does with a region name that does not exist or an offset past the end of one.
+  That is the binding's to check, and it is checked where the binding is.
+- **Field-level compatibility across versions.** Unknown fields are currently
+  refused by the parser rather than ignored, which is the strict reading and the
+  right one until §8.6 is settled: a client sending a field this tool does not
+  know is a client expecting something this tool does not do.
+
 ### What the framing's tests do NOT cover
 
 - **Concurrency.** One frame is written with one `write_all`, so two writers on

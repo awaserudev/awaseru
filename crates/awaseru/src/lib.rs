@@ -14,6 +14,7 @@ pub mod digest;
 pub mod localise;
 pub mod perturb;
 pub mod platform;
+pub mod protocol;
 pub mod routine;
 pub mod session;
 pub mod version;
