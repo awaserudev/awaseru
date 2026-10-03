@@ -868,6 +868,66 @@ mod tests {
         // client and the tool disagree about the shape of the message.
         assert!(examine(vec![0; 9]).was_refused());
     }
+    /// §8.5a's arrival refuses by name, and the two reasons it can refuse read
+    /// differently.
+    ///
+    /// An anchor nobody declared and a backend that keeps no state are not the
+    /// same problem, and a client told only "refused" would go looking in the
+    /// wrong place. The fake here answers questions and keeps no state, which
+    /// makes the second refusal reachable without a backend.
+    #[test]
+    fn arriving_refuses_by_name_and_tells_the_two_reasons_apart() {
+        let answers = converse(vec![
+            (hello(), vec![]),
+            (
+                Command::Arrive {
+                    anchor: "nobody-declared-this".into(),
+                },
+                vec![],
+            ),
+            (
+                Command::Arrive {
+                    anchor: "boot".into(),
+                },
+                vec![],
+            ),
+        ]);
+
+        match &answers[1].reply {
+            Reply::Refused { looking_for, found } => {
+                assert!(
+                    looking_for.contains("nobody-declared-this"),
+                    "the refusal names the anchor asked for: {looking_for}"
+                );
+                assert!(
+                    found.contains("nobody-declared-this"),
+                    "and says what it found instead: {found}"
+                );
+            }
+            other => panic!("an undeclared anchor is a refusal, got {other:?}"),
+        }
+
+        // A declared anchor on a platform that keeps no state is a different
+        // refusal, and it must not read like the first.
+        match &answers[2].reply {
+            Reply::Refused { looking_for, found } => {
+                assert!(looking_for.contains("boot"), "{looking_for}");
+                assert_ne!(
+                    found, 
+                    match &answers[1].reply {
+                        Reply::Refused { found, .. } => found,
+                        _ => unreachable!(),
+                    },
+                    "two different problems must not produce the same sentence"
+                );
+            }
+            // If the fake ever learns to keep state this becomes an arrival,
+            // which is a fine answer and not this test's business.
+            Reply::Arrived { .. } => {}
+            other => panic!("got {other:?}"),
+        }
+    }
+
     /// The state where **both** are true, which is the one that was wrong.
     ///
     /// A blob that arrived in a box and has since been established here carries

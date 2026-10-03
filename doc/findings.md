@@ -1187,3 +1187,40 @@ in finding 32, and now a title short enough to be mistaken for a number. The
 alternative is an allowlist — a check that refuses anything in `doc/` and
 `spec.md` outside a vocabulary — and it is more work and more false refusals and
 it fails the other way, which is the way that is safe.
+
+## 38. The parent's deadline makes establishing an anchor impossible over the protocol
+
+**§13's Q21 bit, for the first time, and it bit the verb written to answer
+Q23.** The twenty-third entry and Q21 have said since the audit that the
+parent's two-minute deadline guards the rarest of three failures and charges
+every legitimate run over two minutes for it. Nothing had cost anything yet.
+
+Then `Demonstrate` arrived. §4.8's five steps replay the definition
+`verify_from_origin` times and once more for the fourth step, so establishing an
+anchor behind a long recording is several replays — minutes, not seconds. Asked
+for over §8's protocol, the reference is a child process, and the deadline
+refused it:
+
+```
+refused: looking for an answer from the reference, found the reference
+process is still running and has not answered in 120s, so this has no
+answer rather than a wrong one
+```
+
+**The refusal is right and that is the point.** Finding 20's fix is working: it
+can tell a child that is still running from one that has died, and it says which.
+It simply cannot wait. So a verb whose whole purpose is to turn a position that
+resumes in milliseconds into evidence **cannot be used by a client at all**, and
+the only way to establish an anchor today is in process, through the command
+line, which is why that verb was added in the same unit.
+
+What this changes about Q21 is not the argument — the argument was already
+written in `child.rs`'s own comment, including the word *generous* being called
+out as a bigger guess — but the **cost**. Q21 was a defect with no consequence;
+it is now the thing standing between a client and §4.8.
+
+**Not fixed, and raising the number would be the mistake the comment warns
+about.** 120 against a demonstration's several hundred seconds is not a number
+that is slightly wrong; the two have no relation, because one is a guess about
+hanging and the other is however long a recording is. Finding 23's three routes
+out are still the three routes out, and all of them cost a decision.

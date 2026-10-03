@@ -123,3 +123,61 @@ receiver does not have and does not claim.
 - the cold arrival: a session with an empty cache and `--anchor`. It costs what
   it costs, and the table above is now the reason to be careful about which part
   of it you are quoting.
+
+---
+
+## Re-taken by the verbs frente, 2026-10-03
+
+### What establishing an anchor costs, which is what a box is worth
+
+The open question about handing a box to somebody asked for one number and
+nobody had it: a blob that arrives in a box resumes in milliseconds and no
+comparison from it is evidence, so **what does changing that cost?**
+
+| what | taken |
+|---|---|
+| arriving at a cached anchor, over the protocol | **9 ms** |
+| one replay of the definition | 99 s |
+| **establishing the anchor here** — §4.8's five steps, the blob already present | **582.5 s** |
+| a cold arrival: one replay, then the demonstration | 686.6 s |
+
+### The answer, and it has two halves that must not be mixed
+
+**A box is worth 76 000× when what you want is a position, and 15% when what
+you want is evidence.** Both are true and they answer different questions.
+
+Arriving is 9 ms against 686.6 s, which is the ratio that gets quoted. But
+arriving establishes nothing, and a comparison from an unestablished anchor is
+*not determined* (§4.8). To get a verdict a receiver has to demonstrate, and
+that is **582.5 s** — against the 686.6 s a cold arrival costs, which is the
+same demonstration with one replay in front of it.
+
+So the arithmetic that matters:
+
+| | |
+|---|---|
+| what a box saves a receiver who needs evidence | 686.6 − 582.5 = **104 s**, about **15%** |
+| what establishing costs against one replay | 582.5 / 99 = **5.9×** |
+| what it costs against the whole cold arrival | 582.5 / 686.6 = **85%** |
+
+**The demonstration is 85% of the bill.** Which makes the decision not to
+demonstrate on arrival clearly right rather than merely defensible: a client
+asking where the reference is would otherwise have been charged almost the whole
+cold price for a look.
+
+And it makes the box's value honest rather than inflated. "686 seconds becoming
+9 milliseconds" is a true sentence about **looking**, and it is the wrong
+sentence about **verifying** — where the box buys 15%. Anybody quoting the first
+number about the second thing is wrong by a factor of five thousand.
+
+The number `demonstrate` reports is three, which is §4.9's `verify_from_origin`
+and counts step 1's replays only. The work is four replays — three for step 1
+and one for step 4 — plus witnessing every writable region after each, which is
+why 582.5 over four is 146 s against a bare replay's 99.
+
+### How to re-take it
+
+`awaseru demonstrate <anchor> --session PATH`, in process. **Not over the
+protocol**, where the parent's two-minute deadline refuses it before it finishes
+(`doc/findings.md`'s thirty-eighth entry) — which is itself the measurement's
+most useful by-product.

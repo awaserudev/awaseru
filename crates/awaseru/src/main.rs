@@ -107,6 +107,21 @@ fn main() -> ExitCode {
         }
         Ok(Command::Serve { places }) => awaseru::serve::serve(&places),
         Ok(Command::Reference { places }) => awaseru::child::attend(&places),
+        Ok(Command::Visit {
+            plan,
+            session: named,
+            anchor,
+            establishing,
+        }) => match visit(&plan, named, &anchor, establishing) {
+            Ok(said) => {
+                println!("{said}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("awaseru: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::Take {
             plan,
             session: named,
@@ -217,6 +232,68 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// §8.5a's arrival and §8.5b's demonstration, in process.
+///
+/// In process is not a convenience here. Over §8's protocol the reference is a
+/// child, and the parent's deadline is two minutes (§13's Q21) while a
+/// demonstration is several replays of the definition — so establishing an
+/// anchor over the protocol is refused by the clock before it can finish. Until
+/// that is decided, this is the only way a person can establish one.
+fn visit(
+    plan: &Plan,
+    named: Option<PathBuf>,
+    anchor: &str,
+    establishing: bool,
+) -> Result<String, String> {
+    let held = match named {
+        Some(dir) => Some(awaseru::workspace::Session::open(dir).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let loaded = awaseru::config::load(&plan.shared, &plan.local).map_err(|e| e.to_string())?;
+    let mut reference =
+        awaseru::session::open_reference(&loaded, &plan.home).map_err(|e| e.to_string())?;
+    let provenance = loaded.provenance(reference.version().reported);
+    if let Some(session) = &held {
+        session
+            .describe(
+                &provenance.software,
+                &provenance.reference,
+                &provenance.backend,
+                &provenance.version,
+            )
+            .map_err(|e| e.to_string())?;
+    }
+
+    std::fs::create_dir_all(&plan.cache).map_err(|e| e.to_string())?;
+    let cache = awaseru::cache::Cache::at(&plan.cache);
+    let mut arriver = awaseru::arrive::Arriver::new(
+        &mut *reference,
+        &loaded.anchors,
+        &cache,
+        provenance,
+        loaded.configuration.anchors.clone(),
+    );
+
+    let clock = std::time::Instant::now();
+    let said = if establishing {
+        let done = arriver.demonstrate(anchor).map_err(|e| e.to_string())?;
+        format!(
+            "`{}` established here: {} replay(s) of the definition, {:.3}s — so a comparison \
+             from it is evidence in this session",
+            done.anchor,
+            done.replays,
+            done.took.as_secs_f64()
+        )
+    } else {
+        // §8.5a: looking, not measuring, and it demonstrates nothing.
+        let arrived = arriver
+            .arrive_without_demonstrating(anchor)
+            .map_err(|e| e.to_string())?;
+        format!("{arrived}")
+    };
+    Ok(format!("{said}\n(the whole call took {:.3}s)", clock.elapsed().as_secs_f64()))
 }
 
 /// Whether anything in a box was refused — §2.3, since a set has no one answer.
@@ -582,6 +659,16 @@ enum Command {
     /// `current_exe` is a path that always exists, and a sibling binary is a
     /// path that may not have been installed.
     Reference { places: Box<awaseru::child::Where> },
+    /// `awaseru arrive <anchor>` and `awaseru demonstrate <anchor>` — §8.5a
+    /// and §8.5b, for a person at a terminal.
+    Visit {
+        plan: Box<Plan>,
+        session: Option<PathBuf>,
+        anchor: String,
+        /// `demonstrate` rather than `arrive`: establish it here (§4.8), which
+        /// costs several replays of the definition.
+        establishing: bool,
+    },
     /// `awaseru take <anchor> --from-session PATH` — one of the person's own
     /// sessions to another, which is `save` and `restore` composed.
     Take {
@@ -655,6 +742,12 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     let mut packing: Option<String> = None;
     let mut into: Option<PathBuf> = None;
     let mut taking = false;
+    // `arrive <anchor>` and `demonstrate <anchor>`: §8.5a and §8.5b, in
+    // process. Over the protocol a demonstration is several replays of the
+    // definition and the parent's deadline kills it first (§13's Q21), so for
+    // now this is the only way a person can establish an anchor at all.
+    let mut visiting: Option<String> = None;
+    let mut establishing = false;
     let mut from: Option<PathBuf> = None;
     let mut from_session: Option<PathBuf> = None;
 
@@ -669,6 +762,18 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
         Some("serve") => {
             as_server = true;
             args.next();
+        }
+        Some("arrive") | Some("demonstrate") => {
+            let verb = args.next().expect("peeked");
+            establishing = verb == "demonstrate";
+            visiting = match args.peek() {
+                Some(word) if !word.starts_with('-') => args.next(),
+                _ => {
+                    return Err(format!(
+                        "`{verb}` needs the anchor, as in `awaseru {verb} settled --session mine`"
+                    ))
+                }
+            };
         }
         Some("restore") => {
             args.next();
@@ -795,6 +900,25 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
     // instructions and refusing it is the more useful answer, so a missing
     // place must not get in front of it.
     let found = where_things_go(session.clone(), home, cache, log)?;
+
+    if let Some(anchor) = visiting {
+        return Ok(Command::Visit {
+            plan: Box::new(Plan {
+                shared,
+                local,
+                home: found.home,
+                bound: Bound::Frames(1),
+                anchor: Some(anchor.clone()),
+                cache: found.cache,
+                region: None,
+                offset: 0,
+                length: 0,
+            }),
+            session,
+            anchor,
+            establishing,
+        });
+    }
 
     if taking {
         // `take <anchor> --from-session` is `save` into a place nobody has to
@@ -1212,6 +1336,66 @@ mod tests {
                 );
             }
             other => panic!("expected a take, got {other:?}"),
+        }
+    }
+
+    /// §8.5a and §8.5b from a terminal, and each refuses without its anchor
+    /// before anything is opened.
+    #[test]
+    fn arrive_and_demonstrate_each_need_the_anchor_and_say_which_verb_wants_it() {
+        for verb in ["arrive", "demonstrate"] {
+            let err = parse([verb].iter().map(|w| w.to_string()))
+                .expect_err("an anchor is not optional");
+            assert!(err.contains("needs the anchor"), "said: {err}");
+            assert!(
+                err.contains(verb),
+                "the refusal names the verb that wants it, said: {err}"
+            );
+
+            let err = parse([verb, "--session", "/tmp/s"].iter().map(|w| w.to_string()))
+                .expect_err("an option is not an anchor");
+            assert!(err.contains("needs the anchor"), "said: {err}");
+        }
+
+        // And the two are told apart by more than their name: one establishes
+        // and the other deliberately does not.
+        match parse(
+            ["arrive", "settled", "--session", "/tmp/s"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect("it parses")
+        {
+            Command::Visit {
+                anchor,
+                establishing,
+                session,
+                plan,
+            } => {
+                assert_eq!(anchor, "settled");
+                assert!(!establishing, "arriving is looking, not establishing");
+                assert_eq!(session, Some(PathBuf::from("/tmp/s")));
+                assert_eq!(plan.cache, PathBuf::from("/tmp/s/anchors"));
+            }
+            other => panic!("expected a visit, got {other:?}"),
+        }
+
+        match parse(
+            ["demonstrate", "settled", "--session", "/tmp/s"]
+                .iter()
+                .map(|w| w.to_string()),
+        )
+        .expect("it parses")
+        {
+            Command::Visit {
+                anchor,
+                establishing,
+                ..
+            } => {
+                assert_eq!(anchor, "settled");
+                assert!(establishing, "demonstrating establishes, which is the point");
+            }
+            other => panic!("expected a visit, got {other:?}"),
         }
     }
 
