@@ -885,13 +885,44 @@ Region names and symbol names in the API are the names the backend and the
 loaded mapping supply (§3.1, §9.1). There is no second naming scheme to learn,
 and the API's surface is documented by whatever configuration is loaded.
 
-### 8.6 OPEN — versioning and negotiation
+### 8.6 Versioning and negotiation
 
-How the protocol version is agreed, and how a client discovers the tool's and
-the backend's capabilities, is not specified.
+This section was open, and said that what would settle it was *the first client
+written by someone who did not write the tool*. That client was written, and
+what it found settled it in a way the open question had not anticipated: the
+problem was never version numbers.
 
-*What would settle it*: the first client written by someone who did not write
-the tool.
+**The protocol's vocabulary is declared, not assumed.** §7.3 applied one level
+up. A client says which protocol it speaks; the greeting answers with the
+tool's own protocol, its version (§16.1), and **every command the server has**,
+by the name a client would send it under.
+
+The first outside client wanted a command this tool did not have, and the only
+way to discover that was to read the source. A refusal would have told it too —
+afterwards, having already built the request. Declaring is the difference
+between a client that can ask what is available and one that finds out by being
+turned away, and it is the same difference §7.3 draws for a backend's
+capabilities.
+
+That dissolves compatibility rather than managing it:
+
+| | |
+|---|---|
+| a new **field** on a reply | additive, and already was: a tolerant reader ignores what it does not know |
+| a new **command** | a client that does not know it never sends it. One that sends it to an older tool is refused by name, which is an answer |
+| a new **reply variant** | breaking only for a client that can receive it **without having asked** — and every reply answers a command the client sent |
+
+The third line is the one that matters, and it is why no version needs to be
+negotiated. A reply variant is unreachable for a client that does not send the
+command it answers. So the vocabulary being declared makes adding a command
+additive in both directions, and the version number stays what it is for: saying
+that the **framing** or an existing shape changed, which is a different and
+rarer event.
+
+What is **not** settled, and is left open on purpose: what a tool should do when
+a client declares a *lower* protocol than it speaks. Today it refuses, naming
+both. Speaking an older protocol on request would mean keeping two shapes alive,
+and nothing has yet needed it.
 
 ---
 

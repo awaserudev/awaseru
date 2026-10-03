@@ -116,9 +116,19 @@ fn the_vocabulary_drives_a_real_reference() {
         &[],
     );
     match &answered.reply {
-        Reply::Hello { protocol, tool } => {
+        Reply::Hello {
+            protocol,
+            tool,
+            commands,
+        } => {
             assert_eq!(*protocol, PROTOCOL);
             assert!(!tool.is_empty(), "the tool names its own version (§16.1)");
+            // §8.6: the vocabulary is declared, so a client can tell what
+            // exists without sending it and being refused.
+            assert!(
+                commands.iter().any(|c| c == "examine"),
+                "the greeting lists what this server has: {commands:?}"
+            );
         }
         other => panic!("got {other:?}"),
     }

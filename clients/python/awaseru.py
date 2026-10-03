@@ -123,6 +123,9 @@ class Server:
     """
 
     def __init__(self, exe, config, local, home, cache, log=None):
+        # None until the greeting arrives, and `has` refuses rather than
+        # guessing — an empty list and "not asked yet" are different answers.
+        self._vocabulary = None
         arguments = [
             str(exe),
             "serve",
@@ -165,9 +168,27 @@ class Server:
         return decode(self.process.stdout)
 
     def hello(self, client: str) -> dict:
-        """The handshake, which comes before anything else."""
+        """The handshake, which comes before anything else.
+
+        The reply is returned whole rather than picked apart, which is §8.6's
+        tolerant reader as a line of code: this client gained the declared
+        command vocabulary without being changed, because it never enumerated
+        the fields it expected.
+        """
         reply, _ = self.ask({"command": "hello", "protocol": PROTOCOL, "client": client})
+        self._vocabulary = reply.get("commands")
         return reply
+
+    def has(self, command: str) -> bool:
+        """Whether the tool has a command — §8.6, asked rather than discovered.
+
+        `hello` must have been sent. A client that checks here is told; one that
+        sends a command the tool does not have is refused by name, which is an
+        answer and a worse one, because by then the request has been built.
+        """
+        if self._vocabulary is None:
+            raise ServerGone("ask `hello` before asking what the tool has")
+        return command in self._vocabulary
 
     def close(self):
         """Closes the client's end and waits, which is how a conversation ends."""

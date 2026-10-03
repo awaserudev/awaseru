@@ -132,6 +132,13 @@ impl<'a> Binding<'a> {
             return Answered::of(Reply::Hello {
                 protocol: PROTOCOL,
                 tool: TOOL.to_string(),
+                // §8.6: what this server has, said rather than guessed at. A
+                // client that wants a command it cannot see is told so here
+                // instead of finding out by being refused later.
+                commands: crate::protocol::COMMANDS
+                    .iter()
+                    .map(|c| (*c).to_string())
+                    .collect(),
             });
         }
         if !self.greeted {

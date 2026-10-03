@@ -162,9 +162,19 @@ fn a_client_drives_the_whole_cycle_over_stdin_and_stdout() {
     // ---- the handshake, which the server does not answer itself -----------
     let (reply, payload) = client.ask(&hello(), &[]);
     match &reply {
-        Reply::Hello { protocol, tool } => {
+        Reply::Hello {
+            protocol,
+            tool,
+            commands,
+        } => {
             assert_eq!(*protocol, PROTOCOL);
             assert!(!tool.is_empty());
+            // §8.6: the vocabulary arrives with the greeting, so a client can
+            // tell what exists without sending it and being refused.
+            assert!(
+                commands.iter().any(|c| c == "examine"),
+                "the greeting lists what this server has: {commands:?}"
+            );
         }
         other => panic!("got {other:?}"),
     }

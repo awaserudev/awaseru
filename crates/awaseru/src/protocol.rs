@@ -79,6 +79,24 @@ pub const PROTOCOL: u32 = 1;
 
 // ---------------------------------------------------------------- commands --
 
+/// Every command, by the name it travels under — §8.6's declared vocabulary.
+///
+/// Hand-written, and kept honest by a test rather than by care: the test maps
+/// each `Command` variant to its name through an exhaustive `match`, so adding
+/// a variant stops the build until this list is told about it. A list derived at
+/// run time would need a macro or a crate; a list nobody checks would drift the
+/// first time somebody was in a hurry.
+pub const COMMANDS: &[&str] = &[
+    "hello",
+    "capabilities",
+    "regions",
+    "read",
+    "write",
+    "run",
+    "reverify",
+    "examine",
+];
+
 /// What a client asks for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
@@ -211,6 +229,23 @@ pub enum Reply {
         protocol: u32,
         /// The tool's own version (§16.1).
         tool: String,
+        /// Every command this server has, by the name it is sent under — §8.6.
+        ///
+        /// §7.3 one level up. A backend's capabilities are declared rather than
+        /// assumed because a client that guessed would be refused at the worst
+        /// moment; the protocol's own vocabulary is the same thing, and it was
+        /// missing. The first client written by somebody who did not write this
+        /// tool had to **read the source** to learn that one of the commands it
+        /// wanted did not exist (`doc/findings.md`'s thirty-fourth entry), which
+        /// is the discovery §8.6 was waiting for.
+        ///
+        /// A field on a reply, which the rule already allows. What it buys is
+        /// larger than itself: a reply **variant** is breaking only for a client
+        /// that can receive it without having asked, and every reply answers a
+        /// command the client sent. So a client that does not know a command
+        /// never sends it and never sees its reply — and adding one stops being
+        /// a version question.
+        commands: Vec<String>,
     },
     Capabilities {
         declared: Vec<String>,
@@ -1151,6 +1186,7 @@ mod tests {
             Reply::Hello {
                 protocol: PROTOCOL,
                 tool: "0.0.0".into(),
+                commands: COMMANDS.iter().map(|c| (*c).to_string()).collect(),
             },
             Reply::Capabilities {
                 declared: vec!["stop-on-write".into()],
@@ -1417,6 +1453,106 @@ mod tests {
             j["plain"].get("difference").is_none(),
             "agreement has no difference to place: {j}"
         );
+    }
+
+    /// §8.6's vocabulary, and the test is what keeps the list from drifting.
+    ///
+    /// The `match` below is exhaustive on purpose and has no `_` arm: a new
+    /// command stops this file compiling until `COMMANDS` is told about it.
+    /// That is the whole mechanism — a hand-written list nobody checks drifts
+    /// the first time somebody is in a hurry, and this cannot be left to care.
+    #[test]
+    fn every_command_is_in_the_declared_vocabulary_under_the_name_it_travels_by() {
+        let one_of_each = [
+            Command::Hello {
+                protocol: PROTOCOL,
+                client: "c".into(),
+            },
+            Command::Capabilities,
+            Command::Regions,
+            Command::Read {
+                region: "r".into(),
+                offset: 0,
+                length: 1,
+            },
+            Command::Write {
+                region: "r".into(),
+                offset: 0,
+            },
+            Command::Run {
+                bound: Bound::Frames { count: 1 },
+            },
+            Command::Reverify { anchor: "a".into() },
+            Command::Examine {
+                routine: Routine {
+                    name: "r".into(),
+                    entry: 0,
+                    returns_to: 1,
+                    within: 1,
+                    from: None,
+                },
+                given: Vec::new(),
+                produced: Vec::new(),
+                control: None,
+                coverage: None,
+                localise: false,
+            },
+        ];
+
+        // Exhaustive, so that adding a variant breaks the build here.
+        for command in &one_of_each {
+            let name = match command {
+                Command::Hello { .. } => "hello",
+                Command::Capabilities => "capabilities",
+                Command::Regions => "regions",
+                Command::Read { .. } => "read",
+                Command::Write { .. } => "write",
+                Command::Run { .. } => "run",
+                Command::Reverify { .. } => "reverify",
+                Command::Examine { .. } => "examine",
+            };
+            assert!(
+                COMMANDS.contains(&name),
+                "`{name}` is a command and is not declared"
+            );
+            // And the name is the one the wire uses, not a label beside it.
+            assert_eq!(
+                json(command)["command"], name,
+                "the declared name must be what a client sends"
+            );
+        }
+        assert_eq!(
+            COMMANDS.len(),
+            one_of_each.len(),
+            "the list has something in it that is not a command"
+        );
+    }
+
+    /// U1's done-condition: a client can tell whether a command exists
+    /// **without sending it**.
+    ///
+    /// That is the thing the first outside client could not do. It wanted a
+    /// command, the vocabulary did not say, and the only way to find out was to
+    /// read this file.
+    #[test]
+    fn a_client_learns_the_vocabulary_from_the_greeting_rather_than_from_a_refusal() {
+        let greeting = Reply::Hello {
+            protocol: PROTOCOL,
+            tool: "t".into(),
+            commands: COMMANDS.iter().map(|c| (*c).to_string()).collect(),
+        };
+        let j = json(&greeting);
+        let said = j["commands"].as_array().expect("a list of commands");
+
+        assert!(
+            said.iter().any(|c| c == "examine"),
+            "a command it has is listed: {j}"
+        );
+        assert!(
+            !said.iter().any(|c| c == "a-command-nobody-wrote"),
+            "and one it does not have is not: {j}"
+        );
+        assert_eq!(said.len(), COMMANDS.len());
     }
 
     /// §4.3's stop carries whether it arrived, because every client would
