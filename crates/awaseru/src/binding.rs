@@ -227,8 +227,9 @@ impl<'a> Binding<'a> {
                 given,
                 produced,
                 control,
+                coverage,
                 localise,
-            } => self.examine(routine, given, produced, control, localise, payload),
+            } => self.examine(routine, given, produced, control, coverage, localise, payload),
         }
     }
 
@@ -246,6 +247,7 @@ impl<'a> Binding<'a> {
         given: Vec<protocol::Span>,
         produced: Vec<protocol::Span>,
         control: Option<protocol::Perturbation>,
+        coverage: Option<protocol::Span>,
         localise: bool,
         payload: &[u8],
     ) -> Answered {
@@ -314,6 +316,13 @@ impl<'a> Binding<'a> {
                 produced: &candidate,
                 control: perturbation.as_ref(),
                 localise,
+                // §10's span is NOT part of the payload's arithmetic above: it
+                // names bytes to look at afterwards, not bytes to seed.
+                coverage: coverage.map(|s| differ::CoverageSpan {
+                    region: s.region,
+                    offset: s.offset,
+                    length: s.length,
+                }),
             },
         );
 
@@ -708,6 +717,7 @@ mod tests {
                         },
                         given: vec![span(0, 4)],
                         produced: vec![span(8, 4)],
+                        coverage: None,
                         control: None,
                         localise: false,
                     },

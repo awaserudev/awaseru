@@ -754,6 +754,55 @@ away from the menu bar. The lesson for this project is that a tool depending on 
 person operating a GUI inherits every bug in that GUI, and that this one is now
 depending on a *recording* instead, which it does not.
 
+## Asking what executed
+
+§10's execution coverage, since M6. **Asking is naming a span**, on the
+`examine` that should be measured:
+
+```json
+{"command": "examine",
+ "routine": {"...": "..."},
+ "given": [...], "produced": [...],
+ "coverage": {"region": "program-rom", "offset": 0, "length": 64}}
+```
+
+and the report carries one field more:
+
+```json
+"coverage": {"region": "program-rom", "offset": 0, "length": 64,
+             "ran": 38, "never_ran": [[15, 32], [55, 64]]}
+```
+
+`never_ran` is the answer and `ran` is the leftover. §10 calls coverage "the
+structural answer to *there is always a routine I did not know about*: it says
+what has **not** been seen yet", so the stretches are what a caller reads; the
+two totals are there so that the two halves can be checked against each other.
+
+**Absent means nobody asked**, and that is not the same as nothing having run.
+A client reading an absent field as an empty reading would conclude its routine
+never executed, which is the kind of silent wrong answer §2.3 exists to stop.
+
+### Why a span and not a flag
+
+Reading the record costs time proportional to its size — 34 µs per kilobyte on
+the first backend, so a 2 MiB cartridge is about 70 ms against 79.7 ms for a
+whole cycle. A flag would hand every caller the cartridge; a span lets the cheap
+question be asked cheaply. `doc/report-options.md` has the rule this follows and
+the measurement that shaped it.
+
+### What it covers, and what it does not
+
+The coverage is of the **plain measurement and of nothing else**. It is
+forgotten immediately before the routine runs and read immediately after, so
+§5.4's localisation replay and §5.3's perturbed run — both of which execute the
+routine again — are outside the answer. A reading taken at the end of an
+`examine` would say more ran than the measurement did.
+
+Per-byte counts stay host-side. The record counts executions, not just presence,
+and a cartridge's worth of those is megabytes of JSON for a question almost
+nobody asks that way. If they are ever wanted they belong in §8.3's binary
+payload, and nobody has asked yet (§2.4).
+
 ## Strict one way, tolerant the other
 
 **A command refuses a field nobody declared. A reply ignores one.**

@@ -87,6 +87,7 @@ fn cycle(localise: bool, wrong: bool) -> (Command, Vec<u8>) {
             given: vec![span(expected::ROUTINE_INPUT_AT)],
             produced: vec![span(expected::ROUTINE_OUTPUT_AT)],
             control: None,
+            coverage: None,
             localise,
         },
         payload,

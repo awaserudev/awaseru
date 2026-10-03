@@ -127,6 +127,15 @@ pub enum Command {
         /// rather than hides.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         control: Option<Perturbation>,
+        /// §10's execution coverage, over the span named. Absent asks for
+        /// none, which is the default `doc/report-options.md` gives it.
+        ///
+        /// A span rather than a flag, because asking costs time proportional
+        /// to its size — 34 µs per kilobyte on the first backend — so the
+        /// caller says how much it is willing to pay for rather than being
+        /// handed a cartridge. **Asking is naming one.**
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coverage: Option<Span>,
         /// §5.4. A replay, so it is asked for.
         #[serde(default)]
         localise: bool,
@@ -414,6 +423,13 @@ pub struct Report {
     /// §5.3's first sentence: a measurement without a control that varies is
     /// incomplete.
     pub complete: bool,
+    /// §10's coverage of the measurement, when a span was asked for.
+    ///
+    /// Absent means nobody asked, which is not the same as "nothing ran" and is
+    /// kept apart on purpose: a report answering an empty reading to a question
+    /// nobody put would say the routine executed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Coverage>,
     /// §4.12, next to the result rather than in a footnote.
     pub beginning: Beginning,
     pub took_ms: u64,
@@ -431,6 +447,40 @@ pub struct Localised {
     /// reference's origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+}
+
+/// §10's execution coverage, in the form a wire can afford — §8.3.
+///
+/// **The counts stay host-side.** The record is a count per byte, and a
+/// cartridge's worth of them is megabytes of JSON for a question almost nobody
+/// asks that way. What crosses is the answer §10 says coverage is for — *what
+/// has not been seen* — plus the two totals that make it checkable.
+///
+/// If per-byte counts are ever wanted on the wire they belong in §8.3's binary
+/// payload rather than here, and nobody has asked yet (§2.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coverage {
+    pub region: String,
+    pub offset: usize,
+    /// How many bytes the reading covers.
+    pub length: usize,
+    /// How many of them ran at least once.
+    pub ran: usize,
+    /// The stretches that never ran, as `[start, end)` in the region's own
+    /// numbering — which is the answer, not the leftovers.
+    pub never_ran: Vec<[usize; 2]>,
+}
+
+impl Coverage {
+    fn of(c: &awaseru_core::ExecutionCoverage) -> Self {
+        Coverage {
+            region: c.region.clone(),
+            offset: c.offset,
+            length: c.executions.len(),
+            ran: c.ran(),
+            never_ran: c.never_ran().into_iter().map(|r| [r.start, r.end]).collect(),
+        }
+    }
 }
 
 /// How the reference came up — §4.12.
@@ -631,6 +681,7 @@ impl Report {
             localisation: r.localisation().map(Localised::from),
             control: Control::of(r.control()),
             complete: r.complete(),
+            coverage: r.coverage().map(Coverage::of),
             beginning: r.beginning().into(),
             took_ms: r.took().as_millis() as u64,
         }
@@ -727,12 +778,19 @@ mod tests {
     fn a_reply_from_a_newer_tool_parses_at_every_depth() {
         // Top level, and one nested object per level of the deepest reply
         // there is: report -> verdict -> difference -> wrote -> position.
+        //
+        // The invented names have to stay invented. This test first used
+        // `coverage` for the report's unknown field, and M6 made `coverage`
+        // real two units later — at which point the test failed, correctly,
+        // because a known field with the wrong shape is a malformed reply and
+        // not an extension. `call_tree` is §10's next unimplemented feature and
+        // will need the same treatment the day somebody writes it.
         let from_the_future = r#"{
             "result": "report",
             "a_reply_field_from_2027": true,
             "report": {
                 "routine": "running-total",
-                "coverage": {"executed": 12, "of": 2048},
+                "call_tree": {"calls": 12, "returns": 11},
                 "verdict": {
                     "verdict": "differs",
                     "a_verdict_field": null,
@@ -944,6 +1002,11 @@ mod tests {
                         offset: 0x300,
                         length: 64,
                     },
+                }),
+                coverage: Some(Span {
+                    region: "program-rom".into(),
+                    offset: 0,
+                    length: 0x40,
                 }),
                 localise: true,
             },

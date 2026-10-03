@@ -120,6 +120,7 @@ fn one_examination_answers_every_part_of_section_five() {
             produced: &produced,
             control: Some(&control),
             localise: true,
+            coverage: None,
         },
     )
     .expect("it examines");

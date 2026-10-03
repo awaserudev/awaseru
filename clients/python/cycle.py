@@ -35,7 +35,8 @@ def span(region: str, offset: int, length: int) -> dict:
     return {"region": region, "offset": offset, "length": length}
 
 
-def examine(routine_description, given, produced, payload, control=None, localise=False):
+def examine(routine_description, given, produced, payload,
+            control=None, localise=False, coverage=None):
     command = {
         "command": "examine",
         "routine": routine_description,
@@ -45,6 +46,11 @@ def examine(routine_description, given, produced, payload, control=None, localis
     }
     if control is not None:
         command["control"] = control
+    if coverage is not None:
+        # §10, and asking is naming a span: reading the record costs time
+        # proportional to its size, so a client says how much it wants rather
+        # than being handed a cartridge.
+        command["coverage"] = coverage
     return command, payload
 
 
@@ -87,7 +93,13 @@ def main() -> int:
         summary["regions"] = names
 
         # ---- the right reimplementation agrees ----------------------------
-        command, payload = examine(described, given, produced, data + right, localise=True)
+        # Coverage is asked for here and nowhere else, which is the point: it
+        # is absent from every other report in this run, and absent means
+        # nobody asked rather than nothing ran.
+        command, payload = examine(
+            described, given, produced, data + right, localise=True,
+            coverage=span("program-rom", 0, 0x40),
+        )
         reply, _ = server.ask(command, payload)
         assert awaseru.kind(reply) == "report", f"expected a report: {reply}"
         report = reply["report"]
@@ -96,7 +108,25 @@ def main() -> int:
             "moved": report.get("moved"),
             "localisation": report.get("localisation"),
             "complete": awaseru.complete(report),
+            "coverage": awaseru.coverage_of(report),
         }
+
+        # §10's two halves, neither of which this client could compute. The
+        # program's setup runs and its routine runs; the clobber, the spin and
+        # the padding between them do not, because the measurement is bounded
+        # by the routine's return (§4.5).
+        coverage = awaseru.coverage_of(report)
+        assert coverage is not None, f"coverage was asked for: {report}"
+        assert coverage["region"] == "program-rom", coverage
+        assert 0 < coverage["ran"] < coverage["length"], (
+            "a coverage that answered the same thing about every byte would "
+            f"pass any one-sided check: {coverage}"
+        )
+        gaps = awaseru.never_ran(report)
+        assert gaps, f"something in this span never ran: {coverage}"
+        assert sum(end - start for start, end in gaps) == (
+            coverage["length"] - coverage["ran"]
+        ), f"the gaps and the count are the same answer twice: {coverage}"
         assert awaseru.verdict_of(report) == "agrees", (
             "the implementation this client believes is right must agree with the "
             f"reference: {report}"

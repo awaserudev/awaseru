@@ -404,6 +404,24 @@ impl<'a> Arriver<'a> {
         self.platform.capabilities()
     }
 
+    /// §10's execution coverage over a span, and forgetting what was counted.
+    ///
+    /// Forwarded rather than reimplemented, like every other capability-gated
+    /// verb here: the backend declares it or refuses, and this type's job is
+    /// arriving somewhere, not interpreting what is found there.
+    pub fn coverage(
+        &self,
+        region: &str,
+        offset: usize,
+        length: usize,
+    ) -> Result<awaseru_core::ExecutionCoverage, ReadError> {
+        self.platform.coverage(region, offset, length)
+    }
+
+    pub fn forget_coverage(&mut self) -> Result<(), ReadError> {
+        self.platform.forget_coverage()
+    }
+
     /// When a byte was last written — §5.4's cheap filter.
     pub fn write_recency(
         &self,

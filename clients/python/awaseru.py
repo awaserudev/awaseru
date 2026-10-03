@@ -213,3 +213,28 @@ def complete(report: dict) -> bool:
     about the measurement's method rather than about what it found.
     """
     return bool(report["complete"])
+
+
+def coverage_of(report: dict) -> dict | None:
+    """§10's execution coverage, when the request asked for a span.
+
+    `None` means nobody asked. That is not the same as "nothing ran", and the
+    two are kept apart here for the same reason they are on the wire: a client
+    that read an absent field as an empty reading would conclude its routine
+    never executed.
+    """
+    return report.get("coverage")
+
+
+def never_ran(report: dict) -> list[tuple[int, int]]:
+    """The stretches that never executed, as [start, end) pairs.
+
+    §10 calls coverage "the structural answer to *there is always a routine I
+    did not know about*", so this is the answer and `ran` is the leftover.
+    Raises if coverage was not asked for, rather than returning an empty list,
+    which would read as "everything ran".
+    """
+    coverage = coverage_of(report)
+    if coverage is None:
+        raise ValueError("coverage was not asked for, so there is nothing to say")
+    return [(start, end) for start, end in coverage["never_ran"]]

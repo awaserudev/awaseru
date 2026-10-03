@@ -36,7 +36,7 @@ Two consequences follow from it, and both are about **not** adding things:
 | | default | why |
 |---|---|---|
 | `localise` | **false** | §5.4 is a second full replay: it doubles a cycle (§13's Q1). Already on the wire as `examine.localise`, so its name and position are fixed |
-| `coverage` | **false** | arrives with M6; instrumenting execution costs, by how much is not yet measured |
+| `coverage` | **false**, and it is a span rather than a flag | §10's execution coverage, landed in M6. Asking is naming a span on the `examine`; absent asks for none, which is the `false` this table promised. A flag would have meant "the whole region", and reading one costs 34 µs per kilobyte — about 70 ms for a cartridge, against 79.7 ms for a cycle. **A config default was considered and not built**: there is nothing sensible to default a span to, and nobody has asked for a project-wide one (§2.4). If use shows otherwise it goes in the log below |
 
 That is the whole list today. §5.3's control needs no switch: a measurement runs
 one when a perturbation is sent and not otherwise.

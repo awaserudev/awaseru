@@ -161,6 +161,30 @@ fn a_client_in_another_language_drives_seed_run_and_compare() {
         "a write is caught during the instruction performing it (§3.4)"
     );
 
+    // ---- §10, as the client asked for it and could not have computed ----
+    // The fixture's program is this project's, so what ran is known: the setup
+    // before the call, and the routine itself. Between them sit the clobber,
+    // the spin and the padding, which a measurement bounded by the routine's
+    // return (§4.5) never reaches. The client sent a span and nothing else.
+    let coverage = &summary["right"]["coverage"];
+    assert_eq!(coverage["region"], "program-rom", "{summary}");
+    assert_eq!(coverage["length"], 0x40);
+    assert_eq!(
+        coverage["ran"], 38,
+        "fifteen bytes of setup and twenty-three of routine: {coverage}"
+    );
+    assert_eq!(
+        coverage["never_ran"],
+        serde_json::json!([[15, 32], [55, 64]]),
+        "the clobber, the spin and the padding, then everything past the RTS. \
+         A coverage that answered the same thing about every byte could not \
+         produce two gaps with executed bytes between them: {coverage}"
+    );
+    assert!(
+        summary["wrong"]["coverage"].is_null(),
+        "the other measurement did not ask, and absent is not `nothing ran`: {summary}"
+    );
+
     // §5.3's control, and §7.3's declaration, as the client saw them.
     assert_eq!(summary["control"]["control"], "ran", "{summary}");
     assert_eq!(summary["control"]["noticed"], true, "{summary}");

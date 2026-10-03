@@ -57,6 +57,20 @@ pub struct Request<'a> {
     /// ever done when the verdict differs, since there is nothing to localise
     /// otherwise.
     pub localise: bool,
+    /// §10's execution coverage, over the span named — `None` asks for none.
+    ///
+    /// A span rather than a flag because reading the record costs time
+    /// proportional to its size (`doc/report-options.md`), so the caller says
+    /// how much it is willing to pay for. Asking is naming one.
+    pub coverage: Option<CoverageSpan>,
+}
+
+/// Where to read §10's coverage, in the region's own numbering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageSpan {
+    pub region: String,
+    pub offset: usize,
+    pub length: usize,
 }
 
 /// One routine, one candidate, all of §5 in one value.
@@ -90,6 +104,8 @@ pub struct Report {
     located: Option<Localised>,
     /// §5.3.
     control: Control,
+    /// §10's coverage of the plain measurement, when a span was asked for.
+    coverage: Option<awaseru_core::ExecutionCoverage>,
     took: Duration,
 }
 
@@ -189,6 +205,16 @@ impl Report {
         &self.routine
     }
 
+    /// §10's coverage of the plain measurement, when one was asked for.
+    ///
+    /// `None` means nobody asked, which is a different thing from "nothing
+    /// ran" and is kept apart on purpose — a report that returned an empty
+    /// reading for a question nobody put would say the routine executed
+    /// nothing.
+    pub fn coverage(&self) -> Option<&awaseru_core::ExecutionCoverage> {
+        self.coverage.as_ref()
+    }
+
     pub fn took(&self) -> Duration {
         self.took
     }
@@ -241,6 +267,9 @@ pub enum Error {
     Candidate(routine::CandidateError),
     Control(perturb::Error),
     NotComparable(awaseru_core::snapshot::NotComparable),
+    /// §10's coverage was asked for and the reference would not give it —
+    /// an undeclared capability, or a span outside the region.
+    Coverage(awaseru_core::ReadError),
 }
 
 impl std::fmt::Display for Error {
@@ -250,6 +279,7 @@ impl std::fmt::Display for Error {
             Error::Candidate(e) => write!(f, "{e}"),
             Error::Control(e) => write!(f, "{e}"),
             Error::NotComparable(e) => write!(f, "{e}"),
+            Error::Coverage(e) => write!(f, "execution coverage was asked for and refused: {e}"),
         }
     }
 }
@@ -288,7 +318,24 @@ pub fn examine(
     let routine = request.routine;
 
     routine::rewind_if_unanchored(arriver, routine)?;
+
+    // §10's coverage is of the PLAIN measurement and of nothing else. Forgotten
+    // immediately before it and read immediately after, so that §5.4's replay
+    // and §5.3's perturbed run — both of which execute the routine again — are
+    // outside the answer. A reading taken at the end of this function would say
+    // more ran than the measurement did.
+    if request.coverage.is_some() {
+        arriver.forget_coverage().map_err(Error::Coverage)?;
+    }
     let measured = routine::measure(arriver, provenance, routine, request.given)?;
+    let coverage = match &request.coverage {
+        None => None,
+        Some(span) => Some(
+            arriver
+                .coverage(&span.region, span.offset, span.length)
+                .map_err(Error::Coverage)?,
+        ),
+    };
     let candidate = measured.candidate(request.produced)?;
 
     // Compared region by region rather than through `compare`, which folds:
@@ -337,6 +384,7 @@ pub fn examine(
         differing_region,
         located,
         control,
+        coverage,
         took: began.elapsed(),
     })
 }
@@ -402,6 +450,8 @@ pub struct Parts {
     pub differing_region: Option<String>,
     pub located: Option<Localised>,
     pub control: Control,
+    /// §10's coverage, when one was asked for.
+    pub coverage: Option<awaseru_core::ExecutionCoverage>,
     pub took: Duration,
 }
 
@@ -416,6 +466,7 @@ pub fn report_of(parts: Parts) -> Report {
         differing_region: parts.differing_region,
         located: parts.located,
         control: parts.control,
+        coverage: parts.coverage,
         took: parts.took,
     }
 }
@@ -462,6 +513,7 @@ mod tests {
             caveat: None,
             beginning: repeats(),
             differing_region: Some("work-ram".into()),
+            coverage: None,
             located: None,
             control: noticed(),
             took: Duration::from_millis(12),

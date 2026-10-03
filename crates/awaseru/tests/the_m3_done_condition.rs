@@ -157,6 +157,7 @@ fn the_differ_catches_a_wrong_reimplementation_reports_the_vacuous_and_notices_a
                 given: &given,
                 produced: &produced,
                 control,
+                coverage: None,
                 localise,
             },
         )

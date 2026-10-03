@@ -67,6 +67,7 @@ fn examine(produced: Vec<u8>) -> (Command, Vec<u8>) {
             },
             given: vec![span(expected::ROUTINE_INPUT_AT)],
             produced: vec![span(expected::ROUTINE_OUTPUT_AT)],
+            coverage: None,
             control: None,
             localise: true,
         },
