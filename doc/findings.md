@@ -1258,3 +1258,24 @@ The shape is worth more than the fix. **A test that constructs its own
 precondition cannot tell you the precondition happens.** Making the state
 happen is what the audit asks for, and it was done — in the test. What nobody
 did was ask whether anything else could make it, and the answer was no.
+
+### And then the same pair was read wrongly in a second place
+
+Proved by running it. With the state finally reachable, an arrival said:
+
+> *This blob was demonstrated by … and **not here**, so it is theirs … and
+> establishing it in this session is what would make a verdict from it
+> evidence*
+
+about an anchor this session had just established, **beside a verdict carrying
+no caveat at all** — the two halves of one line contradicting each other.
+
+The protocol's reply had been fixed. The arrival's own §4.12 line had not,
+because nobody looked for a **second reader of the same fact**. Fixed, with a
+test that makes the both-true state happen and a mutation that fails it.
+
+So the finding is really two: a fix for a state that could not occur, and then
+the discovery that fixing one of two readers is not fixing the thing. **Where a
+pair of fields has an order that matters, the question is not whether the order
+is right — it is how many places read the pair.** Here it was two, and only one
+was known about.

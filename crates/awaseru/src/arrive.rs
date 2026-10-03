@@ -248,13 +248,29 @@ impl std::fmt::Display for Arrived {
         if self.reverified {
             write!(f, "; re-demonstrated first, which §4.9 had come due")?;
         }
+        // This session first, and for the reason the protocol's own version of
+        // this had to learn twice: a blob can carry its packer's demonstration
+        // AND this session's, because a demonstration here does not unmake
+        // theirs. Reading the packer's without looking at this session's said
+        // "establish it to make a verdict evidence" about an anchor already
+        // established, beside a verdict that carried no caveat at all.
         if let Some(whose) = &self.demonstrated_elsewhere {
-            write!(
-                f,
-                ". This blob was demonstrated by {whose} and not here, so it is theirs: nothing \
-                 replayed it to check, and establishing it in this session is what \
-                 would make a verdict from it evidence"
-            )?;
+            if self.demonstrated_with > 0 {
+                write!(
+                    f,
+                    ". It arrived demonstrated by {whose}, and this session has established it \
+                     too, with {} replay(s) — so a comparison from it is evidence here and the \
+                     first fact is where the blob came from",
+                    self.demonstrated_with
+                )?;
+            } else {
+                write!(
+                    f,
+                    ". This blob was demonstrated by {whose} and not here, so it is theirs: \
+                     nothing replayed it to check, and establishing it in this session is what \
+                     would make a verdict from it evidence"
+                )?;
+            }
         }
         write!(f, ". It {}", self.beginning)?;
         if let Some(caveat) = &self.caveat {
@@ -1180,6 +1196,59 @@ mod tests {
         assert!(
             !own.to_string().contains("so it is theirs"),
             "an arrival this session demonstrated says nothing about anybody else"
+        );
+    }
+
+    /// The same pair of fields, read in the same wrong order, in a second
+    /// place.
+    ///
+    /// A blob can carry its packer's demonstration **and** this session's: a
+    /// demonstration here does not unmake theirs, and finding 29 keeps both as
+    /// provenance. Reading the packer's without looking at this session's told
+    /// a reader to establish an anchor that was already established — beside a
+    /// verdict carrying no caveat at all, which is the two halves of one line
+    /// contradicting each other.
+    ///
+    /// Finding 39 fixed this in the protocol's reply and not here, because
+    /// nobody looked for a second reader of the same fact. This is that second
+    /// reader.
+    #[test]
+    fn an_arrival_established_here_says_so_even_when_it_came_from_a_box() {
+        let mut both = arrived(How::Resumed, None, true);
+        both.demonstrated_elsewhere = Some("a-backend 1.0.0".into());
+        assert_eq!(both.demonstrated_with, 3, "the fixture is the both-true state");
+
+        let said = both.to_string();
+        assert!(
+            said.contains("this session has established it too, with 3 replay(s)"),
+            "this session's demonstration is what decides: {said}"
+        );
+        assert!(
+            said.contains("where the blob came from"),
+            "and the packer is named as provenance rather than as a warning: {said}"
+        );
+        assert!(
+            !said.contains("so it is theirs"),
+            "it is not only theirs any more: {said}"
+        );
+        assert!(
+            !said.contains("  "),
+            "and it reads as sentences: {said}"
+        );
+
+        // Theirs alone still reads as theirs.
+        let mut only_theirs = arrived(
+            How::Resumed,
+            Some(Undetermined::AnchorNotDemonstrated {
+                anchor: "later".into(),
+            }),
+            true,
+        );
+        only_theirs.demonstrated_elsewhere = Some("a-backend 1.0.0".into());
+        assert_eq!(only_theirs.demonstrated_with, 0);
+        assert!(
+            only_theirs.to_string().contains("so it is theirs"),
+            "{only_theirs}"
         );
     }
 

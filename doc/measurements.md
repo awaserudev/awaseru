@@ -138,7 +138,7 @@ comparison from it is evidence, so **what does changing that cost?**
 |---|---|
 | arriving at a cached anchor, over the protocol | **9 ms** |
 | one replay of the definition | 99 s |
-| **establishing the anchor here** — §4.8's five steps, the blob already present | **582.5 s** |
+| **establishing the anchor here** — §4.8's five steps, the blob already present | **582.5 s**, and **554.6 s** on a second run |
 | a cold arrival: one replay, then the demonstration | 686.6 s |
 
 ### The answer, and it has two halves that must not be mixed
@@ -174,6 +174,14 @@ The number `demonstrate` reports is three, which is §4.9's `verify_from_origin`
 and counts step 1's replays only. The work is four replays — three for step 1
 and one for step 4 — plus witnessing every writable region after each, which is
 why 582.5 over four is 146 s against a bare replay's 99.
+
+### Taken twice
+
+582.5 s and 554.6 s, two independent demonstrations of the same anchor, 5%
+apart. Ordinary machine drift, and the reason for saying so: a single figure
+behind a decision this size should not rest on one run, and the second run was
+taken for a different purpose — proving finding 39's fix — which makes it a
+better check than a repeat would have been.
 
 ### How to re-take it
 
