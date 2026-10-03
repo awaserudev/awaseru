@@ -56,9 +56,22 @@ impl std::fmt::Display for Start {
 ///
 /// Declared because a definition has one wherever the software needs input
 /// before it will proceed, and leaving the field out would make such an anchor
-/// impossible to write down rather than impossible to reach. What is **not**
-/// decided here is the encoding of `recorded`: that is settled by whatever can
-/// actually drive the backend's inputs, and §2.4 says not to guess a shape.
+/// impossible to write down rather than impossible to reach.
+///
+/// # Why it carries both a path and the bytes
+///
+/// They answer different questions and neither one answers both.
+///
+/// The **path** is what a backend is given. The first one takes a filename and
+/// opens the archive itself, so a host holding only bytes would have to write
+/// them back out to a temporary file before every replay — which is absurd when
+/// the file they came from is sitting there.
+///
+/// The **bytes** are what §4.11's key is built from. A cached blob is only
+/// valid for the definition that produced it, and re-recording a log produces a
+/// different position at the same path. A key over the path would not notice;
+/// a key over the contents throws the stale blobs away, which is exactly what
+/// §4.11 is for.
 ///
 /// An anchor carrying one of these needs `Capability::InputReplay` to be
 /// reached, and is **refused** rather than reached without it — see
@@ -66,7 +79,9 @@ impl std::fmt::Display for Start {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputLog {
     pub name: String,
-    /// Opaque until something can replay it.
+    /// Where the file is on this machine, for a backend that opens it itself.
+    pub path: std::path::PathBuf,
+    /// What is in it, for §4.11's key.
     pub recorded: Vec<u8>,
 }
 
@@ -81,6 +96,20 @@ pub struct Definition {
 }
 
 impl Definition {
+    /// Whether this definition says two contradictory things about where it
+    /// begins — §4.7.
+    ///
+    /// A log **is** an origin: starting one power-cycles the machine, which was
+    /// measured rather than assumed (`doc/protocol.md`). So a definition that
+    /// begins at another anchor and then replays a log would have the log throw
+    /// that anchor's position away, and the `after` would be a line of
+    /// configuration that reads as though it did something.
+    ///
+    /// `Start::PowerOn` with a log is the coherent shape and the only one.
+    pub fn contradicts_itself(&self) -> bool {
+        self.input.is_some() && !matches!(self.start, Start::PowerOn)
+    }
+
     /// What a backend must declare before this definition can be replayed —
     /// §7.3.
     ///
@@ -499,6 +528,41 @@ impl CheapCheck {
 mod tests {
     use super::*;
 
+    /// §4.7: a log is an origin, so a definition cannot also begin somewhere
+    /// else. Both legal shapes are asserted beside it, or this would pass as a
+    /// rule that calls everything a contradiction.
+    #[test]
+    fn a_definition_begins_in_one_place_or_it_contradicts_itself() {
+        let log = || {
+            Some(InputLog {
+                name: "press-start".into(),
+                path: std::path::PathBuf::from("/x.rec"),
+                recorded: vec![0x10],
+            })
+        };
+        let of = |start: Start, input: Option<InputLog>| Definition {
+            start,
+            bound: Bound::Frames(2),
+            input,
+        };
+
+        assert!(
+            of(Start::Anchor("earlier".into()), log()).contradicts_itself(),
+            "the log would throw `earlier`'s position away, so the `after` is a line that \
+             reads as though it did something"
+        );
+
+        assert!(
+            !of(Start::PowerOn, log()).contradicts_itself(),
+            "power-on and a log agree about where this begins"
+        );
+        assert!(
+            !of(Start::Anchor("earlier".into()), None).contradicts_itself(),
+            "and an anchor after another, with no log, is the ordinary chain"
+        );
+        assert!(!of(Start::PowerOn, None).contradicts_itself());
+    }
+
     fn provenance() -> Provenance {
         Provenance {
             reference: "ref-a".into(),
@@ -603,6 +667,7 @@ mod tests {
         let mut needs = anchor("needs-input", Start::PowerOn, &[]);
         needs.definition.input = Some(InputLog {
             name: "press-start".into(),
+            path: std::path::PathBuf::from("/a/log.rec"),
             recorded: vec![1, 2, 3],
         });
         assert_eq!(
@@ -657,6 +722,7 @@ mod tests {
         let mut first = anchor("first", Start::PowerOn, &[]);
         first.definition.input = Some(InputLog {
             name: "press-start".into(),
+            path: std::path::PathBuf::from("/a/log.rec"),
             recorded: vec![1],
         });
         let second = anchor("second", Start::Anchor("first".into()), &[]);

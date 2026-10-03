@@ -380,6 +380,12 @@ pub enum Error {
     /// The anchors do not make sense together — a circle, a parent nobody
     /// declares, or two of one name (§4.7).
     Anchors(AnchorError),
+    /// An anchor says it begins in two places — §4.7.
+    AnchorBeginsTwice {
+        anchor: String,
+        after: String,
+        input: String,
+    },
     /// A mapping file was named and is not a mapping file (§9.1).
     Mapping { path: PathBuf, why: String },
     /// The mapping files are each a mapping and together are not one graph
@@ -497,6 +503,16 @@ impl std::fmt::Display for Error {
                  than it says, because those bounds always arrive"
             ),
             Error::Anchors(e) => write!(f, "{e}"),
+            Error::AnchorBeginsTwice {
+                anchor,
+                after,
+                input,
+            } => write!(
+                f,
+                "the anchor `{anchor}` says it begins after `{after}` AND that it replays the \
+                 input log `{input}`. Starting a log returns the machine to its origin, so the \
+                 log would throw `{after}`'s position away — one or the other (§4.7)"
+            ),
             Error::Mapping { path, why } => write!(
                 f,
                 "the mapping file {} is not one: {why}",
@@ -714,21 +730,39 @@ fn anchors_from(declarations: &[AnchorDeclaration], beside: &Path) -> Result<Anc
                 })?;
                 Some(InputLog {
                     name: relative.display().to_string(),
+                    path,
                     recorded,
                 })
             }
         };
 
+        let definition = Definition {
+            start: match &declaration.after {
+                None => Start::PowerOn,
+                Some(parent) => Start::Anchor(parent.clone()),
+            },
+            bound,
+            input,
+        };
+        // §4.7: a log IS an origin — starting one power-cycles the machine,
+        // measured rather than assumed. So `after` beside `input` is a line of
+        // configuration that reads as though it did something and does not: the
+        // log would throw that anchor's position away. Refused rather than
+        // silently preferred one way or the other (§2.4).
+        if definition.contradicts_itself() {
+            return Err(Error::AnchorBeginsTwice {
+                anchor: declaration.name.clone(),
+                after: declaration.after.clone().unwrap_or_default(),
+                input: declaration
+                    .input
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            });
+        }
         anchors.push(Anchor {
             name: declaration.name.clone(),
-            definition: Definition {
-                start: match &declaration.after {
-                    None => Start::PowerOn,
-                    Some(parent) => Start::Anchor(parent.clone()),
-                },
-                bound,
-                input,
-            },
+            definition,
             covers: declaration.covers.clone(),
         });
     }
@@ -983,6 +1017,56 @@ mod tests {
     }
 
     // ---- shape and names ----------------------------------------------
+
+    /// §4.7's contradiction, through the configuration a person writes: an
+    /// anchor that says it begins after another AND replays a log.
+    ///
+    /// The two legal shapes are loaded beside it, or this would pass as a rule
+    /// that refuses every anchor with a log.
+    #[test]
+    fn an_anchor_that_begins_in_two_places_is_refused_and_each_place_alone_is_not() {
+        let dir = std::env::temp_dir().join("awaseru-begins-twice");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join("a.rec"), [0x10, 0x00]).expect("a log to point at");
+
+        let anchors_beside = |text: &str| {
+            let table = table(text);
+            let configuration: Configuration = {
+                let mut whole = shared();
+                for (k, v) in table {
+                    whole.insert(k, v);
+                }
+                Value::Table(whole)
+                    .try_into()
+                    .map_err(|why| Error::Malformed { why })?
+            };
+            anchors_from(&configuration.anchor_declarations, &dir)
+        };
+
+        let err = anchors_beside(
+            "[[anchor]]\nname = \"first\"\nframes = 1\n\n\
+             [[anchor]]\nname = \"both\"\nafter = \"first\"\nframes = 2\ninput = \"a.rec\"\n",
+        )
+        .expect_err("two beginnings");
+        let said = err.to_string();
+        assert!(
+            said.contains("both") && said.contains("first") && said.contains("a.rec"),
+            "the refusal names the anchor and both halves, because the writer has to find \
+             which line to delete: {said}"
+        );
+
+        // A log at power-on, which is the coherent shape.
+        anchors_beside("[[anchor]]\nname = \"behind-a-button\"\nframes = 2\ninput = \"a.rec\"\n")
+            .expect("power-on and a log agree about where this begins");
+
+        // And an ordinary chain, with no log anywhere.
+        anchors_beside(
+            "[[anchor]]\nname = \"first\"\nframes = 1\n\n\
+             [[anchor]]\nname = \"later\"\nafter = \"first\"\nframes = 2\n",
+        )
+        .expect("a chain is a chain");
+    }
 
     /// A key nothing understands is refused. The case that matters is a key for
     /// a part of the tool that does not exist yet: accepting it and not

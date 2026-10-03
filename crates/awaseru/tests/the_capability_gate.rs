@@ -52,6 +52,7 @@ fn anchors() -> Anchors {
                 bound: Bound::Frames(2),
                 input: Some(InputLog {
                     name: "press-start".into(),
+                    path: std::path::PathBuf::from("/a/log.rec"),
                     recorded: vec![0x10, 0x00, 0x00],
                 }),
             },

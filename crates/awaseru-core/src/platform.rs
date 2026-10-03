@@ -466,6 +466,35 @@ pub trait Platform {
         })
     }
 
+    /// §4.7's input log: start replaying it, from the machine's origin.
+    ///
+    /// **This returns the machine to its origin.** Measured, not assumed: a log
+    /// carries the settings the console comes up with and applies them, so
+    /// starting one power-cycles. That is why a definition may carry a log only
+    /// when it begins at power-on (`Definition::contradicts_itself`), and why
+    /// a caller does not have to rewind first.
+    ///
+    /// What it does **not** do is run. Playback is live from here and the
+    /// definition's own bound is what advances the machine (§4.2) — the log's
+    /// length is a bound a caller may choose, and on the first backend a log
+    /// stops delivering input at its own end rather than looping.
+    ///
+    /// Defaulted to a refusal rather than to doing nothing, which is the shape
+    /// `coverage` has and for the same reason: a backend that cannot replay and
+    /// silently returned success would leave its caller at power-on, believing
+    /// it had arrived somewhere. A position that looks like a position is worse
+    /// than an error (§2.3).
+    ///
+    /// A backend declaring `input-replay` must implement this, and one that
+    /// does not declare it must not.
+    fn replay_input_log(&mut self, log: &crate::anchor::InputLog) -> Result<(), RunError> {
+        let _ = log;
+        Err(RunError::Backend {
+            why: "this backend cannot replay a recorded input log (§7.3's `input-replay`)"
+                .to_string(),
+        })
+    }
+
     /// Puts one back, and checks that it arrived.
     ///
     /// The check is not optional politeness. A backend may report nothing at
@@ -569,6 +598,45 @@ mod tests {
         assert_eq!(c.ran_at(0x203), None, "one past the end");
         assert_eq!(c.ran_at(0x1FF), None, "one before the start");
         assert_eq!(c.ran_at(0), None, "and an offset below the span does not wrap");
+    }
+
+    /// The conservative default: a backend that cannot replay says so, rather
+    /// than returning success from a machine still at power-on.
+    ///
+    /// This is the shape §2.3 asks for everywhere. A replay that silently did
+    /// nothing leaves the caller somewhere that LOOKS like a position — the
+    /// origin is a perfectly good position — and every comparison downstream
+    /// would be about the wrong machine and would pass.
+    #[test]
+    fn a_backend_that_cannot_replay_refuses_rather_than_doing_nothing() {
+        struct Bare;
+        impl Platform for Bare {
+            fn version(&self) -> BackendVersion { unimplemented!() }
+            fn beginning(&self) -> Beginning { unimplemented!() }
+            fn capabilities(&self) -> crate::Capabilities { crate::Capabilities::of([]) }
+            fn regions(&self) -> crate::Regions { unimplemented!() }
+            fn read(&self, _: &str) -> Result<Vec<u8>, ReadError> { unimplemented!() }
+            fn read_span(&self, _: &str, _: usize, _: usize) -> Result<Vec<u8>, ReadError> { unimplemented!() }
+            fn run(&mut self, _: crate::Bound) -> Result<crate::Stop, RunError> { unimplemented!() }
+            fn write(&mut self, _: &str, _: &[u8]) -> Result<(), WriteError> { unimplemented!() }
+            fn write_span(&mut self, _: &str, _: usize, _: &[u8]) -> Result<(), WriteError> { unimplemented!() }
+            fn read_processor(&self) -> Result<crate::Processor, ReadError> { unimplemented!() }
+            fn write_processor(&mut self, _: &crate::Processor) -> Result<(), WriteError> { unimplemented!() }
+            fn save_state(&mut self) -> Result<crate::Blob, crate::StateError> { unimplemented!() }
+            fn return_to_origin(&mut self) -> Result<(), RunError> { unimplemented!() }
+            fn load_state(&mut self, _: &crate::Blob) -> Result<(), crate::StateError> { unimplemented!() }
+        }
+
+        let log = crate::anchor::InputLog {
+            name: "press-start".into(),
+            path: std::path::PathBuf::from("/wherever/it/is.rec"),
+            recorded: vec![1, 2, 3],
+        };
+        let refused = Bare.replay_input_log(&log).expect_err("it cannot, so it says so");
+        assert!(
+            refused.to_string().contains("input-replay"),
+            "the refusal names the capability a caller would go and look for: {refused}"
+        );
     }
 
     /// A backend that has not implemented this refuses rather than answering
