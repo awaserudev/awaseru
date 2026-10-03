@@ -40,12 +40,58 @@ Options
     --length N          how many bytes                   (default 256)
 
     --log PATH          where `awaseru reference` sends the emulator's own
-                        output and any panic (default: beside --home)
+                        output and any panic. The default is beside --home,
+                        named awaseru-YYYYMMDD-HHMMSS-mmm.log, so one run never
+                        erases the one before it
 
     --regions           list what the backend exposes and stop
     --state-digest      print one line a machine can compare, and nothing else
     -h, --help          this
 ";
+
+/// The default name of the log a reference writes its emulator's output to.
+///
+/// `awaseru-20261003-124233-512.log`: the project's name, then the moment, down
+/// to the millisecond.
+///
+/// # Why the moment is in the name
+///
+/// It was `reference.log`, one fixed name, so **every run erased the one
+/// before it**. The emulator's output is the only record of what it said while
+/// something went wrong, and the usual way to find out something went wrong is
+/// to look afterwards — by which time a second run has already happened.
+///
+/// Kept rather than rotated or numbered, because these are for a person: to
+/// read, to filter, to send to somebody else who might recognise what the
+/// emulator was complaining about, and to compare against the same run on a
+/// later version. A fixed prefix makes them easy to find and to sweep; the
+/// moment makes them impossible to confuse.
+///
+/// The arithmetic below is the civil-from-days one, written out rather than
+/// taken as a sixth dependency for twenty lines.
+fn log_name() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let (secs, millis) = (now.as_secs(), now.subsec_millis());
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    let (hour, minute, second) = (rest / 3600, (rest % 3600) / 60, rest % 60);
+
+    // Days since 1970-01-01 to a civil date. Shifts the era to start in March
+    // so that a leap day lands at the end of a year and the month lengths run
+    // in a repeating pattern.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + i64::from(month <= 2);
+
+    format!("awaseru-{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}-{millis:03}.log")
+}
 
 fn main() -> ExitCode {
     match parse(std::env::args().skip(1)) {
@@ -276,8 +322,9 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
             cache,
             // Beside the backend's own home by default, because that is where
             // the emulator's files already are and §6.1 says paths are
-            // machine-local.
-            log: log.unwrap_or_else(|| home.join("reference.log")),
+            // machine-local. The NAME carries the moment, so that one run does
+            // not erase the one before it — see `log_name`.
+            log: log.unwrap_or_else(|| home.join(log_name())),
         });
         return Ok(if as_server {
             Command::Serve { places }
@@ -352,6 +399,40 @@ fn number(text: &str, radix: u32) -> Result<u64, String> {
 mod tests {
     use super::*;
 
+    /// The log's name carries the moment, so one run does not erase the one
+    /// before it — which the fixed name it replaced did, every time.
+    #[test]
+    fn a_log_is_named_for_the_moment_it_was_opened() {
+        let name = log_name();
+        assert!(name.starts_with("awaseru-"), "a fixed prefix to find and sweep: {name}");
+        assert!(name.ends_with(".log"), "{name}");
+
+        // awaseru-YYYYMMDD-HHMMSS-mmm.log
+        let middle = name
+            .trim_start_matches("awaseru-")
+            .trim_end_matches(".log");
+        let parts: Vec<&str> = middle.split('-').collect();
+        assert_eq!(parts.len(), 3, "date, time, milliseconds: {name}");
+        assert_eq!(parts[0].len(), 8, "YYYYMMDD: {name}");
+        assert_eq!(parts[1].len(), 6, "HHMMSS: {name}");
+        assert_eq!(parts[2].len(), 3, "milliseconds: {name}");
+        assert!(parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())), "{name}");
+
+        // The date arithmetic is written out rather than taken as a
+        // dependency, so it is worth checking it produces a plausible one.
+        let year: i64 = parts[0][..4].parse().expect("a year");
+        let month: u32 = parts[0][4..6].parse().expect("a month");
+        let day: u32 = parts[0][6..].parse().expect("a day");
+        assert!((2020..2200).contains(&year), "{name}");
+        assert!((1..=12).contains(&month), "{name}");
+        assert!((1..=31).contains(&day), "{name}");
+
+        let hour: u32 = parts[1][..2].parse().expect("an hour");
+        let minute: u32 = parts[1][2..4].parse().expect("a minute");
+        let second: u32 = parts[1][4..].parse().expect("a second");
+        assert!(hour < 24 && minute < 60 && second < 60, "{name}");
+    }
+
     fn parse_args(words: &[&str]) -> Result<Command, String> {
         parse(words.iter().map(|s| s.to_string()))
     }
@@ -407,7 +488,12 @@ mod tests {
         // emulator's files are already there (§6.1).
         match parse_args(&["reference", "--home", "/tmp/elsewhere"]).expect("it parses") {
             Command::Reference { places } => {
-                assert_eq!(places.log, PathBuf::from("/tmp/elsewhere/reference.log"));
+                let log = places.log.display().to_string();
+                assert!(
+                    log.starts_with("/tmp/elsewhere/awaseru-") && log.ends_with(".log"),
+                    "beside the home, and carrying the moment so one run does not erase the \
+                     one before it: {log}"
+                );
             }
             other => panic!("got {other:?}"),
         }

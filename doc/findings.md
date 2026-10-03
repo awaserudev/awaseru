@@ -43,6 +43,8 @@ on until something was done about it; **slowed** means it cost real time;
 | 21 | six more calls the host believes although they cannot report failure | **would block** a verdict, invisibly | **all six fixed by the audit**, plus the half-guarded seventh |
 | 22 | a guard against a silent failure cannot be tested end to end | annoyed, and it is a limit rather than a defect | a note for `doc/` — found by the audit, by its own mutation |
 | 23 | the parent's deadline on its child is finding 20 again, one level up, and it is live | **will block** the use pass on a cold expensive anchor | a design decision — found by the audit |
+| 24 | two processes creating one anchor shared a staging directory | **would corrupt** a cached blob, silently | **fixed** — the staging name carries the process |
+| 25 | every run erased the previous run's log | annoyed, and it loses the only record of what went wrong | **fixed** — the name carries the moment |
 
 Three blocked the cycle and all three are about the same boundary: what the
 **backend** can do, what the **host** can ask for, and what a **client** can ask
@@ -757,3 +759,64 @@ better one level down.
 Not guessed. The first is the right shape and the most expensive; the third is
 the cheapest and the least honest, since it asks the user to predict what they
 cannot measure yet.
+
+# Found by asking how two of these run at once
+
+## 24. Two processes creating one anchor shared a staging directory
+
+**Would corrupt a cached blob, silently**, and it was found by a question rather
+than by a hunt: *if a developer wants three measurements at once, is this
+multithreaded or does he run it three times?*
+
+He runs it three times. One emulator per process is this project's shape and is
+deliberate — the backend is a C library with one emulator, one debugger and one
+loaded image in global state, so `Reference` refuses a second in one process.
+**Several processes is therefore how anything is done in parallel.**
+
+And what they share is the cache. `Cache::put` staged its files in a directory
+named after the key's digest **and nothing else**, then cleared it, filled it and
+renamed it into place. Two processes creating the same anchor at the same time
+shared that one directory, and the clearing of one deleted the other's files
+mid-write.
+
+It is not hypothetical. Three measurements of different parts of one piece of
+software usually share a prefix anchor — the thing that gets them past the
+opening — and on a cold cache all three race to create it. §13's Q12 already
+recorded a sighting of this: *a blob file that several processes were
+overwriting between one another's save and read-back*, caught then by §4.8's
+cheap check.
+
+**Fixed**: the staging name carries the process id, as the state file already
+did. The entry it renames into is still the key's own, which is what makes the
+blob appear atomically.
+
+What is **not** fixed is the race itself: two processes may still both do the
+work and one rename over the other. That is wasted effort rather than a wrong
+answer — they computed the same blob from the same definition — so it is a cost
+and not a defect. A lock would turn it into a wait, and nobody has measured
+whether the wait is cheaper than the work.
+
+## 25. Every run erased the previous run's log
+
+**Annoyed**, and it quietly lost the only record of what the emulator said.
+
+A reference wrote its emulator's output to `reference.log` — one fixed name,
+beside the backend's home. Every run overwrote it.
+
+The output is the only record of what the emulator was complaining about while
+something went wrong, and the usual way to discover something went wrong is to
+look afterwards — by which time a second run has already happened.
+
+**Fixed**: the default is `awaseru-YYYYMMDD-HHMMSS-mmm.log`. A fixed prefix to
+find and sweep them by, and the moment so that two cannot be confused. Kept
+rather than rotated, because these are for a person — to read, to filter, to send
+to somebody who might recognise what the emulator was saying, and to compare
+against the same run on a later version. The civil-date arithmetic is written
+out rather than taken as a sixth dependency for twenty lines.
+
+**What is still true**: in the one-process command line the emulator's output
+still goes to the host's own stdout, which is finding 3 and needs a
+file-descriptor redirect. And in the server path, **stderr is the transport** —
+the protocol's answers travel on it — so there is no log of stderr to keep
+there. The emulator writes 130 lines to stdout and none to stderr, measured in
+M4, so what is worth keeping is kept.

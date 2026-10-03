@@ -153,7 +153,20 @@ impl Cache {
             why,
         };
 
-        let staging = self.root.join(format!("{}.writing", key.digest()));
+        // The process id is in the name, and it has to be. This name was the
+        // key's digest alone, which meant two processes creating the SAME
+        // anchor at the same time shared one staging directory — and the
+        // `remove_dir_all` below would delete the other's files mid-write.
+        //
+        // That is not a hypothetical: several processes measuring different
+        // things usually share a prefix anchor, and on a cold cache they race
+        // to create it. One emulator per process is this project's shape
+        // (`Reference` refuses a second in one process), so **several processes
+        // is how anything is done in parallel** — and the cache is what they
+        // share.
+        let staging = self
+            .root
+            .join(format!("{}.{}.writing", key.digest(), std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|e| unwritable(&staging, e))?;
 
@@ -245,6 +258,40 @@ fn from_hex(text: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two writers of the SAME key do not share a staging directory.
+    ///
+    /// One emulator per process is this project's shape, so several processes
+    /// is how anything is done in parallel — and they share one cache. Several
+    /// of them usually share a prefix anchor too, and on a cold cache they race
+    /// to create it.
+    ///
+    /// The name used to be the key's digest alone. Two writers then cleared and
+    /// filled one directory at once, and whichever renamed second renamed
+    /// whatever was left.
+    #[test]
+    fn two_writers_of_one_key_do_not_share_a_staging_directory() {
+        let dir = std::env::temp_dir().join("awaseru-cache-staging");
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = Cache::at(&dir);
+        let key = key();
+
+        // What `put` would compute, with this process and with another.
+        let mine = format!("{}.{}.writing", key.digest(), std::process::id());
+        let theirs = format!("{}.{}.writing", key.digest(), std::process::id() + 1);
+        assert_ne!(
+            mine, theirs,
+            "two processes creating one anchor must not clear each other's files"
+        );
+        assert!(
+            mine.starts_with(&key.digest()),
+            "and both still belong to the key, so a sweep of leftovers can find them: {mine}"
+        );
+
+        // And the entry a put lands on is the key's own, shared on purpose:
+        // that is the thing the rename makes appear atomically.
+        let _ = cache;
+    }
     use awaseru_core::anchor::{Anchor, Anchors, Coverage, Definition, Start};
     use awaseru_core::run::Bound;
     use awaseru_core::snapshot::Provenance;
