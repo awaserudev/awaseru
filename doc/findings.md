@@ -216,3 +216,50 @@ So a chain's cache is all-or-nothing at the leaf. For two anchors it costs a
 replay; for a chain of five it costs four. Whether that is worth fixing depends
 on how deep chains get, which nothing yet knows — a question for §13 rather than
 a fix, and the measurement above is what it needs.
+
+## 9. The wire has no write bound, so §5.4 had to be rebuilt by hand
+
+**Slowed, badly.** It is the finding this milestone exists to produce.
+
+The backend declares `stop-on-write` and `writing-position` (§7.3). The host uses
+both: §5.4's localisation is a replay with a write breakpoint, and it reports the
+instruction that wrote a byte. §8's protocol exposes **neither**. Its bounds are
+frames, instructions and an address, and localisation arrives only bundled inside
+`examine` — which needs a routine's entry and return addresses, which is exactly
+what somebody asking "what wrote this byte" does not have yet.
+
+So choosing a unit of work meant rebuilding §5.4's third item out of `run` and
+`read`: bisection on the instruction count, each probe a fresh session replaying
+to the frame before the write, the smallest count at which the byte has changed
+being the instruction after the store. It works, and it cost **twenty replays
+and eighteen seconds** where one write bound would have cost one run.
+
+Two shapes would fix it and they are different sizes. The small one is a
+`Bound::Write` on the wire, which the host already has internally. The larger one
+is a verb for "what wrote this", which is §5.4 without a routine around it.
+
+A fix worth making, and the first one is cheap.
+
+## 10. Nothing in the tool helps you find a routine
+
+**Slowed.** The tool measures a routine you already know. There is no verb for
+"what is happening here".
+
+Choosing the unit of work needed three scripts written from outside, and none of
+them is exotic:
+
+- one that reads a region every frame and reports which spans changed, which is
+  how a buffer being filled becomes visible at all;
+- one that bisects to a writing instruction, which is finding 9;
+- one that steps single instructions and records the program counters, which is
+  how a loop's extent and a routine's entry and exit are found.
+
+The third is the interesting one, because it also **verified itself**: the trace
+measures how long each instruction is by subtracting consecutive program
+counters, with no idea what the instructions are, while the opcode table says how
+long each one should be without seeing the machine. When the two agree, the read
+is genuinely aligned. That is the shape of evidence this project asks for, and it
+was assembled by a user rather than offered by the tool.
+
+A note for `doc/` at least: these three are the first day of using this tool on
+software nobody has mapped, and nothing says so.
