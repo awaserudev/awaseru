@@ -352,6 +352,46 @@ mutation:
   not, because a write to a dead client is the same `BrokenPipe` the child's
   side already exercises.
 
+## What a routine-level cycle costs
+
+§3.6 asks whether snapshots should cross the API by value or by handle, and says
+the first real client and the measured cost of a routine-level cycle are what
+would settle it. The client exists, so here are the costs. Both routes are in
+the protocol as built: `examine` is the handle route — the tool holds both states,
+compares them, and only a verdict crosses — and `read` is the by-value route,
+where the bytes themselves come back and the client can look at them.
+
+Five rounds each, on one machine, in a **debug build**. The absolute numbers are
+therefore pessimistic; the ratios are the point.
+
+| | per cycle |
+|---|---|
+| in process, verdict only | 79.7 ms |
+| in process, with §5.4's localisation | 152.2 ms |
+| over the wire, verdict only | 79.0 ms |
+| over the wire, plus the output span read back | 75.0 ms |
+| over the wire, a whole region by value (131 072 bytes) | 1.4 ms |
+| framing 128 KiB, no backend at all | 0.10 ms |
+
+What that says:
+
+- **the transport is not the cost.** In process and over the wire are the same
+  number to within the noise of five rounds, because both are dominated by the
+  emulator running a routine. A protocol that cost nothing measurable is a
+  protocol nobody has to design around.
+- **a whole region by value costs about 1.3% of a cycle.** §3.6's worry was
+  "hundreds of kilobytes for every comparison"; measured, that is a millisecond
+  against eighty. Framing it is a tenth of that again.
+- **§5.4's localisation doubles a cycle**, because it is a second full replay
+  (`localise.rs` says so, and this is the number). Which is why it is asked for
+  rather than always done — and the record of that is this measurement rather
+  than an assumption.
+
+The first version of this measurement asked for localisation over a candidate
+that **agreed**, where there is nothing to localise, and came out *faster* than
+the plain cycle — which is what gave it away. It now measures over a candidate
+that differs, which is the only case where the replay happens.
+
 ## A client in another language
 
 `clients/python/` holds one, in the standard library and nothing else:
